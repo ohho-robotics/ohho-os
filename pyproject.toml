@@ -44,7 +44,7 @@ serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0"]  # serve policie
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
 ros2 = []                                    # rclpy ships with your ROS 2 distro — source it, then install this extra
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "coverage>=7"]
 all = [
   "pyyaml>=6.0",
   "pyserial>=3.5",
@@ -76,3 +76,9 @@ ohho = ["robots/*.json"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+# CI gates ohho/safety.py at >= 95% line+branch coverage:
+#   coverage run --include=ohho/safety.py -m unittest tests.test_safety
+#   coverage report --include=ohho/safety.py --fail-under=95
+[tool.coverage.run]
+branch = true

@@ -58,9 +58,10 @@
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
+| **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
 | CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 251 tests, OK (skipped=19). |
-| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 383 tests, OK (skipped=7). |
+| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
 (`yahboom`, `feetech`, `composite`, `unitree`) are built and unit-tested against
@@ -180,6 +181,7 @@ sdk/
 │   ├── sim_serve.py      # ohho.sim_serve — WebSocket teleop and telemetry server (`sim` and `ros2`)
 │   ├── sim_loop.py       # ohho.sim_loop — record -> validate -> tiny ACT train -> serve -> eval pipeline
 │   ├── selftest.py       # ohho.selftest — hardware self-test suite (motors, encoders, IMU, servos, camera)
+│   ├── safety.py         # ohho.safety — SafetyGate(Transport), SafetyProfile, AuditLog, arming policy
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
@@ -187,6 +189,7 @@ sdk/
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
+│   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
 │   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
 ├── scripts/
 │   ├── check_classifiers.py
@@ -455,10 +458,11 @@ All milestones (M0–M5) are complete. OhhO OS is at v1.1.3. To continue:
 4. Or drive manually:
    ```python
    from ohho import Robot
+   # OHHO_ARM_HARDWARE=1 and an interactive terminal; arm() asks for the phrase
    with Robot.connect("omnibot", "serial:///dev/ttyUSB0,/dev/ttyACM0") as bot:
-       bot.drive(vx=0.05); bot.move_joints([0, -0.5, 0.5, 0, 0, 0.2])
+       bot.arm(); bot.drive(vx=0.05); bot.move_joints([0, -0.5, 0.5, 0, 0, 0.2])
    with Robot.connect("unitree-go2", "dds://eth0") as bot:
-       bot.drive(vx=0.3, w=0.2); print(bot.telemetry().odom)
+       bot.arm(); bot.drive(vx=0.3, w=0.2); print(bot.telemetry().odom)
    ```
 
 ### Bench v0 hardware self-test (OHH-87)
@@ -467,6 +471,52 @@ Run the bring-up diagnostic suite for OmniBot or simulated test bench:
 1. **Simulation / CI:** `ohho selftest --sim` (runs all 5 checks against simulated hardware, exits 0).
 2. **On-robot bench:** `ohho selftest --robot omnibot --allow-spin` (checks base serial, wheel encoders with short pulse, IMU rate >= 20Hz, STS3215 arm bus diagnostics, and camera frames). Generates dated JSON report (`selftest-YYYYMMDD-HHMMSS.json`).
 3. **Real-robot run:** Pending on-bench execution by Varun (hardware-gated).
+
+---
+
+## 9a. Safety rules (SafetyGate, OHH-117) — do not weaken
+
+`ohho/safety.py`; user docs in `docs/safety.md`. These are invariants. Changing
+any of them needs an explicit Linear issue, not a drive-by edit.
+
+1. **Always gated.** `Robot.connect` wraps every transport whose
+   `protocol != "simulated"` in `SafetyGate`. Do not add a bypass flag. Do not
+   give the gate a `__getattr__` passthrough (it would expose `send_motor`,
+   raw `sport_command`, etc.).
+2. **Fail closed.** Any refusal sends zero velocity. Transport exceptions,
+   watchdog errors → latched e-stop. Unwritable audit log → disarm. Refused
+   joint/effort commands are dropped, never "zeroed".
+3. **Caps come from the per-robot `SafetyProfile`.** Go2: 0.5 m/s forward,
+   0.3 m/s lateral, 1.0 rad/s yaw, acceleration-limited. Hard ceiling 1.5 m/s /
+   2.0 rad/s; only a safety config file (`hard_ceiling`) raises it, never the
+   caller or an agent. Clamp, don't reject.
+4. **Watchdogs.** No command for 300 ms → zero velocity. No state for 500 ms
+   while armed → stop + latch. Profiles may make these stricter, never looser.
+5. **E-stop.** Latched. Stop first (`StopMove()` on Go2), then `Damp()` only
+   if the robot is already lying down or `estop_damp` / `--estop-damp` is set.
+   Unknown posture never damps. `release_stop()` needs a human at a TTY,
+   refuses while tilted/faulted, and leaves the gate disarmed (re-arm needed).
+6. **Agents and policies never get `arm` or `release_stop` as tools**
+   (`brains.py`, `market.py`). They may call `emergency_stop`.
+7. **Allowlist.** `stand_up, stand_down, balance_stand, recovery_stand,
+   stop_move, move, euler (±0.3 rad), sit, rise_sit`. Always refuse flips,
+   jumps, pounce, dance, handstand, walk_upright, `free_*`, cross_step — the
+   denylist wins over any config file.
+8. **Tilt / fault.** `|roll|` or `|pitch|` > 0.6 rad, or `error_code != 0` →
+   stop + latch, armed or not.
+9. **Arming.** Never automatic, including tests and CI. Any non-loopback
+   interface or DDS domain 0 needs `OHHO_ARM_HARDWARE=1` **and** an interactive
+   TTY confirmation ("I am physically present, the area is clear, the remote is
+   in my hand"), logged with a timestamp. CI env or non-TTY → refused.
+10. **Audit.** Every arm/disarm, e-stop, release, clamp, refusal and watchdog
+    trip goes to `~/.ohho/safety/<UTC date>.jsonl`.
+11. **Tests.** Fake clock + fake transports only; no sleeps, no hardware. CI
+    fails below 95 % line + branch coverage on `ohho/safety.py`.
+
+Not gated: `ohho selftest` and `tests/hil/` construct adapters directly (they
+have their own consent: `--allow-spin`, `OHHO_HIL=1`). The MuJoCo 2 m/s →
+0.5 m/s and 300 ms client-kill check is OHH-121. The `ohho-quadruped` repo's
+AGENTS.md needs the same rules section (not edited from here).
 
 ---
 
@@ -494,6 +544,9 @@ Run the bring-up diagnostic suite for OmniBot or simulated test bench:
 - `Robot.connect("<any>")` with no transport **silently runs in simulation**
   today (auto fallback). An **explicit** non-sim URI raises `AdapterUnavailable`
   — that's intentional (honest error vs convenient default).
+- An explicit non-sim URI that does connect comes back **gated and disarmed**:
+  `bot.drive()` sends zero velocity until `bot.arm()` succeeds (see §9a).
+  `bot.transport` is the `SafetyGate`, not the adapter.
 - The sim's `start_sim()` runs a background thread; for deterministic tests
   construct `Robot(spec, SimTransport(spec), NativeRuntime())` directly and call
   `transport.step(dt)` (don't start the thread).

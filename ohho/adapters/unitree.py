@@ -34,11 +34,16 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     """Map a SportModeState-like dict to ``Telemetry``.
 
     Expected keys (all optional): ``position`` [x,y,z], ``velocity`` [vx,vy,vz],
-    ``yaw_speed`` (rad/s), ``imu_rpy`` [roll,pitch,yaw], ``battery`` (0..1).
+    ``yaw_speed`` (rad/s), ``imu_rpy`` [roll,pitch,yaw], ``battery`` (0..1),
+    ``error_code``, ``body_height`` (m), ``mode``. Roll, pitch, error code, body
+    height and mode go into ``Telemetry.custom`` only when the state carries them
+    — the SafetyGate treats a missing orientation as "no fresh state".
     """
     pos = state.get("position") or [0.0, 0.0, 0.0]
     vel = state.get("velocity") or [0.0, 0.0, 0.0]
-    rpy = state.get("imu_rpy") or [0.0, 0.0, 0.0]
+    raw_rpy = state.get("imu_rpy")
+    has_rpy = isinstance(raw_rpy, (list, tuple)) and len(raw_rpy) >= 3
+    rpy = raw_rpy if has_rpy else [0.0, 0.0, 0.0]
     odom = Odometry(
         x=float(pos[0]),
         y=float(pos[1]),
@@ -47,7 +52,30 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
         vy=float(vel[1]),
         omega=float(state.get("yaw_speed", 0.0)),
     )
-    return Telemetry(odom=odom, battery=state.get("battery"))
+    custom: dict = {}
+    if has_rpy:
+        custom["roll"] = float(rpy[0])
+        custom["pitch"] = float(rpy[1])
+    for key in ("error_code", "body_height", "mode"):
+        if key in state:
+            custom[key] = state[key]
+    return Telemetry(odom=odom, battery=state.get("battery"), custom=custom)
+
+
+# Sport-mode actions this adapter can forward (snake_case → SportClient method).
+# The SafetyGate allowlist decides which of these callers may actually use.
+_SPORT_METHODS = {
+    "stand_up": "StandUp",
+    "stand_down": "StandDown",
+    "balance_stand": "BalanceStand",
+    "recovery_stand": "RecoveryStand",
+    "stop_move": "StopMove",
+    "euler": "Euler",
+    "sit": "Sit",
+    "rise_sit": "RiseSit",
+    "damp": "Damp",
+}
+_SPORT_WHILE_ESTOPPED = frozenset({"stop_move", "damp"})
 
 
 StateFactory = Callable[[], Callable[[], Optional[dict]]]
@@ -66,7 +94,18 @@ class UnitreeDdsTransport(BaseTransport):
     ) -> None:
         super().__init__()
         self.spec = spec
+        # ``<iface>?domain=<n>`` — e.g. ``dds://lo?domain=1`` for a local simulator.
+        address, _sep, query = address.partition("?")
+        domain = 0
+        for item in filter(None, query.split("&")):
+            key, _eq, value = item.partition("=")
+            if key == "domain":
+                try:
+                    domain = int(value)
+                except ValueError:
+                    raise ValueError(f"invalid DDS domain '{value}'") from None
         self.address = address  # DDS network interface / host hint
+        self.domain_id = domain
         self._iface = iface
         self._state_factory = state_factory
         self._client: Optional[object] = None
@@ -77,6 +116,11 @@ class UnitreeDdsTransport(BaseTransport):
         self._connected_since: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+
+    @property
+    def iface(self) -> str:
+        """The DDS network interface (empty = SDK default)."""
+        return self.address or self._iface
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
@@ -103,7 +147,7 @@ class UnitreeDdsTransport(BaseTransport):
                 "pip install 'ohho-os[unitree]' (with a working CycloneDDS). "
                 "Use transport='sim://' to explore without hardware."
             ) from e
-        ChannelFactoryInitialize(0, self.address or self._iface or "")
+        ChannelFactoryInitialize(self.domain_id, self.iface)
         client = SportClient()
         client.Init()
         self._client = client
@@ -135,14 +179,19 @@ class UnitreeDdsTransport(BaseTransport):
 
     @staticmethod
     def _sportstate_to_dict(msg: object) -> dict:
-        imu = getattr(msg, "imu_state", None)
-        return {
+        d = {
             "position": list(getattr(msg, "position", [0.0, 0.0, 0.0])),
             "velocity": list(getattr(msg, "velocity", [0.0, 0.0, 0.0])),
             "yaw_speed": float(getattr(msg, "yaw_speed", 0.0)),
-            "imu_rpy": list(getattr(imu, "rpy", [0.0, 0.0, 0.0])),
             "battery": getattr(msg, "battery_soc", None),
         }
+        rpy = getattr(getattr(msg, "imu_state", None), "rpy", None)
+        if rpy is not None:
+            d["imu_rpy"] = list(rpy)
+        for key in ("error_code", "body_height", "mode"):
+            if hasattr(msg, key):
+                d[key] = getattr(msg, key)
+        return d
 
     def _on_state(self, state: dict) -> None:
         """Bridge a state dict to telemetry and emit."""
@@ -213,6 +262,23 @@ class UnitreeDdsTransport(BaseTransport):
 
     def send_joint_command(self, name: str, position: float) -> None:
         return  # Go2 has no arm; low-level joint control is a future adapter
+
+    def sport_command(self, name: str, *args: float) -> None:
+        """Call a sport-mode action (``"stand_up"``, ``"euler"``, …) on the client.
+
+        Unknown names raise ``ValueError``. While e-stopped only ``stop_move``
+        and ``damp`` go through.
+        """
+        method = _SPORT_METHODS.get(name)
+        if method is None:
+            raise ValueError(f"unsupported sport command '{name}'")
+        if self._client is None:
+            return
+        if self._estopped and name not in _SPORT_WHILE_ESTOPPED:
+            return
+        fn = getattr(self._client, method, None)
+        if callable(fn):
+            fn(*args)
 
     def emergency_stop(self) -> None:
         self._estopped = True

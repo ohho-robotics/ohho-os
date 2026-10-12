@@ -112,5 +112,108 @@ class TestUnitreeStatePolling(unittest.TestCase):
             tp.disconnect()
 
 
+class _FakeSportClient:
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def call(*args):
+            self.calls.append((name, args))
+
+        return call
+
+
+class TestUnitreeSafetyHooks(unittest.TestCase):
+    """Fields and commands the SafetyGate relies on (OHH-117)."""
+
+    def test_state_exposes_orientation_and_faults(self):
+        t = sportstate_to_telemetry(
+            {
+                "imu_rpy": [0.1, -0.2, 1.0],
+                "error_code": 0,
+                "body_height": 0.31,
+                "mode": 1,
+            }
+        )
+        self.assertAlmostEqual(t.custom["roll"], 0.1)
+        self.assertAlmostEqual(t.custom["pitch"], -0.2)
+        self.assertEqual(t.custom["error_code"], 0)
+        self.assertAlmostEqual(t.custom["body_height"], 0.31)
+        self.assertEqual(t.custom["mode"], 1)
+
+    def test_missing_safety_fields_are_not_invented(self):
+        t = sportstate_to_telemetry({"position": [0.0, 0.0, 0.0]})
+        for key in ("roll", "pitch", "error_code", "body_height", "mode"):
+            self.assertNotIn(key, t.custom)
+
+    def test_sportstate_to_dict_reads_safety_fields(self):
+        from types import SimpleNamespace
+
+        msg = SimpleNamespace(
+            position=[1.0, 2.0, 0.0],
+            velocity=[0.1, 0.0, 0.0],
+            yaw_speed=0.0,
+            imu_state=SimpleNamespace(rpy=[0.1, 0.2, 0.3]),
+            battery_soc=None,
+            error_code=0,
+            body_height=0.3,
+            mode=1,
+        )
+        d = UnitreeDdsTransport._sportstate_to_dict(msg)
+        self.assertEqual(d["imu_rpy"], [0.1, 0.2, 0.3])
+        self.assertEqual(d["error_code"], 0)
+        self.assertEqual(d["body_height"], 0.3)
+        self.assertEqual(d["mode"], 1)
+        bare = UnitreeDdsTransport._sportstate_to_dict(SimpleNamespace())
+        self.assertNotIn("imu_rpy", bare)
+        self.assertNotIn("error_code", bare)
+
+    def test_iface_and_domain_parsing(self):
+        spec = get_spec("unitree-go2")
+        tp = UnitreeDdsTransport(spec, "lo?domain=1")
+        self.assertEqual((tp.iface, tp.domain_id), ("lo", 1))
+        tp = UnitreeDdsTransport(spec, "eth0")
+        self.assertEqual((tp.iface, tp.domain_id), ("eth0", 0))
+        tp = UnitreeDdsTransport(spec, "", iface="enp3s0")
+        self.assertEqual(tp.iface, "enp3s0")
+        with self.assertRaises(ValueError):
+            UnitreeDdsTransport(spec, "lo?domain=x")
+
+    def test_sport_command_maps_to_client(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        client = _FakeSportClient()
+        tp._client = client
+        tp.sport_command("stand_up")
+        tp.sport_command("euler", 0.1, 0.0, -0.1)
+        tp.sport_command("rise_sit")
+        tp.sport_command("damp")
+        self.assertEqual(
+            client.calls,
+            [
+                ("StandUp", ()),
+                ("Euler", (0.1, 0.0, -0.1)),
+                ("RiseSit", ()),
+                ("Damp", ()),
+            ],
+        )
+        with self.assertRaises(ValueError):
+            tp.sport_command("front_flip")
+
+    def test_sport_command_blocked_when_estopped(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        client = _FakeSportClient()
+        tp._client = client
+        tp.emergency_stop()
+        client.calls.clear()
+        tp.sport_command("stand_up")
+        tp.sport_command("stop_move")
+        tp.sport_command("damp")
+        self.assertEqual(client.calls, [("StopMove", ()), ("Damp", ())])
+
+    def test_sport_command_without_client_is_noop(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        tp.sport_command("stand_up")
+
+
 if __name__ == "__main__":
     unittest.main()

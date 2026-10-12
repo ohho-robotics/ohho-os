@@ -67,6 +67,34 @@ Those adapters are not installed by `pip install ohho-os`. The extras are
 distro. `train` needs torch. None of those were installed for the test
 run above.
 
+## Safety gate on real robots
+
+`Robot.connect` wraps every non-simulated transport (`serial://`,
+`feetech://`, `dds://`, `ros2://`) in `ohho.safety.SafetyGate`. The robot
+starts **disarmed**: motion commands are refused (and a zero velocity is
+sent) until you arm it.
+
+```bash
+OHHO_ARM_HARDWARE=1 ohho drive unitree-go2 --transport dds://eth0 --arm --vx 0.3
+```
+
+`--arm` asks you to type
+`I am physically present, the area is clear, the remote is in my hand`
+at an interactive terminal. Without the environment variable, without a TTY,
+or under CI, arming is refused. Once armed, the gate clamps velocity to the
+robot's profile (Go2: 0.5 m/s forward, 0.3 m/s lateral, 1.0 rad/s yaw, with
+acceleration limits), zeroes velocity after 300 ms without a command, and
+latches the e-stop after 500 ms without robot state, when roll or pitch passes
+0.6 rad, or when the robot reports an error code. A latched e-stop is cleared
+only by `release_stop()` from a human at a terminal, and the robot must then
+be armed again. Sport actions go through `bot.transport.command(...)`, which
+refuses anything outside the allowlist (flips, jumps, dances, handstands and
+`free_*` modes are always refused). Every arm, disarm, e-stop, clamp and
+refusal is appended to `~/.ohho/safety/<date>.jsonl`.
+
+`sim://` is not gated. See [`docs/safety.md`](docs/safety.md) for the rules,
+profiles, config file and audit format.
+
 ## Pipeline in sim
 
 The complete Data -> Train -> Serve sim loop can be reproduced locally with a single command:

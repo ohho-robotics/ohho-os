@@ -63,7 +63,27 @@ def _cmd_list(args) -> int:
 
 
 def _connect(args) -> Robot:
-    return Robot.connect(args.robot, transport=args.transport, runtime=args.runtime)
+    bot = Robot.connect(
+        args.robot,
+        transport=args.transport,
+        runtime=args.runtime,
+        safety_config=args.safety_config,
+        estop_damp=args.estop_damp,
+    )
+    if bot.gated:
+        if args.arm:
+            if not bot.arm():
+                print(
+                    "safety: arming refused — motion stays disabled "
+                    "(reason in ~/.ohho/safety/<date>.jsonl)",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                "safety: hardware link is disarmed — pass --arm to enable motion",
+                file=sys.stderr,
+            )
+    return bot
 
 
 def _cmd_connect(args) -> int:
@@ -247,9 +267,7 @@ def _cmd_market(args) -> int:
         return 0
     if args.action == "run":
         try:
-            bot = Robot.connect(
-                args.robot, transport=args.transport, runtime=args.runtime
-            )
+            bot = _connect(args)
         except Exception as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
@@ -473,6 +491,19 @@ def _add_robot_args(
         "--transport", default=transport_default, help="transport URI, e.g. sim://"
     )
     sp.add_argument("--runtime", default="auto", choices=["auto", "native", "ros2"])
+    sp.add_argument(
+        "--arm",
+        action="store_true",
+        help="arm a hardware link (needs OHHO_ARM_HARDWARE=1 and typed confirmation)",
+    )
+    sp.add_argument(
+        "--estop-damp",
+        action="store_true",
+        help="damp motors after an e-stop even if the robot is standing",
+    )
+    sp.add_argument(
+        "--safety-config", default=None, help="safety config JSON (caps, ceilings)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

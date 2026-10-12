@@ -14,6 +14,7 @@ from . import capabilities as caps
 from .adapters import resolve_transport
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
+from .safety import SafetyGate, resolve_config
 from .schema import Telemetry, TransportStatus, Velocity, clamp
 from .transport import Transport
 
@@ -32,16 +33,29 @@ class Robot:
         robot_id: str,
         transport: Optional[str] = None,
         runtime: str = "auto",
+        *,
+        safety_config: Optional[str] = None,
+        estop_damp: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
         ``transport`` is a URI like ``"sim://"`` or ``"dds://192.168.1.10"``; when
         omitted, the robot's declared adapter is used (falling back to simulation
         if it isn't bundled). ``runtime`` is ``"auto"`` | ``"native"`` | ``"ros2"``.
+
+        Every non-simulated transport is wrapped in a :class:`~ohho.safety.SafetyGate`
+        and starts **disarmed** — call :meth:`arm` before driving.
+        ``safety_config`` is a safety config JSON path (default:
+        ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
+        e-stop even when standing.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
         tp = resolve_transport(transport, spec, rt)
+        if tp.protocol != "simulated":
+            tp = SafetyGate(
+                tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
+            )
         tp.connect()
         bot = cls(spec, tp, rt)
         # live backends that own a loop start it here
@@ -64,8 +78,26 @@ class Robot:
     def transport(self) -> Transport:
         return self._t
 
+    @property
+    def gated(self) -> bool:
+        """True when commands pass through a :class:`~ohho.safety.SafetyGate`."""
+        return isinstance(self._t, SafetyGate)
+
     def has(self, capability: str) -> bool:
         return self.spec.has(capability)
+
+    # ── safety ────────────────────────────────────────────────────────────────
+    def arm(self) -> bool:
+        """Enable motion on a gated robot (see :meth:`SafetyGate.arm`).
+        Ungated (simulated) robots are always armed."""
+        if isinstance(self._t, SafetyGate):
+            return self._t.arm()
+        return True
+
+    def disarm(self) -> "Robot":
+        if isinstance(self._t, SafetyGate):
+            self._t.disarm()
+        return self
 
     # ── control ───────────────────────────────────────────────────────────────
     def drive(self, vx: float = 0.0, vy: float = 0.0, w: float = 0.0) -> "Robot":
@@ -139,7 +171,18 @@ class Robot:
 
 
 def connect(
-    robot_id: str, transport: Optional[str] = None, runtime: str = "auto"
+    robot_id: str,
+    transport: Optional[str] = None,
+    runtime: str = "auto",
+    *,
+    safety_config: Optional[str] = None,
+    estop_damp: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
-    return Robot.connect(robot_id, transport=transport, runtime=runtime)
+    return Robot.connect(
+        robot_id,
+        transport=transport,
+        runtime=runtime,
+        safety_config=safety_config,
+        estop_damp=estop_damp,
+    )
