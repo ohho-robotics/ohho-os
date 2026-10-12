@@ -254,13 +254,13 @@ class Ros2Runtime(Runtime):
             return
         self._stop.clear()
 
-        # If rclpy is real, spin in a thread. Fakes may not need spinning.
-        spin = getattr(self._node, "spin", None)
-        if not callable(spin):
-            return
-
+        # Real rclpy nodes have no ``spin`` method — always use ``spin_once`` in a
+        # background thread so Ros2Transport subscriptions receive DDS messages.
         def _spin():
-            import rclpy
+            try:
+                import rclpy
+            except ImportError:
+                return
 
             while not self._stop.is_set():
                 try:
