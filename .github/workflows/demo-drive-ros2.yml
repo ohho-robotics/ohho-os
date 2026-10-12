@@ -1,0 +1,50 @@
+name: Demo Drive ROS 2
+
+on:
+  push:
+    branches: [main, ohh-32-sdk-gazebo]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  demo-drive-fake-robot:
+    name: demo_drive.py vs fake ROS 2 robot
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python deps
+        run: |
+          apt-get update -qq && apt-get install -y -qq python3-pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e '.[dev]'
+
+      - name: Run fake robot + demo_drive (odom delta)
+        shell: bash
+        env:
+          ROS_DOMAIN_ID: "199"
+        run: |
+          set -eo pipefail
+          source /opt/ros/jazzy/setup.bash
+          python3 examples/fake_ros2_robot_node.py &
+          FAKE_PID=$!
+          sleep 2
+          python3 examples/demo_drive.py \
+            --transport ros2:// \
+            --seconds 2.5 \
+            --vx 0.2 \
+            --min-displacement 0.2
+          kill "$FAKE_PID" || true
+          wait "$FAKE_PID" 2>/dev/null || true
+
+      - name: Pytest (demo drive)
+        shell: bash
+        env:
+          ROS_DOMAIN_ID: "199"
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          python3 -m pytest tests/test_demo_drive.py -v

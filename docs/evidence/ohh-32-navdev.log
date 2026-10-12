@@ -1,0 +1,13 @@
+# navdev (ros:jazzy) ? 2026-10-12
+# ROS_DOMAIN_ID=199, fake_ros2_robot_node + demo_drive.py
+
+=== ros2:// ===
+demo_drive: robot=omnibot transport=ros2:// runtime=ros2 vx=0.2 for 2.0s
+odom delta: dx=0.4040 dy=0.0000 disp=0.4040 dtheta=0.0000 (2.0s)
+
+=== sim:// ===
+demo_drive: robot=omnibot transport=sim:// runtime=native vx=0.2 for 2.0s
+odom delta: dx=0.3960 dy=0.0000 disp=0.3960 dtheta=0.0000 (2.0s)
+
+=== pytest tests/test_demo_drive.py ===
+3 passed (including test_demo_drive_ros2_fake_node_odom_delta on ROS_DOMAIN_ID=199)
