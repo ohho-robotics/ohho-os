@@ -26,12 +26,13 @@ jobs:
         shell: bash
         env:
           ROS_DOMAIN_ID: "199"
+          ROS_LOCALHOST_ONLY: "1"
         run: |
           set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           python3 examples/fake_ros2_robot_node.py &
           FAKE_PID=$!
-          sleep 2
+          timeout 20 bash -c 'until ros2 topic echo --once /odom >/dev/null 2>&1; do sleep 0.5; done'
           python3 examples/demo_drive.py \
             --transport ros2:// \
             --seconds 2.5 \
@@ -44,6 +45,7 @@ jobs:
         shell: bash
         env:
           ROS_DOMAIN_ID: "199"
+          ROS_LOCALHOST_ONLY: "1"
         run: |
           source /opt/ros/jazzy/setup.bash
           python3 -m pytest tests/test_demo_drive.py -v

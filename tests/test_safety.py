@@ -1182,6 +1182,29 @@ class TestArming(GateCase):
             with self.subTest(tp=tp.protocol, iface=getattr(tp, "iface", None)):
                 self.assertEqual(requires_hardware_arming(tp), expected)
 
+    def test_ros2_arming_localhost_domain_rules(self):
+        ros2 = FakeTransport("ros2")
+        base = {
+            "ROS_LOCALHOST_ONLY": "1",
+            "ROS_DOMAIN_ID": "199",
+        }
+        with mock.patch.dict(os.environ, base, clear=False):
+            self.assertFalse(requires_hardware_arming(ros2))
+        with mock.patch.dict(
+            os.environ,
+            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_DOMAIN_ID": "199"},
+            clear=False,
+        ):
+            self.assertFalse(requires_hardware_arming(ros2))
+        with mock.patch.dict(
+            os.environ, {"ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "0"}
+        ):
+            self.assertTrue(requires_hardware_arming(ros2))
+        with mock.patch.dict(os.environ, {"ROS_DOMAIN_ID": "199"}, clear=False):
+            os.environ.pop("ROS_LOCALHOST_ONLY", None)
+            os.environ.pop("ROS_AUTOMATIC_DISCOVERY_RANGE", None)
+            self.assertTrue(requires_hardware_arming(ros2))
+
     def test_loopback_sim_arms_without_tty(self):
         self.tty = False
         self.env = {}

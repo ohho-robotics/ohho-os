@@ -384,8 +384,34 @@ def _is_loopback(iface: str) -> bool:
     return s in _LOOPBACK or s.startswith(("127.", "loopback"))
 
 
-def requires_hardware_arming(transport: Transport) -> bool:
-    """False only for simulators and loopback DDS links on a non-zero domain."""
+def _ros2_localhost_ci(environ: Mapping[str, str]) -> bool:
+    """True when ROS 2 discovery is localhost-only on a non-zero domain (CI fake robot)."""
+    loc = str(environ.get("ROS_LOCALHOST_ONLY", "")).strip().lower()
+    if loc in ("1", "true", "yes"):
+        localhost_only = True
+    else:
+        adr = str(environ.get("ROS_AUTOMATIC_DISCOVERY_RANGE", "")).strip().upper()
+        localhost_only = adr == "LOCALHOST"
+    if not localhost_only:
+        return False
+    raw = str(environ.get("ROS_DOMAIN_ID", "0")).strip()
+    if not raw:
+        return False
+    try:
+        domain = int(raw, 10)
+    except ValueError:
+        return False
+    if isinstance(domain, bool):
+        return False
+    return domain != 0
+
+
+def requires_hardware_arming(
+    transport: Transport,
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """False only for simulators, loopback DDS, and localhost-only ROS 2 CI."""
+    env = os.environ if environ is None else environ
     proto = getattr(transport, "protocol", "")
     if proto == "simulated":
         return False
@@ -395,6 +421,8 @@ def requires_hardware_arming(transport: Transport) -> bool:
         is_int = isinstance(domain, int) and not isinstance(domain, bool)
         if _is_loopback(iface) and is_int and domain != 0:
             return False
+    if proto == "ros2" and _ros2_localhost_ci(env):
+        return False
     return True
 
 
@@ -591,7 +619,7 @@ class SafetyGate(BaseTransport):
         self._input = input_fn or _prompt
         self._auto_tick = auto_tick
         self._tick_period = tick_period_s
-        self._hw = requires_hardware_arming(inner)
+        self._hw = requires_hardware_arming(inner, self._env)
 
         self._lock = threading.RLock()
         self._armed = False
@@ -630,6 +658,15 @@ class SafetyGate(BaseTransport):
     @property
     def requires_hardware_arming(self) -> bool:
         return self._hw
+
+    @property
+    def odom_received(self) -> bool:
+        """Forwarded from the inner transport when it tracks live odometry."""
+        inner = self._inner
+        flag = getattr(inner, "odom_received", None)
+        if flag is not None:
+            return bool(flag)
+        return False
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:

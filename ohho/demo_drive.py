@@ -59,13 +59,14 @@ def default_runtime_for_transport(transport: str) -> str:
 def _has_live_odom(bot: Robot) -> bool:
     """True when odometry is from the backend, not a zero placeholder."""
     tp = bot.transport
-    if getattr(tp, "protocol", "") == "ros2":
-        return getattr(tp, "_latest_odom", None) is not None
+    flag = getattr(tp, "odom_received", None)
+    if flag is not None:
+        return bool(flag)
     t = bot.telemetry()
     return t.odom is not None
 
 
-def wait_for_odom(bot: Robot, timeout_s: float = 5.0) -> bool:
+def wait_for_odom(bot: Robot, timeout_s: float = 8.0) -> bool:
     """Block until telemetry reports odometry or timeout."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -84,10 +85,18 @@ def run_drive(
     w: float = 0.0,
     rate_hz: float = 10.0,
     settle_s: float = 0.3,
+    odom_timeout_s: float = 8.0,
 ) -> DriveResult:
     """Drive at constant velocity and return odometry delta."""
-    if not wait_for_odom(bot, timeout_s=8.0):
-        raise RuntimeError("no odometry received before drive")
+    if not wait_for_odom(bot, timeout_s=odom_timeout_s):
+        gated = bot.gated
+        proto = getattr(bot.transport, "protocol", "unknown")
+        raise RuntimeError(
+            "no odometry received before drive "
+            f"(gated={gated}, protocol={proto}, waited {odom_timeout_s}s for live odom)"
+        )
+    if bot.gated and not bot.arm():
+        raise RuntimeError("failed to arm safety gate before drive")
     t0 = bot.telemetry()
     o0 = t0.odom
     if o0 is None:
@@ -147,6 +156,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="exit 1 if planar displacement is below this",
     )
+    p.add_argument(
+        "--odom-timeout",
+        type=float,
+        default=8.0,
+        help="seconds to wait for live odometry before driving",
+    )
     return p
 
 
@@ -169,6 +184,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             vx=args.vx,
             vy=args.vy,
             w=args.w,
+            odom_timeout_s=args.odom_timeout,
         )
         print(result.summary_line())
         if args.min_dx is not None and result.dx < args.min_dx:
