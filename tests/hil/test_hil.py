@@ -6,10 +6,16 @@ run on the bench when the operator sets ``OHHO_HIL=1``.
 
 Usage::
 
+    ./scripts/run_hil.sh
+
+Or manually::
+
     OHHO_HIL=1 OHHO_OMNIBOT_PORT=/dev/ttyUSB0 OHHO_OMNIBOT_ARM=/dev/ttyACM0 \\
         python -m unittest discover -s tests/hil -v
     OHHO_HIL=1 OHHO_GO2_IFACE=eth0 \\
         python -m unittest discover -s tests/hil -v
+
+On Windows: ``powershell -File scripts/run_hil.ps1`` (set ``OHHO_OMNIBOT_*`` COM ports first).
 """
 
 from __future__ import annotations
