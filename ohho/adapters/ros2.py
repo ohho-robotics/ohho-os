@@ -101,6 +101,11 @@ class Ros2Transport(BaseTransport):
     def _address(self) -> str:
         return self.address.rstrip("/") if self.address else ""
 
+    @property
+    def odom_received(self) -> bool:
+        """True after at least one ``/odom`` message has been received."""
+        return self._latest_odom is not None
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
         node = self._resolve_node()

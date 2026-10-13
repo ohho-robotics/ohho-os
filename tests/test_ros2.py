@@ -294,9 +294,11 @@ class TestRos2Transport(unittest.TestCase):
     def test_odometry_subscription(self):
         tp, node, _ = self._make()
         tp.connect()
+        self.assertFalse(tp.odom_received)
         # Simulate /odom message
         odom_msg = FakeOdometry(x=1.0, y=2.0, theta=0.5, vx=0.1, vy=0.0, omega=0.2)
         node.inject_message("/odom", odom_msg)
+        self.assertTrue(tp.odom_received)
         t = tp.read()
         self.assertAlmostEqual(t.odom.x, 1.0)
         self.assertAlmostEqual(t.odom.y, 2.0)
