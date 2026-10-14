@@ -2,9 +2,9 @@
 
 Python package `ohho-os` (import `ohho`), version 1.1.3.
 Homepage: [ohho-robotics.com](https://ohho-robotics.com).
-Source: [ohho-robotics/ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
+Source: [ohho-robotics/ohho-os](https://github.com/ohho-robotics/ohho-os).
 
-[![CI](https://github.com/ohho-robotics/ohho-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/ohho-robotics/ohho-sdk/actions/workflows/ci.yml)
+[![CI](https://github.com/ohho-robotics/ohho-os/actions/workflows/ci.yml/badge.svg)](https://github.com/ohho-robotics/ohho-os/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 ## Install
@@ -196,6 +196,10 @@ root.
 Apache-2.0. The full text is [`LICENSE`](LICENSE).
 
 ## Releasing
+
+See [docs/RELEASING.md](docs/RELEASING.md) for PyPI trusted-publisher settings
+(owner `ohho-robotics`, repo `ohho-os`, workflow `release.yml`, environment
+`pypi`) and the TestPyPI `workflow_dispatch` dry run.
 
 ```bash
 git tag v1.1.3
