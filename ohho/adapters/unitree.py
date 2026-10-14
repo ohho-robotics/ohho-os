@@ -20,11 +20,23 @@ from typing import Callable, Optional, Tuple
 
 from ..registry import RobotSpec
 from ..schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
+from ..safety import normalize_action
 from ..transport import BaseTransport
 from .errors import AdapterUnavailable
 
 
 # ── pure, testable protocol mapping ────────────────────────────────────────────
+def sport_mode_to_posture(mode: int) -> str:
+    """Map Go2 ``SportModeState.mode`` (unitree_ros2 sportmodestate) to a label."""
+    if mode in (5, 7):
+        return "lying"
+    if mode == 10:
+        return "sitting"
+    if mode in (0, 1, 2, 3, 8):
+        return "standing"
+    return "unknown"
+
+
 def velocity_to_move(vel: Velocity) -> Tuple[float, float, float]:
     """Map a unified ``Velocity`` to Unitree ``SportClient.Move(vx, vy, vyaw)``."""
     return (vel.linear_x, vel.linear_y, vel.angular_z)
@@ -59,6 +71,8 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     for key in ("error_code", "body_height", "mode"):
         if key in state:
             custom[key] = state[key]
+    if "mode" in state:
+        custom["posture"] = sport_mode_to_posture(int(state["mode"]))
     return Telemetry(odom=odom, battery=state.get("battery"), custom=custom)
 
 
@@ -262,6 +276,21 @@ class UnitreeDdsTransport(BaseTransport):
 
     def send_joint_command(self, name: str, position: float) -> None:
         return  # Go2 has no arm; low-level joint control is a future adapter
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Map unified mode names to ``SportClient`` methods."""
+        action = normalize_action(name)
+        if action == "euler":
+            self.sport_command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+            return
+        if action not in _SPORT_METHODS:
+            raise ValueError(f"unsupported sport mode '{name}'")
+        self.sport_command(action)
 
     def sport_command(self, name: str, *args: float) -> None:
         """Call a sport-mode action (``"stand_up"``, ``"euler"``, …) on the client.
