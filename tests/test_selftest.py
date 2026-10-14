@@ -22,8 +22,10 @@ from ohho.selftest import (
     check_serial_link,
     check_sts3215_servos,
     check_wheel_spin_encoders,
+    default_hardware_transport_uri,
     default_report_path,
     format_report_text,
+    profile_for_robot,
     run_selftest,
 )
 
@@ -350,6 +352,38 @@ class TestSelfTestReportAndRunner(unittest.TestCase):
         p = default_report_path()
         self.assertTrue(re.match(r"^selftest-\d{8}-\d{6}\.json$", p))
 
+    def test_profile_for_go2_is_legged(self):
+        spec = get_spec("unitree-go2")
+        profile = profile_for_robot(spec)
+        self.assertEqual(profile.id, "legged_go2")
+        self.assertNotIn("wheel_spin_encoders", profile.check_ids)
+        self.assertNotIn("sts3215_servos", profile.check_ids)
+
+    def test_run_selftest_go2_sim_only_legged_checks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = os.path.join(tmpdir, "go2-sim.json")
+            report = run_selftest(
+                robot="unitree-go2",
+                sim=True,
+                out_path=out_file,
+            )
+            self.assertEqual(report.mode, "sim")
+            self.assertEqual(report.summary["profile"], "legged_go2")
+            self.assertNotIn("wheel_spin_encoders", report.checks)
+            self.assertNotIn("sts3215_servos", report.checks)
+            self.assertIn("dds_link", report.checks)
+            self.assertEqual(report.checks["dds_link"].status, "PASS")
+            self.assertEqual(report.checks["leg_motors"].status, "PASS")
+            self.assertEqual(report.checks["stand_lie_cycle"].status, "SKIP")
+            self.assertEqual(report.overall_status, "PASS")
+
+    def test_default_hardware_uri_go2_and_transport_override(self):
+        spec = get_spec("unitree-go2")
+        uri = default_hardware_transport_uri(spec)
+        self.assertTrue(uri.startswith("dds://"))
+        custom = default_hardware_transport_uri(spec, transport_uri="dds://lo?domain=1")
+        self.assertEqual(custom, "dds://lo?domain=1")
+
     def test_run_selftest_sim_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             out_file = os.path.join(tmpdir, "test-report.json")
@@ -631,6 +665,31 @@ class TestSelftestHonestyBugbotRegressions(unittest.TestCase):
                 self.assertEqual(data["mode"], "hardware")
                 self.assertEqual(data["overall_status"], "FAIL")
                 self.assertEqual(data["summary"]["failed"], 1)
+
+    def test_go2_hardware_broken_transport_fails_not_sim_pass(self):
+        with patch(
+            "ohho.adapters.resolve_transport", side_effect=RuntimeError("dds down")
+        ):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out_path = os.path.join(tmpdir, "go2-hw-fail.json")
+                with self.assertRaises(RuntimeError):
+                    run_selftest(
+                        "unitree-go2",
+                        sim=False,
+                        transport_uri="dds://lo?domain=1",
+                        out_path=out_path,
+                    )
+                with open(out_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.assertEqual(data["mode"], "hardware")
+                self.assertEqual(data["overall_status"], "FAIL")
+                self.assertEqual(data["checks"]["dds_link"]["status"], "FAIL")
+                self.assertNotIn("wheel_spin_encoders", data["checks"])
+                self.assertNotEqual(
+                    data["overall_status"],
+                    "PASS",
+                    "broken hardware transport must not report sim PASS",
+                )
 
     def test_finding_6_cli_hardware_all_skip_exits_code_3(self):
         all_skip_report = SelfTestReport(
