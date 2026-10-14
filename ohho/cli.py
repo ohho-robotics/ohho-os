@@ -37,7 +37,7 @@ def _cmd_doctor(args) -> int:
     print(f"  device      : {resolve_device('auto')}")
     print(f"  robots      : {', '.join(s.id for s in list_specs())}")
     brain = (
-        "harness — full perceive→reason→act→reflect"
+        "harness -- full perceive->reason->act->reflect"
         if harness_available()
         else "scripted fallback  (install 'ohho-os[agent]' + repo agent_engine)"
     )
@@ -247,6 +247,24 @@ def _cmd_sim_loop(args) -> int:
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+
+def _cmd_sim_demo(args) -> int:
+    from .sim_demo import SimDemoHarness
+
+    harness = SimDemoHarness(
+        robot_id=args.robot,
+        transport_uri=args.transport,
+        sim_mode=args.sim_mode,
+        fast=args.fast,
+        goal=args.goal,
+        out_path=args.out if args.out else None,
+    )
+    if args.check_overlays:
+        harness.print_overlays_checklist()
+    res = harness.run()
+    overall = res.get("summary", {}).get("overall_result", "FAIL")
+    return 0 if overall == "PASS" else 1
 
 
 def _cmd_market(args) -> int:
@@ -617,6 +635,49 @@ def build_parser() -> argparse.ArgumentParser:
         help="run in mock mode (no torch or GPU dependencies required)",
     )
     sl.set_defaults(func=_cmd_sim_loop)
+
+    sd = sub.add_parser(
+        "sim-demo",
+        help="run OHH-134 sim demo harness (typed goal -> agent -> Go2 in MuJoCo)",
+    )
+    sd.add_argument(
+        "--robot",
+        default="unitree-go2",
+        help="robot id to evaluate (default: unitree-go2)",
+    )
+    sd.add_argument(
+        "--transport",
+        default="dds://lo?domain=1",
+        help="transport URI (default: dds://lo?domain=1)",
+    )
+    sd.add_argument(
+        "--sim",
+        "--mock",
+        action="store_true",
+        dest="sim_mode",
+        help="run in simulated loopback mode (safe for CI and offline machines)",
+    )
+    sd.add_argument(
+        "--fast",
+        action="store_true",
+        help="run without sleep delays (fast execution for automated tests/CI)",
+    )
+    sd.add_argument(
+        "--goal",
+        default="Stand up, drive forward 0.3 m, then stop and lie down.",
+        help="typed natural language goal prompt",
+    )
+    sd.add_argument(
+        "--out",
+        default="",
+        help="path to write evaluation JSON report (default: print summary only)",
+    )
+    sd.add_argument(
+        "--check-overlays",
+        action="store_true",
+        help="print video recording and overlays checklist for Varun",
+    )
+    sd.set_defaults(func=_cmd_sim_demo)
 
     mk = sub.add_parser("market", help="list and run robot skills")
     mk_sub = mk.add_subparsers(dest="action")
