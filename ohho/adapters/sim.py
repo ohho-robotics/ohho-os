@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from .. import capabilities as caps
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
@@ -82,6 +83,7 @@ class SimTransport(BaseTransport):
             "rear_right": 0.0,
         }
         self._estopped = False
+        self._posture = "lying" if spec.has(caps.LEGGED_POSE) else "standing"
         self._state = ConnectionState.IDLE
         self._connected_since: float | None = None
         self._thread: threading.Thread | None = None
@@ -112,7 +114,24 @@ class SimTransport(BaseTransport):
     def send_velocity(self, vel: Velocity) -> None:
         if self._estopped:
             return
+        if self.spec.has(caps.LEGGED_POSE) and self._posture == "lying":
+            return
         self._cmd = vel
+
+    def send_mode(self, name: str, **params: float) -> None:
+        if not self.spec.has(caps.LEGGED_POSE):
+            return
+        action = name.strip().lower().replace("-", "_").replace(" ", "_")
+        if action in ("stand_up", "balance_stand", "recovery_stand"):
+            self._posture = "standing"
+        elif action in ("stand_down", "damp"):
+            self._posture = "lying"
+        elif action == "sit":
+            self._posture = "sitting"
+        elif action == "euler":
+            if self._posture == "lying":
+                return
+            self._posture = "standing"
 
     def send_motor(self, fl: int, fr: int, rl: int, rr: int) -> None:
         """Command raw 4-wheel velocities (int16 each) in sim."""
@@ -234,6 +253,8 @@ class SimTransport(BaseTransport):
             "wheel_encoders": dict(self._wheel_encoders),
             "imu_rate": self.get_imu_rate(),
         }
+        if self.spec.has(caps.LEGGED_POSE):
+            custom["posture"] = self._posture
         return Telemetry(
             odom=odom,
             joints=joints,
