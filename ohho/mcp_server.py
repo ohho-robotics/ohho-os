@@ -1,10 +1,15 @@
-"""MCP JSON-RPC server for on-robot tools (stdio transport, stdlib only)."""
+"""MCP JSON-RPC server for on-robot tools (stdio transport, stdlib only).
+
+Handlers live in :mod:`ohho.mcp_tools`. That includes the OHH-173 on-robot
+catalog and the five OHH-47 Link v0 sim tools (``connect``, ``drive``,
+``telemetry``, ``nav_goto``, ``look``), which accept ``sim://`` only.
+"""
 
 from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 
 from . import __version__
 from .mcp_tools import RobotSession, build_tools, tools_by_name
@@ -71,7 +76,11 @@ class McpServer:
 
     @staticmethod
     def _err(req_id: Any, code: int, message: str) -> Dict[str, Any]:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": code, "message": message},
+        }
 
 
 def run_stdio(session: Optional[RobotSession] = None) -> int:

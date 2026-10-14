@@ -1,6 +1,8 @@
 # OhhO OS MCP server (Link v0)
 
-Honest, small surface: **five tools** backed by the real Python SDK against **`sim://` only**. No hardware links, no fictional tool catalog.
+`ohho mcp` is the on-robot stdio server from OHH-173 (`ohho/mcp_server.py`,
+`ohho/mcp_tools.py`). OHH-47 adds **five tools** backed by the real Python SDK
+against **`sim://` only**.
 
 | Tool | What it does |
 |------|----------------|
@@ -10,17 +12,14 @@ Honest, small surface: **five tools** backed by the real Python SDK against **`s
 | `nav_goto` | Native `Navigator.navigate_to` |
 | `look` | `SimPerceptor.look` + spatial memory |
 
-Install:
+The same process also serves the OHH-173 on-robot catalog (`connect.listRobots`,
+`connect.connect`, `bridge.listAdapters`, and the other on-robot tools). The
+five tools above refuse any session that is not simulated.
+
+No extra package is required — the server is stdlib:
 
 ```bash
-pip install -e '.[mcp]'
-ohho doctor   # should list mcp: ready — 5 tools …
-```
-
-Run (stdio — how Claude Desktop and Cursor spawn MCP servers):
-
-```bash
-ohho mcp
+ohho mcp --sim
 ```
 
 ## Claude Desktop
@@ -38,15 +37,11 @@ Add an MCP server in **Cursor Settings → MCP** or edit your user `mcp.json`. S
 With Node installed:
 
 ```bash
-npx @modelcontextprotocol/inspector ohho mcp
+npx @modelcontextprotocol/inspector ohho mcp --sim
 ```
 
 Connect, call `connect` with `{"robot":"omnibot","transport":"sim://"}`, then `telemetry` or `drive`.
 
-## Human TODO
-
-- Record a short GIF of an LLM (via MCP) driving the sim robot and attach it to the OHH-47 issue / marketing — **not** generated or faked in CI.
-
 ## Safety
 
-This server **refuses** non-`sim` transports at `connect`. It does not expose `arm`, `release_stop`, or raw adapter commands.
+The Link v0 tools **refuse** non-`sim` transports at `connect`, and refuse `drive`, `telemetry`, `nav_goto`, and `look` unless the session robot is simulated. They do not expose `arm`, `release_stop`, or raw adapter commands.

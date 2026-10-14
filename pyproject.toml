@@ -42,7 +42,6 @@ unitree = ["cyclonedds>=0.10"]               # Unitree DDS adapter (G1, Go2, H1,
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0"]  # serve policies over REST or WebSocket
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
-mcp = ["mcp>=1.0"]                              # ohho mcp — stdio MCP server (sim tools)
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
 ros2 = []                                    # rclpy ships with your ROS 2 distro — source it, then install this extra
 dev = ["pytest>=7", "coverage>=7"]
@@ -59,7 +58,6 @@ all = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
   "websockets>=11.0",
-  "mcp>=1.0",
 ]
 
 [project.urls]

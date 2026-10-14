@@ -59,7 +59,7 @@
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
-| **MCP (`ohho mcp`)** | ✅ **OHH-47 Link v0** — stdio MCP with **5** real sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`); `[mcp]` extra; docs `docs/mcp.md` |
+| **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): five real sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`; docs `docs/mcp.md` |
 | CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest mcp` |
 | Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 383 tests, OK (skipped=7). |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
@@ -186,12 +186,16 @@ sdk/
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── mcp_server.py     # stdio JSON-RPC MCP server (OHH-173; tools from mcp_tools)
+│   ├── mcp_tools.py      # on-robot catalog + five real sim tools (OHH-47)
+│   ├── mcp_split.py      # hosted vs on-robot MCP product sets
+│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/mcp; main()
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   └── mcp.md            # stdio MCP server: five sim tools + on-robot catalog
 ├── scripts/
 │   ├── check_classifiers.py
 │   └── sim_loop.py       # one-liner reproducible sim loop runner
