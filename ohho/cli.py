@@ -52,6 +52,7 @@ def _cmd_doctor(args) -> int:
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
+    print("  cloud       : aws skeleton, dry-run (ohho cloud start)")
     return 0
 
 
@@ -165,6 +166,29 @@ def _cmd_sim_down(args) -> int:
     from .sessions import run_sim_down
 
     return run_sim_down(robot_id=args.robot, target=args.target)
+
+
+def _cmd_cloud_start(args) -> int:
+    from .cloud import run_cloud_start
+
+    return run_cloud_start(
+        robot_id=args.robot,
+        provider=args.provider,
+        region=args.region,
+        live=args.live,
+    )
+
+
+def _cmd_cloud_status(args) -> int:
+    from .cloud import run_cloud_status
+
+    return run_cloud_status(robot_id=args.robot, provider=args.provider, live=args.live)
+
+
+def _cmd_cloud_stop(args) -> int:
+    from .cloud import run_cloud_stop
+
+    return run_cloud_stop(robot_id=args.robot, provider=args.provider, live=args.live)
 
 
 def _cmd_robot_announce(args) -> int:
@@ -575,7 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         default="local",
         choices=["local", "cloud"],
-        help="local registers this PC; cloud needs OHH-216",
+        help="local registers this PC; cloud does not start a VM (use ohho cloud)",
     )
     s_up.add_argument(
         "--host",
@@ -601,7 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         default="local",
         choices=["local", "cloud"],
-        help="cloud needs OHH-216 and removes nothing",
+        help="cloud removes nothing here; use ohho cloud stop",
     )
     s_down.set_defaults(func=_cmd_sim_down)
 
@@ -780,6 +804,63 @@ def build_parser() -> argparse.ArgumentParser:
     )
     an.add_argument("--webrtc", default=None, help="WebRTC signaling URL")
     an.set_defaults(func=_cmd_robot_announce)
+
+    cl = sub.add_parser(
+        "cloud",
+        help="cloud sim (start, status, stop). The AWS adapter is dry-run",
+    )
+    cl_sub = cl.add_subparsers(dest="cloud_command", required=True)
+    cl_start = cl_sub.add_parser(
+        "start",
+        help="start a cloud sim, or print an AWS dry-run plan and create no VM",
+    )
+    cl_start.add_argument("--robot", default="omnibot")
+    cl_start.add_argument(
+        "--provider",
+        default="aws",
+        choices=["aws", "fake"],
+        help="aws is a dry-run skeleton; fake is an in-memory provider for tests",
+    )
+    cl_start.add_argument(
+        "--region",
+        default=None,
+        help="provider region (default: eu-west-2, London)",
+    )
+    cl_start.add_argument(
+        "--live",
+        action="store_true",
+        help="request a live VM; this build refuses and creates nothing",
+    )
+    cl_start.set_defaults(func=_cmd_cloud_start)
+    cl_status = cl_sub.add_parser(
+        "status",
+        help="show the cloud sim; stop it if idle or over the monthly cap",
+    )
+    cl_status.add_argument("--robot", default="omnibot")
+    cl_status.add_argument(
+        "--provider",
+        default="aws",
+        choices=["aws", "fake"],
+    )
+    cl_status.add_argument(
+        "--live",
+        action="store_true",
+        help="refused for AWS; status still reads the local ledger",
+    )
+    cl_status.set_defaults(func=_cmd_cloud_status)
+    cl_stop = cl_sub.add_parser("stop", help="stop a cloud sim and remove its session")
+    cl_stop.add_argument("--robot", default="omnibot")
+    cl_stop.add_argument(
+        "--provider",
+        default="aws",
+        choices=["aws", "fake"],
+    )
+    cl_stop.add_argument(
+        "--live",
+        action="store_true",
+        help="refused for AWS live calls; stop still updates the local ledger",
+    )
+    cl_stop.set_defaults(func=_cmd_cloud_stop)
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(

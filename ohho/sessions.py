@@ -51,7 +51,8 @@ KINDS = frozenset({KIND_SIM, KIND_REAL})
 TARGETS = frozenset({TARGET_LOCAL, TARGET_CLOUD, TARGET_ROBOT})
 
 CLOUD_TARGET_MESSAGE = (
-    "ohho sim up --target cloud needs OHH-216. No cloud VM was created."
+    "ohho sim up --target cloud needs OHH-216. No cloud VM was created. "
+    "Use ohho cloud start."
 )
 OHH204_COMPOSE_HINT = (
     "docker compose --profile gpu -f ohho/sim/docker-compose.yml up -d"

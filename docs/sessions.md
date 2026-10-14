@@ -189,13 +189,15 @@ ohho sim up --robot omnibot --target cloud
 ohho sim down --target cloud
 ```
 
-Both exit with code 2 and print:
+Both exit with code 2. Nothing is upserted and no VM is provisioned. The
+message is:
 
 ```text
-ohho sim up --target cloud needs OHH-216. No cloud VM was created.
+ohho sim up --target cloud needs OHH-216. No cloud VM was created. Use ohho cloud start.
 ```
 
-Nothing is upserted and no VM is provisioned.
+The orchestrator is `ohho cloud start|status|stop`. The AWS adapter is
+dry-run and still creates no VM. See [`docs/cloud-sim.md`](cloud-sim.md).
 
 ## OhhO-VR SessionClient contract
 
@@ -314,6 +316,9 @@ token, lowercase hex, compared to `token_hash` ordinal-ignore-case. A
 mismatch means the headset has a different pairing code than the PC that
 registered the session.
 
-Cloud rows will not appear until OHH-216. An empty `webrtc_signal_url` on
+A cloud row appears when `ohho cloud start` actually starts a sim
+(`--provider fake` in tests, or a future live provider). The AWS adapter
+is dry-run and does not insert a row. An empty `webrtc_signal_url` on
 a local sim is expected. The real-robot signaling URL may answer 503 until
-OHH-210; keep the MJPEG `video_urls` fallback.
+OHH-210; keep the MJPEG `video_urls` fallback. Cloud video uses
+`https://<host>/video/stream` on port 443. See `docs/cloud-sim.md`.

@@ -1,0 +1,48 @@
+# OHH-216 gateway template. Placeholders only. Do not put a real token here.
+#
+# Caddy obtains a Let's Encrypt certificate automatically when
+# OHHO_CLOUD_DOMAIN is a public DNS name and ports 80 and 443 reach this VM.
+# Leave certificate issuance on Caddy's public default. Do not switch it to an internal CA.
+#
+# TODO Varun: set OHHO_ACME_EMAIL in the Caddy environment. A global block
+# such as `{ email ops@example.com }` is optional and is left unset so this
+# file contains no address.
+#
+# Fail closed: refuse to start Caddy until OHHO_GATEWAY_TOKEN and
+# OHHO_CLOUD_DOMAIN are set. An empty token must not authorize anyone.
+# The headset sends the OHH-196 pairing token as ?token= or
+# Authorization: Bearer. If both are present they must match. The token is
+# not forwarded by this file; the reverse_proxy below does not copy the query.
+
+{$OHHO_CLOUD_DOMAIN} {
+	encode gzip
+	header {
+		Referrer-Policy "no-referrer"
+		Cache-Control "no-store"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	@authorized expression {http.request.uri.query.token} != "" && {http.request.uri.query.token} == "{$OHHO_GATEWAY_TOKEN}" && "{$OHHO_GATEWAY_TOKEN}" != "" && ({http.request.header.Authorization} == "" || {http.request.header.Authorization} == "Bearer {$OHHO_GATEWAY_TOKEN}") || {http.request.header.Authorization} == "Bearer {$OHHO_GATEWAY_TOKEN}" && "{$OHHO_GATEWAY_TOKEN}" != "" && ({http.request.uri.query.token} == "" || {http.request.uri.query.token} == "{$OHHO_GATEWAY_TOKEN}")
+
+	handle @authorized {
+		handle /rosbridge* {
+			reverse_proxy 127.0.0.1:9090
+		}
+		handle /video/* {
+			uri strip_prefix /video
+			reverse_proxy 127.0.0.1:8080
+		}
+		handle /foxglove* {
+			reverse_proxy 127.0.0.1:8765
+		}
+		handle /webrtc/* {
+			respond "OHH-210" 503
+		}
+		respond "not found" 404
+	}
+
+	handle {
+		respond "unauthorized" 401
+	}
+}

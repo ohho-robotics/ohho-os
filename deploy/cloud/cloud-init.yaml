@@ -1,0 +1,43 @@
+#cloud-config
+# OHH-216 user-data template. No secrets. This repository never launches it.
+#
+# Before the first boot, copy deploy/cloud/ to /opt/ohho on the guest
+# (Caddyfile, turnserver.conf, start-sim.sh, idle-watch.sh). Write
+# /etc/ohho/cloud.env mode 0600 from cloud.env.example. Do not commit that file.
+#
+# Default image, also the default in start-sim.sh:
+#   ghcr.io/ohho-robotics/omnibot-sim:latest
+#
+# TODO Varun: pick an Ubuntu 24.04 LTS AMI in eu-west-2. This file does not
+# name an AMI id. Install the NVIDIA driver and nvidia-container-toolkit
+# before start-sim.sh. Confirm the GHCR tag is the one OHH-204 published.
+
+package_update: true
+packages:
+  - docker.io
+  - caddy
+  - coturn
+  - ca-certificates
+
+write_files:
+  - path: /etc/ohho/cloud.env.example
+    permissions: "0600"
+    content: |
+      OHHO_CLOUD_DOMAIN=REPLACE_WITH_OHHO_CLOUD_DOMAIN
+      OHHO_GATEWAY_TOKEN=REPLACE_WITH_OHHO_GATEWAY_TOKEN
+      OHHO_TURN_SECRET=REPLACE_WITH_OHHO_TURN_SECRET
+      OHHO_SIM_IMAGE=ghcr.io/ohho-robotics/omnibot-sim:latest
+      OHHO_ACME_EMAIL=REPLACE_WITH_OHHO_ACME_EMAIL
+  - path: /etc/cron.d/ohho-idle
+    permissions: "0644"
+    content: |
+      * * * * * root /opt/ohho/idle-watch.sh
+
+runcmd:
+  - [install, -d, -m, "0755", /opt/ohho, /var/lib/ohho]
+  - [cp, /opt/ohho/Caddyfile, /etc/caddy/Caddyfile]
+  - [cp, /opt/ohho/turnserver.conf, /etc/turnserver.conf]
+  - [touch, /var/lib/ohho/heartbeat]
+  - [bash, /opt/ohho/start-sim.sh]
+  - [systemctl, enable, --now, caddy]
+  - [systemctl, enable, --now, coturn]
