@@ -93,7 +93,8 @@ refuses anything outside the allowlist (flips, jumps, dances, handstands and
 refusal is appended to `~/.ohho/safety/<date>.jsonl`.
 
 `sim://` is not gated. See [`docs/safety.md`](docs/safety.md) for the rules,
-profiles, config file and audit format.
+profiles, config file and audit format. For Unitree Go2 DDS (`dds://`), honest
+sim-vs-hardware status and HIL expectations are in [`docs/unitree.md`](docs/unitree.md).
 
 ## Pipeline in sim
 
