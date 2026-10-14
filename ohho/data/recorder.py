@@ -172,7 +172,9 @@ class Recorder:
             raise RuntimeError("no active episode — call start_episode() first")
         state = _telemetry_to_state(self.robot)
         action = self._last_action[:]
-        ts = time.monotonic() - (self._t0 or 0.0)
+        # Wall clock can collapse to 0.0 when frames are captured back-to-back (sim loop);
+        # LeRobot expects timestamps spaced by 1/fps within each episode.
+        ts = self._frame_idx / self.fps
         frame = Frame(
             observation_state=state,
             action=action,
