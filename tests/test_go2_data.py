@@ -5,6 +5,7 @@ video encoding, and 10-episode sim teleop via sim-serve (OHH-129).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import tempfile
@@ -22,6 +23,36 @@ from ohho.registry import get_spec
 from ohho.robot import Robot
 from ohho.runtime import NativeRuntime
 from ohho.safety import SafetyGate
+
+
+def _has_numpy() -> bool:
+    return importlib.util.find_spec("numpy") is not None
+
+
+def _has_websockets() -> bool:
+    return importlib.util.find_spec("websockets") is not None
+
+
+def _has_pyarrow() -> bool:
+    return importlib.util.find_spec("pyarrow") is not None
+
+
+def _has_lerobot() -> bool:
+    return importlib.util.find_spec("lerobot") is not None
+
+
+def _has_video_encode() -> bool:
+    return (
+        importlib.util.find_spec("av") is not None
+        or importlib.util.find_spec("imageio") is not None
+    )
+
+
+_GO2_VIDEO_SKIP = "numpy + av or imageio required — install [data] and `pip install av`"
+_GO2_TELEOP_SKIP = (
+    "websockets, numpy, pyarrow, av|imageio, lerobot required — "
+    "[sim-serve], [data], `pip install av`, [arm] extras"
+)
 
 
 def _go2_bot():
@@ -131,6 +162,10 @@ class TestGo2Schema(unittest.TestCase):
             self.assertAlmostEqual(loaded_frames[0].action_raw[0], 10.0)
             self.assertLessEqual(loaded_frames[0].action[0], 1.5)
 
+    @unittest.skipUnless(
+        _has_numpy() and _has_video_encode(),
+        _GO2_VIDEO_SKIP,
+    )
     def test_front_camera_video_mp4_encoding(self):
         bot = _go2_bot()
         step_count = 0
@@ -217,6 +252,14 @@ class TestGo2Schema(unittest.TestCase):
 class TestGo2SimTeleop10Episodes(unittest.TestCase):
     """OHH-129 Acceptance test: 10 teleop episodes in sim via sim-serve."""
 
+    @unittest.skipUnless(
+        _has_websockets()
+        and _has_numpy()
+        and _has_pyarrow()
+        and _has_video_encode()
+        and _has_lerobot(),
+        _GO2_TELEOP_SKIP,
+    )
     def test_record_10_teleop_episodes_and_lerobot_load(self):
         with tempfile.TemporaryDirectory() as tmp:
             dataset_path, stats = record_go2_teleop_episodes(
