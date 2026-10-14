@@ -15,6 +15,8 @@ ohho doctor
 ohho sim --robot omnibot --seconds 2
 ```
 
+Full CLI reference: [`docs/cli.md`](docs/cli.md).
+
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
 adapters it can import, and the built-in robot ids. `ohho sim` connects with
