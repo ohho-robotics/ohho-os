@@ -9,11 +9,14 @@ Protocol:
         - ``joints``: ``{"<joint_name>": <radians>, ...}``
         - ``deadman``: boolean
         - ``estop``: boolean
+        - ``mode`` (optional): ``"stand"`` | ``"lie_down"`` | ``"recover"`` — mapped to
+          allowlisted high-level actions on a connected :class:`~ohho.robot.Robot`.
 
     Server sends:
         - ``odom``: ``{"x": float, "y": float, "yaw": float}``
         - ``joints``: ``{"<joint_name>": float, ...}``
-        - ``backend``: ``"sim"`` or ``"ros2"``
+        - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
+        - ``posture`` / ``battery`` (optional, when the robot reports them)
         - either ``camera``: base64-encoded JPEG or ``no_camera: true``
 
 Safety invariants:
@@ -31,6 +34,15 @@ import os
 import threading
 import time
 from typing import Any, Optional
+
+from .schema import Telemetry
+
+# Browser / VR teleop posture commands → SafetyGate allowlisted sport actions.
+TELEOP_CLIENT_MODES: dict[str, str] = {
+    "stand": "stand_up",
+    "lie_down": "stand_down",
+    "recover": "recovery_stand",
+}
 
 
 class SimServeUnavailable(RuntimeError):
@@ -91,6 +103,41 @@ def parse_velocity(val: Any) -> tuple[float, float, float]:
     return vx, vy, w
 
 
+def teleop_mode_to_action(mode: Any) -> Optional[str]:
+    """Map a client ``mode`` string to a sport action name, or ``None`` if unknown."""
+    if not isinstance(mode, str) or not mode.strip():
+        return None
+    return TELEOP_CLIENT_MODES.get(mode.strip().lower())
+
+
+def posture_from_telemetry(t: Telemetry) -> Optional[str]:
+    """Best-effort human-readable posture for teleop UI (robot-agnostic)."""
+    custom = t.custom or {}
+    if "posture" in custom:
+        return str(custom["posture"])
+    body_h = custom.get("body_height")
+    if isinstance(body_h, (int, float)):
+        if body_h < 0.12:
+            return "lying"
+        if body_h > 0.2:
+            return "standing"
+    mode = custom.get("mode")
+    if mode is not None:
+        return str(mode)
+    return None
+
+
+def telemetry_extras(t: Telemetry) -> dict[str, Any]:
+    """Optional fields merged into WebSocket telemetry broadcasts."""
+    out: dict[str, Any] = {}
+    if t.battery is not None:
+        out["battery"] = float(t.battery)
+    posture = posture_from_telemetry(t)
+    if posture is not None:
+        out["posture"] = posture
+    return out
+
+
 def is_ros2_available() -> bool:
     """True if rclpy or ROS environment or OHHO_ROSBRIDGE is set."""
     import importlib.util
@@ -109,16 +156,22 @@ class SimServe:
         self,
         backend: str = "sim",
         robot: str = "omnibot",
+        transport: Optional[str] = None,
         host: str = "0.0.0.0",
         port: int = 8765,
         rosbridge: str = "ws://localhost:9090",
         rate_hz: float = 20.0,
     ) -> None:
-        if backend not in ("sim", "ros2"):
-            raise ValueError(f"unsupported backend '{backend}' (choose: sim, ros2)")
+        if backend not in ("sim", "ros2", "robot"):
+            raise ValueError(
+                f"unsupported backend '{backend}' (choose: sim, ros2, robot)"
+            )
+        if backend == "robot" and not transport:
+            raise ValueError("backend 'robot' requires a transport URI (--transport)")
 
         self.backend = backend
         self.robot_id = robot
+        self._transport_uri = transport
         self.host = host
         self.port = port
         self.rosbridge_url = rosbridge
@@ -166,12 +219,12 @@ class SimServe:
         self._loop = asyncio.get_running_loop()
         self._running = True
 
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             from .robot import Robot
 
-            self._bot = Robot.connect(
-                self.robot_id, transport="sim://", runtime="native"
-            )
+            uri = "sim://" if self.backend == "sim" else self._transport_uri
+            assert uri is not None
+            self._bot = Robot.connect(self.robot_id, transport=uri, runtime="native")
         elif self.backend == "ros2":
             self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
             await self._rosbridge_ws.send(
@@ -270,15 +323,7 @@ class SimServe:
         try:
             # Send initial telemetry immediately upon connection
             odom, joints = self._get_telemetry()
-            initial_msg: dict[str, Any] = {
-                "odom": odom,
-                "joints": joints,
-                "backend": self.backend,
-            }
-            if self._camera_frame is not None:
-                initial_msg["camera"] = self._camera_frame
-            else:
-                initial_msg["no_camera"] = True
+            initial_msg = self._telemetry_message(odom, joints)
             await websocket.send(json.dumps(initial_msg))
 
             async for raw in websocket:
@@ -319,6 +364,9 @@ class SimServe:
                 data["velocity"]
             )
 
+        if "mode" in data:
+            self._apply_teleop_mode(data["mode"])
+
         # Joint commands
         if "joints" in data and isinstance(data["joints"], dict):
             self._target_joints = {
@@ -356,15 +404,7 @@ class SimServe:
                 )
 
             odom, joints = self._get_telemetry()
-            msg: dict[str, Any] = {
-                "odom": odom,
-                "joints": joints,
-                "backend": self.backend,
-            }
-            if self._camera_frame is not None:
-                msg["camera"] = self._camera_frame
-            else:
-                msg["no_camera"] = True
+            msg = self._telemetry_message(odom, joints)
 
             payload = json.dumps(msg)
             if self._clients:
@@ -375,8 +415,38 @@ class SimServe:
 
     # ── Backend dispatch ──────────────────────────────────────────────────────
 
+    def _telemetry_message(
+        self, odom: dict[str, float], joints: dict[str, float]
+    ) -> dict[str, Any]:
+        msg: dict[str, Any] = {
+            "odom": odom,
+            "joints": joints,
+            "backend": self.backend,
+        }
+        if self._camera_frame is not None:
+            msg["camera"] = self._camera_frame
+        else:
+            msg["no_camera"] = True
+        if self._bot is not None:
+            try:
+                msg.update(telemetry_extras(self._bot.telemetry()))
+            except Exception:
+                pass
+        return msg
+
+    def _apply_teleop_mode(self, mode: Any) -> None:
+        if self._estopped:
+            return
+        action = teleop_mode_to_action(mode)
+        if action is None or self._bot is None:
+            return
+        transport = self._bot.transport
+        command = getattr(transport, "command", None)
+        if callable(command):
+            command(action)
+
     async def _apply_velocity(self, vx: float, vy: float, w: float) -> None:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 self._bot.drive(vx=vx, vy=vy, w=w)
         elif self.backend == "ros2":
@@ -396,7 +466,7 @@ class SimServe:
                     pass
 
     def _apply_joints(self, joints: dict[str, float]) -> None:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 for name, pos in joints.items():
                     self._bot.transport.send_joint_command(name, pos)
@@ -416,7 +486,7 @@ class SimServe:
                 self._loop.create_task(self._rosbridge_ws.send(json.dumps(joint_cmd)))
 
     def _on_estop_changed(self, estopped: bool) -> None:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 if estopped:
                     self._bot.emergency_stop()
@@ -433,7 +503,7 @@ class SimServe:
                 self._loop.create_task(self._rosbridge_ws.send(json.dumps(estop_msg)))
 
     def _get_telemetry(self) -> tuple[dict[str, float], dict[str, float]]:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 t = (
                     self._bot.transport.read()
@@ -496,6 +566,7 @@ class SimServe:
 def serve_sim(
     backend: str = "sim",
     robot: str = "omnibot",
+    transport: Optional[str] = None,
     host: str = "0.0.0.0",
     port: int = 8765,
     rosbridge: str = "ws://localhost:9090",
@@ -505,8 +576,9 @@ def serve_sim(
     """Serve a robot simulation or rosbridge gateway over WebSocket.
 
     Parameters:
-        backend: "sim" or "ros2".
-        robot: robot spec id (e.g. "omnibot").
+        backend: "sim", "ros2", or "robot".
+        robot: robot spec id (e.g. "omnibot", "unitree-go2").
+        transport: transport URI for the "robot" backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
         port: WebSocket server port.
         rosbridge: rosbridge WebSocket URL (for "ros2" backend).
@@ -516,6 +588,7 @@ def serve_sim(
     server = SimServe(
         backend=backend,
         robot=robot,
+        transport=transport,
         host=host,
         port=port,
         rosbridge=rosbridge,
