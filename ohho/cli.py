@@ -51,6 +51,9 @@ def _cmd_doctor(args) -> int:
     print(
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
+    from .mcp_tools import SIM_TOOL_NAMES
+
+    print(f"  mcp         : stdio (built-in) — sim tools: {', '.join(SIM_TOOL_NAMES)}")
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
     return 0
 
@@ -435,6 +438,23 @@ def _cmd_memory(args) -> int:
     return 1
 
 
+def _cmd_mcp(args) -> int:
+    from .mcp_server import run_stdio
+    from .mcp_tools import RobotSession
+
+    transport = "sim://" if args.sim else (args.transport or "sim://")
+    session = RobotSession(
+        robot_id=args.robot, transport=transport, runtime=args.runtime
+    )
+    if args.preconnect:
+        try:
+            session.connect()
+        except UnknownRobot as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    return run_stdio(session=session)
+
+
 def _cmd_selftest(args) -> int:
     from .selftest import default_report_path, format_report_text, run_selftest
 
@@ -719,6 +739,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow exit code 0 when all checks are skipped in hardware mode",
     )
     st.set_defaults(func=_cmd_selftest)
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="on-robot MCP server (stdio); sim tools: connect, drive, telemetry, nav_goto, look",
+    )
+    mcp.add_argument("--robot", default="omnibot", help="default robot id for tools")
+    mcp.add_argument(
+        "--transport",
+        default="",
+        help="default transport URI when not using --sim (e.g. serial:///dev/ttyUSB0)",
+    )
+    mcp.add_argument("--runtime", default="native", help="native | ros2 | auto")
+    mcp.add_argument(
+        "--sim",
+        action="store_true",
+        help="default to sim:// transport (safe for CI and headless)",
+    )
+    mcp.add_argument(
+        "--preconnect",
+        action="store_true",
+        help="connect before serving (uses --robot and transport)",
+    )
+    mcp.set_defaults(func=_cmd_mcp)
 
     return p
 
