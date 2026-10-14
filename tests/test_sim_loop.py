@@ -55,7 +55,7 @@ class TestSimLoop(unittest.TestCase):
             self.assertTrue((meta / "info.json").exists())
             self.assertTrue((meta / "tasks.jsonl").exists())
             self.assertTrue((meta / "episodes.jsonl").exists())
-            self.assertTrue((meta / "stats.json").exists())
+            self.assertTrue((meta / "episodes_stats.jsonl").exists())
 
             # Check data files
             data_dir = Path(saved_path) / "data" / "chunk-000"
@@ -69,6 +69,18 @@ class TestSimLoop(unittest.TestCase):
             self.assertEqual(reader.frame_count, 50)
             self.assertEqual(reader.state_dim, 9)
             self.assertEqual(reader.action_dim, 9)
+
+            with open(meta / "episodes_stats.jsonl", encoding="utf-8") as f:
+                stat_rows = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual(len(stat_rows), 5)
+            for row in stat_rows:
+                for key in ("observation.state", "action"):
+                    feat = row["stats"][key]
+                    self.assertEqual(feat["count"], [10])
+                    for stat_key in ("min", "max", "mean", "std"):
+                        val = feat[stat_key]
+                        self.assertEqual(len(val), 9)
+                        self.assertFalse(any(isinstance(x, list) for x in val))
 
     def test_validate_schema_success(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +297,51 @@ class TestSimLoop(unittest.TestCase):
                 self.assertIn("0 frames", str(cm.exception))
 
                 self.assertFalse(validate_lerobot_dataset(dataset_dir, mock=True))
+
+    def test_validate_lerobot_dataset_uses_info_repo_and_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset_dir = os.path.join(tmp, "dataset")
+            record_sim_episodes(
+                robot_id="omnibot",
+                num_episodes=1,
+                steps_per_episode=3,
+                output_dir=dataset_dir,
+            )
+
+            captured: dict = {}
+
+            class ValidDataset:
+                def __init__(self, *args, **kwargs):
+                    captured.update(kwargs)
+
+                def __len__(self):
+                    return 3
+
+            fake_mod = types.ModuleType("lerobot.datasets.lerobot_dataset")
+            fake_mod.LeRobotDataset = ValidDataset
+            fake_pkg = types.ModuleType("lerobot.datasets")
+            fake_pkg.LeRobotDataset = ValidDataset
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "lerobot": types.ModuleType("lerobot"),
+                    "lerobot.datasets": fake_pkg,
+                    "lerobot.datasets.lerobot_dataset": fake_mod,
+                    "lerobot.common.datasets.lerobot_dataset": fake_mod,
+                },
+            ):
+                prev = os.environ.pop("HF_HUB_OFFLINE", None)
+                try:
+                    self.assertTrue(validate_lerobot_dataset(dataset_dir, mock=False))
+                finally:
+                    if prev is not None:
+                        os.environ["HF_HUB_OFFLINE"] = prev
+
+            self.assertEqual(captured.get("repo_id"), "local/sim_loop")
+            self.assertEqual(captured.get("revision"), "v2.1")
+            self.assertEqual(captured.get("root"), dataset_dir)
+            self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), prev)
 
     def test_validation_strictness_non_mock_loader_success(self):
         with tempfile.TemporaryDirectory() as tmp:

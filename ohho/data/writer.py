@@ -1,6 +1,6 @@
-"""LeRobot v2.0 dataset writer — Parquet + meta JSON.
+"""LeRobot v2.1 dataset writer — Parquet + meta JSON.
 
-Writes episodes to disk in the standard LeRobot v2.0 layout::
+Writes episodes to disk in the standard LeRobot v2.1 layout::
 
     <root>/
       meta/
@@ -22,7 +22,7 @@ from typing import List
 
 from .recorder import Episode
 
-CODEBASE_VERSION = "2.0"
+CODEBASE_VERSION = "v2.1"
 CHUNK_SIZE = 1000
 
 
@@ -33,7 +33,7 @@ def write_dataset(
     fps: float,
     tasks: List[str],
 ) -> str:
-    """Write episodes to ``root`` in LeRobot v2.0 format. Returns the root path."""
+    """Write episodes to ``root`` in LeRobot v2.1 format. Returns the root path."""
     r = Path(root).expanduser()
     meta_dir = r / "meta"
     data_dir = r / "data" / "chunk-000"
@@ -43,7 +43,7 @@ def write_dataset(
     _write_tasks(meta_dir, tasks)
     _write_episodes(meta_dir, episodes)
     _write_info(meta_dir, episodes, repo_id, fps, tasks)
-    _write_stats(meta_dir, episodes)
+    _write_episodes_stats(meta_dir, episodes)
 
     use_parquet = _try_import_pyarrow() is not None
     for ep in episodes:
@@ -152,32 +152,47 @@ def _write_info(
         json.dump(info, f, indent=2)
 
 
-def _write_stats(meta_dir: Path, episodes: List[Episode]) -> None:
-    all_frames = [f for ep in episodes for f in ep.frames]
-    if not all_frames:
-        return
-    state_dim = episodes[0].state_dim if episodes else 0
-    action_dim = episodes[0].action_dim if episodes else 0
+def _feature_stats(rows: List[List[float]]) -> dict:
+    """Per-feature stats matching LeRobot v2.1 ``episodes_stats`` layout."""
+    if not rows:
+        return {}
+    n = len(rows)
+    dim = len(rows[0])
+    mins = [float(min(row[i] for row in rows)) for i in range(dim)]
+    maxs = [float(max(row[i] for row in rows)) for i in range(dim)]
+    means = [float(sum(row[i] for row in rows) / n) for i in range(dim)]
+    stds = [
+        float(
+            (sum((row[i] - means[i]) ** 2 for row in rows) / n) ** 0.5 if n > 0 else 0.0
+        )
+        for i in range(dim)
+    ]
+    # Vector features (dim > 1): flat length-dim lists, matching keepdims=False.
+    # Scalar features (dim == 1): length-1 lists, matching keepdims=True on 1-D data.
+    return {
+        "min": mins,
+        "max": maxs,
+        "mean": means,
+        "std": stds,
+        "count": [n],
+    }
 
-    stats = {}
-    if state_dim > 0:
-        state_cols = [
-            [f.observation_state[i] for f in all_frames] for i in range(state_dim)
-        ]
-        stats["observation.state"] = {
-            "min": [float(min(col)) for col in state_cols],
-            "max": [float(max(col)) for col in state_cols],
-            "mean": [float(sum(col) / len(col)) for col in state_cols],
-        }
-    if action_dim > 0:
-        action_cols = [[f.action[i] for f in all_frames] for i in range(action_dim)]
-        stats["action"] = {
-            "min": [float(min(col)) for col in action_cols],
-            "max": [float(max(col)) for col in action_cols],
-            "mean": [float(sum(col) / len(col)) for col in action_cols],
-        }
-    with open(meta_dir / "stats.json", "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2)
+
+def _write_episodes_stats(meta_dir: Path, episodes: List[Episode]) -> None:
+    """Write ``meta/episodes_stats.jsonl`` (LeRobot v2.1)."""
+    path = meta_dir / "episodes_stats.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        for ep in episodes:
+            if not ep.frames:
+                continue
+            state_rows = [f.observation_state for f in ep.frames]
+            action_rows = [f.action for f in ep.frames]
+            ep_stats = {
+                "observation.state": _feature_stats(state_rows),
+                "action": _feature_stats(action_rows),
+            }
+            line = {"episode_index": ep.episode_index, "stats": ep_stats}
+            f.write(json.dumps(line) + "\n")
 
 
 def _write_parquet(ep: Episode, fpath: Path) -> None:
