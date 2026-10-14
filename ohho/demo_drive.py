@@ -109,12 +109,15 @@ def run_drive(
     start_sim = getattr(tp, "start_sim", None)
     if stepped and callable(stop_sim):
         stop_sim()
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        bot.drive(vx=vx, vy=vy, w=w)
-        if stepped:
+    if stepped:
+        steps = max(1, int(round(seconds / period)))
+        for _ in range(steps):
+            bot.drive(vx=vx, vy=vy, w=w)
             step_fn(period)
-        else:
+    else:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            bot.drive(vx=vx, vy=vy, w=w)
             time.sleep(period)
     if stepped and callable(start_sim):
         start_sim()

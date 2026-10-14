@@ -166,12 +166,15 @@ def _cmd_drive(args) -> int:
         start_sim = getattr(tp, "start_sim", None)
         if stepped and callable(stop_sim):
             stop_sim()
-        end = time.monotonic() + args.seconds
-        while time.monotonic() < end:
-            bot.drive(vx=args.vx, vy=args.vy, w=args.w)
-            if stepped:
+        if stepped:
+            steps = max(1, int(round(args.seconds / period)))
+            for _ in range(steps):
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
                 step_fn(period)
-            else:
+        else:
+            end = time.monotonic() + args.seconds
+            while time.monotonic() < end:
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
                 time.sleep(period)
         if stepped and callable(start_sim):
             start_sim()
