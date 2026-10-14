@@ -5,13 +5,13 @@
 > with no prior context can understand what exists, why it's built this way, and
 > exactly what to do next. Keep it up to date as milestones land.
 
-> **This checkout is the ohho-sdk tree.** The Python package is at the
-> repository root. Paths written below as `sdk/` refer to that root
-> (`tests/`, not `sdk/tests/`). The TypeScript workspace is in `ts/` and
-> is unchanged; `tsc` fails there. The licence is Apache-2.0 (OHH-18).
+> **This checkout is ohho-os** (Python `ohho-os` at the repository root).
+> Paths written below as `sdk/` refer to that root (`tests/`, not `sdk/tests/`).
+> The TypeScript SDK moved to [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk);
+> `ts/README.md` points there. The licence is Apache-2.0 (OHH-18).
 
 - **Package:** `ohho-os` (imports as `ohho`) — repository root of
-  [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
+  [ohho-os](https://github.com/ohho-robotics/ohho-os).
 - **What it is:** the open-source, robot-agnostic engine that powers the OhhO
   platform. One API controls any robot, **with or without ROS**, and carries the
   whole stack from perception to training.
