@@ -283,7 +283,7 @@ def _cmd_market(args) -> int:
         finally:
             bot.disconnect()
         return 0
-    print("usage: ohho market [list|run]")
+    print("usage: ohho skills [list|run]  (alias: market)")
     return 1
 
 
@@ -618,14 +618,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sl.set_defaults(func=_cmd_sim_loop)
 
-    mk = sub.add_parser("market", help="list and run robot skills")
-    mk_sub = mk.add_subparsers(dest="action")
-    mk_sub.add_parser("list", help="list registered skills").set_defaults(action="list")
-    mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
-    _add_robot_args(mk_run)
-    mk_run.add_argument("skill_name", help="skill name (see 'ohho market list')")
-    mk_run.set_defaults(action="run")
-    mk.set_defaults(func=_cmd_market)
+    for cmd_name, cmd_help in (
+        ("skills", "local skill registry — list and run registered skills"),
+        ("market", "alias for skills (local skill registry)"),
+    ):
+        mk = sub.add_parser(cmd_name, help=cmd_help)
+        mk_sub = mk.add_subparsers(dest="action")
+        mk_sub.add_parser("list", help="list registered skills").set_defaults(
+            action="list"
+        )
+        mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
+        _add_robot_args(mk_run)
+        mk_run.add_argument("skill_name", help="skill name (see 'ohho skills list')")
+        mk_run.set_defaults(action="run")
+        mk.set_defaults(func=_cmd_market)
 
     nv = sub.add_parser("nav", help="native navigation: goto / explore / map")
     nv_sub = nv.add_subparsers(dest="action")
