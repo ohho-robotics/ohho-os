@@ -1,6 +1,6 @@
-# DRAFT — CV, ML and robotics
+# DRAFT — pending Varun review — CV, ML and robotics
 
-**Status:** draft for review. Do not send, export to PDF, or publish until the contact block and any employment or education lines are filled in by hand.
+**Status:** DRAFT — pending Varun review. Do not send, export to PDF, or publish until the contact block and any employment or education lines are filled in by hand.
 
 **Varun Vaidhiya**
 
@@ -59,8 +59,8 @@ https://github.com/ohho-robotics/OmniBot
 | Piece | Needs | Where it is documented |
 |---|---|---|
 | Kinematics, Yahboom codec, arm tick math, learning engine, agent engine, data engine tests | CPU | `cpu` job in `.github/workflows/ci.yml` |
-| LeRobot teleop record launch | The robot | `omnibot_lerobot` `teleop_record.launch.py` |
-| Nav2 and SLAM | The robot | `omnibot_navigation/` |
+| LeRobot teleop record launch | The robot | `omnibot_lerobot` `teleop_record.launch.py`. README marks this launch "On the physical robot (docs-test skips this)". |
+| Nav2 and SLAM | Gazebo, not the robot | README publishes local sim times: kitchen, desk, and door, 5/5 each (15.7/17.0/17.5 s, 18.8/20.0/21.6 s, 8.2/12.8/13.4 s, min/median/max). Pass rule: Nav2 success within 60 s and final `/odom` within 0.30 m and 0.50 rad. Local Docker, not a copied GitHub Actions table. The roadmap checkbox for the same item is still open. |
 | OpenVLA / SmolVLA weights | GPU (`torch` in `vla_engine/requirements.txt`) | `omnibot-ai-engines/vla_engine/README.md` |
 | Isaac Lab RL | GPU (`isaaclab`, `onnxruntime-gpu`) | `omnibot-ai-engines/rl_engine/README.md` |
 | Headless Gazebo Harmonic, `world:=flat` | ROS 2 Jazzy and Gazebo, not a GPU | `sim-smoke` job. Launch test expects `/odom`, `/scan`, `/imu`, and `/camera/front/image_raw` within 30 s, and `/cmd_vel` moving the **simulated** robot at least 0.2 m |

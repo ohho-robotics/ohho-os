@@ -1,6 +1,6 @@
-# DRAFT — CV, embedded and integration
+# DRAFT — pending Varun review — CV, embedded and integration
 
-**Status:** draft for review. Do not send, export to PDF, or publish until the contact block and any employment or education lines are filled in by hand.
+**Status:** DRAFT — pending Varun review. Do not send, export to PDF, or publish until the contact block and any employment or education lines are filled in by hand.
 
 **Varun Vaidhiya**
 

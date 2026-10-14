@@ -1,6 +1,6 @@
-# DRAFT — OmniBot project brief (about two pages)
+# DRAFT — pending Varun review — OmniBot project brief (about two pages)
 
-**Status:** draft for a friend to review. Not a paper, not a datasheet, and not a claim that the physical robot has passed bring-up.
+**Status:** DRAFT — pending Varun review. Not a paper, not a datasheet, and not a claim that the physical robot has passed bring-up.
 
 **Project:** OmniBot, OhhO's mecanum-wheel mobile manipulator, and the engine that drives it.
 **Author:** Varun Vaidhiya
@@ -46,7 +46,8 @@ Joint names shared by the registry and the arm driver: `arm_shoulder_pan`, `arm_
 | Android screenshots in `ohho.apk` | No | API 35 emulator. README: Home cards are demo data. Camera badge stays NO FEED until a JPEG arrives. |
 | Quest app | Needs the robot PC for teleop | Unity client only. 39 edit-mode tests exist; CI skips them until Unity licence secrets are set. No on-headset pass is recorded in the README. |
 | `ohho selftest` on hardware, `tests/hil/` | Real robot | Sim mode is in CI. Hardware mode is implemented and **not yet run** on the bench (`docs/selftest.md`: pending). HIL skips unless `OHHO_HIL=1`. |
-| Xbox teleop, physical cameras, physical arm, LeRobot recording on the robot, Nav2/SLAM | Real robot | Launch files exist. The OmniBot README lists them under "Needs hardware". This brief does not treat those launches as completed field trials. |
+| Xbox teleop, perception, physical arm, LeRobot record | Real robot | README heading: "On the physical robot (docs-test skips this)". No bench log is attached here. |
+| Nav2 + slam_toolbox | Simulated only | Apartment world, waypoints `kitchen`, `desk`, `door`. Local Docker times are in the table below. README: nothing in that section was run on the real robot. The roadmap checkbox is still open. |
 | OpenVLA / SmolVLA, Isaac Lab | GPU workstation | Requirement files. No reported training score in the READMEs used here. |
 
 The OmniBot README embeds photos and GIFs from `assets/` (including `PXL_20260505_121303728.jpg` and `Omnibot_demo1.gif`). Those files are not a substitute for the missing bench self-test or HIL log.
@@ -72,6 +73,29 @@ Design limits and CI assertions only. Nothing in this table is a measured tracki
 | Quest recording | 30 Hz JSONL on the headset | Client behaviour. Upload target is a bridge that is not in that repo. |
 | Android CI | `assembleDebug` and `test` | CI. Emulator screenshots, not a robot. |
 | PyPI | `ohho-os==1.1.2` installable from the documented release | Release note. 1.1.3 is the tree version. |
+
+### Gazebo Nav2 (published simulation times)
+
+Copied from the OmniBot README. Local `ros:jazzy-ros-base-noble` container, Mesa software rendering, 16 CPUs, real-time factor 1.0, `run_nav_scenarios.sh --repeat 5 kitchen desk door`. Time is Gazebo simulation time from goal acceptance to Nav2 `SUCCEEDED` (60 s limit). A pass also needs the final `/odom` pose within 0.30 m and 0.50 rad. These 15 runs are local logs, not a GitHub Actions artifact. The nightly `nav-sim` workflow is described as producing its own table; this draft does not copy one. Not the physical robot.
+
+| Scenario | Goal (map frame) | Passed | min / median / max (s) |
+|---|---|---|---|
+| `kitchen` | x -1.90, y 0.70, yaw 180 deg | 5/5 | 15.7 / 17.0 / 17.5 |
+| `desk` | x 2.55, y -0.45, yaw 90 deg | 5/5 | 18.8 / 20.0 / 21.6 |
+| `door` | x -0.30, y -1.45, yaw -90 deg | 5/5 | 8.2 / 12.8 / 13.4 |
+
+### Placeholders — not measured in these sources
+
+Leave these blank until a log exists. Do not fill them with estimates.
+
+| Result | Value |
+|---|---|
+| On-robot `ohho selftest` JSON | pending |
+| `OHHO_HIL=1` pass or fail | pending |
+| `ohho sim-loop` serve latency p50 and p95 | pending |
+| Policy success, grasp rate, or collision rate | pending |
+| Battery life, tracking error | pending |
+| Bill-of-materials prices | TBD in the OmniBot README |
 
 ## Links
 

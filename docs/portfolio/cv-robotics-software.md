@@ -1,6 +1,6 @@
-# DRAFT — CV, robotics software
+# DRAFT — pending Varun review — CV, robotics software
 
-**Status:** draft for review. Do not send, export to PDF, or publish until the contact block and any employment or education lines are filled in by hand.
+**Status:** DRAFT — pending Varun review. Do not send, export to PDF, or publish until the contact block and any employment or education lines are filled in by hand.
 
 **Varun Vaidhiya**
 

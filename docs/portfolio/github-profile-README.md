@@ -1,6 +1,6 @@
-# DRAFT — GitHub profile README
+# DRAFT — pending Varun review — GitHub profile README
 
-**Status:** draft text for the GitHub profile repository (`<user>/<user>`). Do not paste this onto the live profile until someone has checked the wording. This file does not publish anything.
+**Status:** DRAFT — pending Varun review. Text for the GitHub profile repository (`<user>/<user>`). Do not paste this onto the live profile until Varun has checked the wording. This file does not publish anything.
 
 Suggested profile name line: **Varun Vaidhiya**. Suggested one-line bio: robotics software for a mecanum mobile manipulator and a quadruped, with ROS 2 optional.
 
@@ -31,7 +31,7 @@ GitHub shows six pins. These four are the ones this draft asks for. Leave the ot
 
 I build the open-source stack behind [OhhO](https://ohho-robotics.com): a mecanum mobile manipulator, the Python engine that drives it with or without ROS 2, and the Quest and Android clients.
 
-The engine's base install is dependency-free. Non-simulated robots start disarmed behind a software safety gate. A lot of the automated checks run in simulation or on a fake ROS 2 node. Hardware-in-the-loop on the real robots is still open.
+The engine's base install is dependency-free. Non-simulated robots start disarmed behind a software safety gate. A lot of the automated checks run in simulation or on a fake ROS 2 node. The OmniBot README records local Gazebo Nav2 runs to the kitchen, desk, and door waypoints (5 of 5 each). Those are simulation times, not a bench trial. Hardware-in-the-loop on the real robots is still open.
 
 - [OmniBot](https://github.com/ohho-robotics/OmniBot) — ROS 2 Jazzy reference platform (Apache-2.0)
 - [ohho-os](https://github.com/ohho-robotics/ohho-os) — robot-agnostic engine, PyPI package `ohho-os` (1.1.2 is the published release; the tree is 1.1.3)
@@ -44,7 +44,7 @@ The engine's base install is dependency-free. Non-simulated robots start disarme
 ## Do not write on the profile
 
 - Star counts, download counts, or "used in production".
-- A latency, accuracy, or success-rate number. The sim loop computes p50 and p95 and does not publish a figure; its nightly workflow's first run is still described as pending.
+- A sim-loop latency, or a policy accuracy or grasp rate. The sim loop computes p50 and p95 and does not publish a figure; its nightly workflow's first run is still described as pending. The "5 of 5" Nav2 line is the OmniBot README's local Gazebo count, not a latency and not a field result.
 - "CI green" as a permanent badge claim inside the prose. The OhhO OS README says the CI workflow is green on `main` at the time that README was written. Prefer the workflow badge that GitHub renders, which can go red.
 - That Android Home metrics are live diagnostics. That repository's README says they are demo data.
 - That the 39 Quest edit-mode tests run in GitHub Actions today. They are skipped until Unity licence secrets are set.
