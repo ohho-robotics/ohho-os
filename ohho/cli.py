@@ -435,6 +435,21 @@ def _cmd_memory(args) -> int:
     return 1
 
 
+def _cmd_mcp(args) -> int:
+    from .mcp_server import run_stdio
+    from .mcp_tools import RobotSession
+
+    transport = "sim://" if args.sim else (args.transport or "sim://")
+    session = RobotSession(robot_id=args.robot, transport=transport, runtime=args.runtime)
+    if args.preconnect:
+        try:
+            session.connect()
+        except UnknownRobot as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    return run_stdio(session=session)
+
+
 def _cmd_selftest(args) -> int:
     from .selftest import default_report_path, format_report_text, run_selftest
 
@@ -719,6 +734,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow exit code 0 when all checks are skipped in hardware mode",
     )
     st.set_defaults(func=_cmd_selftest)
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="run the on-robot MCP server (stdio JSON-RPC)",
+    )
+    mcp.add_argument("--robot", default="omnibot", help="default robot id for tools")
+    mcp.add_argument(
+        "--transport",
+        default="",
+        help="default transport URI when not using --sim (e.g. serial:///dev/ttyUSB0)",
+    )
+    mcp.add_argument("--runtime", default="native", help="native | ros2 | auto")
+    mcp.add_argument(
+        "--sim",
+        action="store_true",
+        help="default to sim:// transport (safe for CI and headless)",
+    )
+    mcp.add_argument(
+        "--preconnect",
+        action="store_true",
+        help="connect before serving (uses --robot and transport)",
+    )
+    mcp.set_defaults(func=_cmd_mcp)
 
     return p
 
