@@ -36,6 +36,7 @@ class Robot:
         *,
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
+        read_only: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -51,7 +52,7 @@ class Robot:
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
-        tp = resolve_transport(transport, spec, rt)
+        tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
             tp = SafetyGate(
                 tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
@@ -177,6 +178,7 @@ def connect(
     *,
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
+    read_only: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -185,4 +187,5 @@ def connect(
         runtime=runtime,
         safety_config=safety_config,
         estop_damp=estop_damp,
+        read_only=read_only,
     )
