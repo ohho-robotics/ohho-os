@@ -102,10 +102,22 @@ def run_drive(
     if o0 is None:
         raise RuntimeError("no odometry snapshot before drive")
     period = 1.0 / max(rate_hz, 1.0)
+    tp = bot.transport
+    step_fn = getattr(tp, "step", None)
+    stepped = bot.simulated and callable(step_fn)
+    stop_sim = getattr(tp, "stop_sim", None)
+    start_sim = getattr(tp, "start_sim", None)
+    if stepped and callable(stop_sim):
+        stop_sim()
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         bot.drive(vx=vx, vy=vy, w=w)
-        time.sleep(period)
+        if stepped:
+            step_fn(period)
+        else:
+            time.sleep(period)
+    if stepped and callable(start_sim):
+        start_sim()
     bot.stop()
     time.sleep(settle_s)
     t1 = bot.telemetry()

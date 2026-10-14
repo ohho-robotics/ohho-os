@@ -158,10 +158,23 @@ def _cmd_drive(args) -> int:
         print(
             f"driving {bot.spec.id}: vx={args.vx} vy={args.vy} w={args.w} for {args.seconds:.0f}s"
         )
+        period = 0.1
+        tp = bot.transport
+        step_fn = getattr(tp, "step", None)
+        stepped = bot.simulated and callable(step_fn)
+        stop_sim = getattr(tp, "stop_sim", None)
+        start_sim = getattr(tp, "start_sim", None)
+        if stepped and callable(stop_sim):
+            stop_sim()
         end = time.monotonic() + args.seconds
         while time.monotonic() < end:
             bot.drive(vx=args.vx, vy=args.vy, w=args.w)
-            time.sleep(0.1)
+            if stepped:
+                step_fn(period)
+            else:
+                time.sleep(period)
+        if stepped and callable(start_sim):
+            start_sim()
         bot.stop()
         time.sleep(0.1)
         t = bot.telemetry()
@@ -473,6 +486,8 @@ def _cmd_selftest(args) -> int:
     print(f"Report saved to: {out_path}")
     if report.overall_status == "FAIL":
         return 1
+    if args.sim or report.mode == "sim":
+        return 0
     if report.mode == "hardware" and report.summary.get("passed", 0) == 0:
         if not getattr(args, "allow_all_skip", False):
             print(

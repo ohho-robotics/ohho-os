@@ -75,7 +75,7 @@ class TestCliSmokeCore(unittest.TestCase):
 
     def test_drive_sim(self):
         code, out, _ = _run_cli(
-            ["drive", "omnibot", *_SIM, "--seconds", "0.3", "--vx", "0.1"]
+            ["drive", "omnibot", *_SIM, "--seconds", "0.5", "--vx", "0.1"]
         )
         self.assertEqual(code, 0)
         self.assertIn("driving", out)
