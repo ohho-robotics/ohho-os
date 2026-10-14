@@ -79,6 +79,27 @@ def parse_dds_address(address: str, iface_kw: str = "") -> Tuple[str, int]:
     return iface, 0
 
 
+def dds_uri_is_sim_only(uri: Optional[str]) -> bool:
+    """True for ``dds://`` URIs that target local sim (``lo`` + domain ``1``)."""
+    if not uri:
+        return False
+    scheme, _sep, address = uri.partition("://")
+    if scheme.lower() not in ("dds", "unitree-dds"):
+        return False
+    iface, domain = parse_dds_address(address)
+    return iface == _DEFAULT_SIM_IFACE and domain == _DEFAULT_SIM_DOMAIN
+
+
+def dds_uri_is_hardware(uri: Optional[str]) -> bool:
+    """True for ``dds://`` URIs that are not the local sim-only pair."""
+    if not uri:
+        return False
+    scheme, _sep, _address = uri.partition("://")
+    if scheme.lower() not in ("dds", "unitree-dds"):
+        return False
+    return not dds_uri_is_sim_only(uri)
+
+
 # ── pure, testable protocol mapping ────────────────────────────────────────────
 def velocity_to_move(vel: Velocity) -> Tuple[float, float, float]:
     """Map a unified ``Velocity`` to Unitree ``SportClient.Move(vx, vy, vyaw)``."""
@@ -270,9 +291,11 @@ class UnitreeDdsTransport(BaseTransport):
         iface: str = "",
         state_factory: Optional[StateFactory] = None,
         subscriber_factory: Optional[SubscriberFactory] = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
         self.spec = spec
+        self.read_only = read_only
         self._iface, self.domain_id = parse_dds_address(address, iface)
         self.address = self._iface
         self._state_factory = state_factory
@@ -321,11 +344,15 @@ class UnitreeDdsTransport(BaseTransport):
                 ChannelFactoryInitialize,
                 ChannelSubscriber,
             )
-            from unitree_sdk2py.go2.sport.sport_client import SportClient  # type: ignore
             from unitree_sdk2py.idl.unitree_go.msg.dds_ import (  # type: ignore
                 LowState_,
                 SportModeState_,
             )
+
+            if not self.read_only:
+                from unitree_sdk2py.go2.sport.sport_client import (  # type: ignore
+                    SportClient,
+                )
         except Exception as e:
             raise AdapterUnavailable(
                 "The Unitree DDS adapter needs unitree_sdk2py (install from "
@@ -340,12 +367,13 @@ class UnitreeDdsTransport(BaseTransport):
                 f"DDS channel factory failed for domain={self.domain_id} "
                 f"iface={self._iface!r}: {e}"
             ) from e
-        client = SportClient()
-        set_timeout = getattr(client, "SetTimeout", None)
-        if callable(set_timeout):
-            set_timeout(_SPORT_RPC_TIMEOUT_SEC)
-        client.Init()
-        self._client = client
+        if not self.read_only:
+            client = SportClient()
+            set_timeout = getattr(client, "SetTimeout", None)
+            if callable(set_timeout):
+                set_timeout(_SPORT_RPC_TIMEOUT_SEC)
+            client.Init()
+            self._client = client
 
         if self._subscriber_factory is not None:
             self._sport_sub = self._subscriber_factory(

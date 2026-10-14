@@ -13,6 +13,7 @@ Source: [ohho-robotics/ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
 pip install ohho-os
 ohho doctor
 ohho sim --robot omnibot --seconds 2
+ohho sim --robot unitree-go2 --seconds 2
 ```
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
@@ -24,7 +25,8 @@ the given number of seconds.
 From a git checkout, `pip install -e .` is the same base install, editable.
 
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
-then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
+then `ohho doctor`, `ohho sim --robot omnibot --seconds 2`, and
+`ohho sim --robot unitree-go2 --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is
 green on `main`. Tag `v1.1.2` published `ohho-os` 1.1.2 to PyPI.
 
@@ -59,7 +61,7 @@ skipped unless `OHHO_HIL=1`. The ports they use:
 | OmniBot base | Yahboom serial | `OHHO_OMNIBOT_PORT` | `/dev/ttyUSB0` |
 | OmniBot arm | Feetech bus | `OHHO_OMNIBOT_ARM` | `/dev/ttyACM0` |
 | OmniBot base + arm | both of the above | both | both defaults |
-| Unitree Go2 | DDS interface | `OHHO_GO2_IFACE` | `eth0` |
+| Unitree Go2 | DDS (**untested on hardware** — use `ohho sim --robot unitree-go2` first; see [Install](#install)) | `OHHO_GO2_IFACE` | `eth0` |
 
 Those adapters are not installed by `pip install ohho-os`. The extras are
 `serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds — you also

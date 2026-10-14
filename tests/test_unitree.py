@@ -5,6 +5,8 @@ from unittest.mock import patch
 from ohho.adapters.errors import AdapterUnavailable
 from ohho.adapters.unitree import (
     UnitreeDdsTransport,
+    dds_uri_is_hardware,
+    dds_uri_is_sim_only,
     low_message_to_dict,
     merge_state_dicts,
     parse_dds_address,
@@ -230,6 +232,9 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         self.assertEqual(parse_dds_address("eth0"), ("eth0", 0))
         self.assertEqual(parse_dds_address("lo"), ("lo", 0))
         self.assertEqual(parse_dds_address("", iface_kw="enp3s0"), ("enp3s0", 0))
+        self.assertTrue(dds_uri_is_sim_only("dds://lo?domain=1"))
+        self.assertTrue(dds_uri_is_hardware("dds://eth0"))
+        self.assertTrue(dds_uri_is_hardware("dds://lo"))
         with self.assertRaises(ValueError):
             parse_dds_address("lo?domain=x")
 

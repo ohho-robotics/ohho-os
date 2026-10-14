@@ -67,6 +67,8 @@ def resolve_transport(
     uri: Optional[str] = None,
     spec: Optional[RobotSpec] = None,
     runtime=None,
+    *,
+    read_only: bool = False,
 ) -> Transport:
     """Pick a transport for a robot.
 
@@ -108,6 +110,8 @@ def resolve_transport(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
             f"dds, ros2 — or omit the transport to run in simulation."
         )
+    if cls is UnitreeDdsTransport:
+        return UnitreeDdsTransport(spec, address, read_only=read_only)
     return cls(spec, address)
 
 
