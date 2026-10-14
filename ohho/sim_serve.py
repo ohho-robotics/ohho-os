@@ -32,6 +32,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from .protocol import PROTOCOL_VERSION
+
 
 class SimServeUnavailable(RuntimeError):
     """Raised when sim-serve requirements are missing."""
@@ -271,6 +273,7 @@ class SimServe:
             # Send initial telemetry immediately upon connection
             odom, joints = self._get_telemetry()
             initial_msg: dict[str, Any] = {
+                "protocolVersion": PROTOCOL_VERSION,
                 "odom": odom,
                 "joints": joints,
                 "backend": self.backend,
@@ -357,6 +360,7 @@ class SimServe:
 
             odom, joints = self._get_telemetry()
             msg: dict[str, Any] = {
+                "protocolVersion": PROTOCOL_VERSION,
                 "odom": odom,
                 "joints": joints,
                 "backend": self.backend,

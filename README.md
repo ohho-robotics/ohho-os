@@ -23,6 +23,21 @@ the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
 
+## Protocol version and SDK compatibility
+
+**Package semver** (`ohho-os` on PyPI) and **protocol version** (`ohho.PROTOCOL_VERSION`,
+JSON schemas in `schemas/`) are independent. Bump the protocol only when committed
+schemas change in a contract-visible way.
+
+| ohho-os | Protocol | ohho-sdk (`@ohho/schemas`) |
+| --- | --- | --- |
+| 1.1.3+ | 1.0.0 | 1.0.0+ |
+
+TypeScript types for transport shapes are generated in
+[ohho-sdk](https://github.com/ohho-robotics/ohho-sdk) from a pinned copy of
+`schemas/`. Regenerate with `python scripts/export_json_schemas.py` here, then
+sync the pin in ohho-sdk.
+
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is
