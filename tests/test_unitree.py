@@ -7,6 +7,11 @@ from ohho.adapters.unitree import (
     velocity_to_move,
 )
 from ohho.registry import get_spec
+from ohho.lidar import DEFAULT_NUM_RAYS
+from ohho.nav import Navigator
+from ohho.runtime import NativeRuntime
+from ohho.robot import Robot
+from ohho.safety import AuditLog, SafetyGate
 from ohho.schema import Velocity
 
 
@@ -213,6 +218,79 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
     def test_sport_command_without_client_is_noop(self):
         tp = UnitreeDdsTransport(get_spec("unitree-go2"))
         tp.sport_command("stand_up")
+
+
+class TestUnitreeLidarScan(unittest.TestCase):
+    def test_sportstate_pointcloud_to_scan(self):
+        t = sportstate_to_telemetry(
+            {
+                "position": [0.0, 0.0, 0.0],
+                "imu_rpy": [0.0, 0.0, 0.0],
+                "pointcloud": [(2.0, 0.0, 0.2)],
+            }
+        )
+        self.assertIsNotNone(t.scan)
+        self.assertEqual(len(t.scan.ranges), DEFAULT_NUM_RAYS)
+        self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 2.0, places=3)
+
+    def test_state_factory_feeds_scan(self):
+        state = {
+            "position": [0.0, 0.0, 0.0],
+            "imu_rpy": [0.0, 0.0, 0.0],
+            "pointcloud": [(1.5, 0.0, 0.25)],
+        }
+
+        def factory():
+            return lambda: state
+
+        tp = UnitreeDdsTransport(
+            get_spec("unitree-go2"), "lo?domain=1", state_factory=factory
+        )
+        tp.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.15)
+            scan = tp.read().scan
+            self.assertIsNotNone(scan)
+            self.assertAlmostEqual(scan.ranges[DEFAULT_NUM_RAYS // 2], 1.5, places=3)
+        finally:
+            tp.disconnect()
+
+    def test_scan_visible_through_safety_gate(self):
+        state = {
+            "position": [0.0, 0.0, 0.0],
+            "imu_rpy": [0.0, 0.0, 0.0],
+            "pointcloud": [(2.5, 0.0, 0.2)],
+        }
+
+        def factory():
+            return lambda: state
+
+        inner = UnitreeDdsTransport(
+            get_spec("unitree-go2"), "lo?domain=1", state_factory=factory
+        )
+        spec = get_spec("unitree-go2")
+        gate = SafetyGate(
+            inner,
+            spec,
+            audit=AuditLog(None, wall_clock=lambda: 0.0),
+            auto_tick=False,
+            clock=lambda: 0.0,
+            isatty=lambda: False,
+        )
+        gate.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.15)
+            scan = gate.read().scan
+            self.assertIsNotNone(scan)
+            nav = Navigator(Robot(spec, gate, NativeRuntime()))
+            nav.update_map()
+            self.assertGreater(nav.grid.counts()["occupied"], 0)
+        finally:
+            gate.disconnect()
 
 
 if __name__ == "__main__":
