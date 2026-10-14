@@ -73,6 +73,7 @@ class TestDemoDrive(unittest.TestCase):
         """Integration: fake cmd_vel integrator + ohho ros2 transport."""
         env = {
             **os.environ,
+            "OHHO_CI_FAKE_ROBOT": "1",
             "ROS_DOMAIN_ID": "199",
             "ROS_LOCALHOST_ONLY": "1",
         }
