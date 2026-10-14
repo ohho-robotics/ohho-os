@@ -168,7 +168,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 
 ## Session registry (`sim up`, `robot announce`)
 
-`ohho sim up --robot omnibot --target local` heartbeats a row in Supabase every 10 seconds so the VR garage can find this PC's sim. `ohho sim down` removes it. `ohho robot announce` does the same for a real robot through the OHH-196 gateway. `--target cloud` exits with an error that names OHH-216 and does not create a VM.
+`ohho sim up --robot omnibot --target local` heartbeats a row in Supabase every 10 seconds so the VR garage can find this PC's sim. `ohho sim down` removes it. `ohho robot announce` does the same for a real robot through the OHH-196 gateway. `--target cloud` exits with an error that names OHH-216 and does not create a VM. `ohho cloud start` is the cloud orchestrator (AWS dry-run by default; see [`docs/cloud-sim.md`](docs/cloud-sim.md)).
 
 The gateway token is stored only as a SHA-256 hash. Stale rows (no heartbeat for 30 seconds) are hidden. Apply `supabase/migrations/20261014120000_robot_sessions.sql` in the Ohho Supabase project before the first `sim up`. The OhhO-VR `SessionClient` contract is in [`docs/sessions.md`](docs/sessions.md).
 

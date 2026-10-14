@@ -59,9 +59,10 @@
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
-| **Session registry** | ✅ **OHH-206** — `robot_sessions` migration (owner-only RLS) + `ohho sim up --target local` / `ohho sim down` / `ohho robot announce`. Heartbeat every 10s; stale rows hidden after 30s. Gateway token stored as SHA-256 only. `--target cloud` errors with `needs OHH-216` and does not provision a VM. Local compose is an OHH-204 stub. Contract: `docs/sessions.md`. |
-| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` plus `sim up`/`sim down` and `robot announce` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 425 tests, errors=3, skipped=7. The 3 errors are pre-existing on this machine (`test_demo_drive` imports `tests.test_ros2`; two selftest checks hit a broken local `cv2`). The 36 OHH-206 session tests passed. |
+| **Session registry** | ✅ **OHH-206** — `robot_sessions` migration (owner-only RLS) + `ohho sim up --target local` / `ohho sim down` / `ohho robot announce`. Heartbeat every 10s; stale rows hidden after 30s. Gateway token stored as SHA-256 only. `ohho sim up --target cloud` still errors with `needs OHH-216` and does not provision a VM. Local compose is an OHH-204 stub. Contract: `docs/sessions.md`. |
+| **Cloud sim target** | ✅ **OHH-216 code, dry-run** — `ohho cloud start\|status\|stop`. `FakeProvider` for tests. `AwsEc2Provider` refuses without credentials and a monthly budget, and never calls AWS. 15 min idle shutdown, hard monthly cap, session token injected and stored as SHA-256 via the OHH-206 registry. Gateway templates in `deploy/cloud/`. Provider choice is Varun's (`docs/cloud-sim.md`). No VM is created. |
+| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` plus `sim up`/`sim down`, `robot announce`, and `cloud start\|status\|stop` |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 441 tests, errors=3, skipped=7 (14 Oct 2026). The 3 errors are pre-existing on this machine (`test_demo_drive` imports `tests.test_ros2`; two selftest checks hit a broken local `cv2`). `python -m pytest` reports the same three as failures (431 passed, 7 skipped). The 36 OHH-206 session tests and the 16 OHH-216 cloud tests passed. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -182,19 +183,22 @@ sdk/
 │   ├── sim_serve.py      # ohho.sim_serve — WebSocket teleop and telemetry server (`sim` and `ros2`)
 │   ├── sim/docker-compose.yml  # local sim compose stub (gpu profile = OHH-204 image)
 │   ├── sessions.py       # OHH-206 session registry: sim up/down, robot announce, heartbeat
+│   ├── cloud.py          # OHH-216 cloud sim: provider interface, budget, idle shutdown
 │   ├── sim_loop.py       # ohho.sim_loop — record -> validate -> tiny ACT train -> serve -> eval pipeline
 │   ├── selftest.py       # ohho.selftest — hardware self-test suite (motors, encoders, IMU, servos, camera)
 │   ├── safety.py         # ohho.safety — SafetyGate(Transport), SafetyProfile, AuditLog, arming policy
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/robot; main()
+│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/robot/cloud; main()
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
+├── deploy/cloud/         # OHH-216 Caddyfile, coturn, cloud-init, GHCR startup script
 ├── docs/
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
 │   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
-│   └── sessions.md       # OHH-206 apply steps, CLI, OhhO-VR SessionClient contract
+│   ├── sessions.md       # OHH-206 apply steps, CLI, OhhO-VR SessionClient contract
+│   └── cloud-sim.md      # OHH-216 provider table, ohho cloud, VR/console contract
 ├── supabase/migrations/  # robot_sessions SQL (apply in the Ohho Supabase project)
 ├── scripts/
 │   ├── check_classifiers.py
@@ -456,7 +460,9 @@ All milestones (M0–M5) are complete. OhhO OS is at v1.1.3. To continue:
 7. **Session registry (OHH-206):** apply
    `supabase/migrations/20261014120000_robot_sessions.sql` in the Ohho
    Supabase project (steps in `docs/sessions.md`). `ohho sim up --target cloud`
-   stays a stub until OHH-216. The local compose file does not start a GPU
+   stays a refusal (no VM). `ohho cloud` is the OHH-216 orchestrator and the
+   AWS adapter is dry-run until Varun picks a provider and a budget
+   (`docs/cloud-sim.md`). The local compose file does not start a GPU
    container until OHH-204 publishes the image. OhhO-VR implements
    `SessionClient` from that doc; do not edit the VR repo from this tree.
 
