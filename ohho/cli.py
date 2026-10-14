@@ -14,6 +14,7 @@ from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
+from .sim_serve import DEFAULT_PORT
 
 
 def _cmd_version(args) -> int:
@@ -565,7 +566,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
     ss.add_argument(
-        "--port", type=int, default=8765, help="port to bind the WebSocket server"
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=(
+            "WebSocket port (default: 8790). "
+            "Do not use 8765: that is OmniBot's Foxglove bridge"
+        ),
     )
     ss.add_argument(
         "--rosbridge",
