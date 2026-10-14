@@ -121,8 +121,20 @@ def validate_schema(dataset_dir: str) -> bool:
     return True
 
 
+def _lerobot_revision_from_info(info: Dict[str, Any]) -> str:
+    """Revision tag for LeRobotDataset — matches ``meta/info.json`` codebase_version."""
+    raw = str(info.get("codebase_version", "v2.1"))
+    if raw and raw[0].isdigit():
+        return f"v{raw}"
+    return raw
+
+
 def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
     """Attempt to load the dataset using Hugging Face's LeRobotDataset.
+
+    Loads from disk only: uses ``repo_id`` and codebase revision from ``meta/info.json``
+    and sets ``HF_HUB_OFFLINE=1`` so a local validation failure cannot fall through to
+    the Hub (which would 401 for bogus repo ids like the output folder name ``dataset``).
 
     In non-mock mode (mock=False), if lerobot is missing, or LeRobotDataset raises,
     or 0 frames are loaded, an exception is raised so the run exits non-zero.
@@ -145,29 +157,35 @@ def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
         ) from e
 
     p = Path(dataset_dir).expanduser()
-    last_err: Optional[Exception] = None
+    info_path = p / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"meta/info.json missing in {dataset_dir}")
+
+    import json
+
+    with open(info_path, encoding="utf-8") as f:
+        info = json.load(f)
+    repo_id = info.get("repo_id") or "local/dataset"
+    revision = _lerobot_revision_from_info(info)
+
+    prev_offline = os.environ.get("HF_HUB_OFFLINE")
+    os.environ["HF_HUB_OFFLINE"] = "1"
     try:
-        # Try local repo_id with root
-        ds = LeRobotDataset(repo_id="local", root=str(p))
+        ds = LeRobotDataset(repo_id=repo_id, root=str(p), revision=revision)
         if len(ds) > 0:
             return True
         raise ValueError(f"LeRobotDataset loaded 0 frames from {dataset_dir}")
-    except Exception as e1:
-        last_err = e1
-        try:
-            # Try parent directory as root and dirname as repo_id
-            ds = LeRobotDataset(repo_id=p.name, root=str(p.parent))
-            if len(ds) > 0:
-                return True
-            raise ValueError(f"LeRobotDataset loaded 0 frames from {dataset_dir}")
-        except Exception as e2:
-            last_err = e2
-
-    if mock:
-        return False
-    raise RuntimeError(
-        f"LeRobotDataset failed to load dataset at {dataset_dir}: {last_err}"
-    ) from last_err
+    except Exception as e:
+        if mock:
+            return False
+        raise RuntimeError(
+            f"LeRobotDataset failed to load dataset at {dataset_dir}: {e}"
+        ) from e
+    finally:
+        if prev_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = prev_offline
 
 
 def validate_dataset(dataset_dir: str, mock: bool = False) -> Dict[str, Any]:
@@ -284,7 +302,7 @@ def format_summary(results: Dict[str, Any]) -> str:
         "| Metric | Value |",
         "|---|---|",
         f"| **Sim Episodes Recorded** | {episodes} ({total_frames} total frames) |",
-        f"| **Dataset Schema Check** | {schema_status} (LeRobot v2.0 format) |",
+        f"| **Dataset Schema Check** | {schema_status} (LeRobot v2.1 format) |",
         f"| **LeRobotDataset Loading** | {lerobot_status} |",
         f"| **Policy Architecture** | {model_name} |",
         f"| **CPU Train Steps** | {train_steps} steps |",
