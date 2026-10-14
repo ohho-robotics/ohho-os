@@ -94,12 +94,24 @@ class TestRecorder(unittest.TestCase):
         rec.discard_episode()
 
     def test_state_dim_base_only(self):
+        bot = _bot("sim")
+        rec = Recorder(bot, fps=10.0)
+        rec.start_episode(task="drive")
+        frame = rec.capture_frame()
+        # sim base-only → 3-D state
+        self.assertEqual(len(frame.observation_state), 3)
+        self.assertEqual(len(frame.action), 3)
+        rec.stop_episode()
+
+    def test_state_dim_legged_go2(self):
         bot = _bot("unitree-go2")
         rec = Recorder(bot, fps=10.0)
         rec.start_episode(task="walk")
         frame = rec.capture_frame()
-        # Go2 has no arm → 3-D state
-        self.assertEqual(len(frame.observation_state), 3)
+        # Go2 legged → 31-D state (3 base vel + 3 rpy + 12 q + 12 dq + 1 posture_id)
+        # and 4-D action (3 base vel + 1 mode_id)
+        self.assertEqual(len(frame.observation_state), 31)
+        self.assertEqual(len(frame.action), 4)
         rec.stop_episode()
 
 
