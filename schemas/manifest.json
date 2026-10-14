@@ -1,0 +1,13 @@
+{
+  "ohhoOsVersion": "1.1.3",
+  "protocolVersion": "1.0.0",
+  "schemas": {
+    "ConnectionState": "connection_state.json",
+    "JointReading": "joint_reading.json",
+    "Odometry": "odometry.json",
+    "Scan": "scan.json",
+    "Telemetry": "telemetry.json",
+    "TransportStatus": "transport_status.json",
+    "Velocity": "velocity.json"
+  }
+}

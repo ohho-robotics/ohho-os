@@ -2,9 +2,9 @@
 
 Python package `ohho-os` (import `ohho`), version 1.1.3.
 Homepage: [ohho-robotics.com](https://ohho-robotics.com).
-Source: [ohho-robotics/ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
+Source: [ohho-robotics/ohho-os](https://github.com/ohho-robotics/ohho-os).
 
-[![CI](https://github.com/ohho-robotics/ohho-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/ohho-robotics/ohho-sdk/actions/workflows/ci.yml)
+[![CI](https://github.com/ohho-robotics/ohho-os/actions/workflows/ci.yml/badge.svg)](https://github.com/ohho-robotics/ohho-os/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 ## Install
@@ -22,6 +22,21 @@ transport `sim://` and runtime `native`, then drives an in-process pattern for
 the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
+
+## Protocol version and SDK compatibility
+
+**Package semver** (`ohho-os` on PyPI) and **protocol version** (`ohho.PROTOCOL_VERSION`,
+JSON schemas in `schemas/`) are independent. Bump the protocol only when committed
+schemas change in a contract-visible way.
+
+| ohho-os | Protocol | ohho-sdk (`@ohho/schemas`) |
+| --- | --- | --- |
+| 1.1.3+ | 1.0.0 | 1.0.0+ |
+
+TypeScript types for transport shapes are generated in
+[ohho-sdk](https://github.com/ohho-robotics/ohho-sdk) from a pinned copy of
+`schemas/`. Regenerate with `python scripts/export_json_schemas.py` here, then
+sync the pin in ohho-sdk.
 
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
@@ -196,6 +211,10 @@ root.
 Apache-2.0. The full text is [`LICENSE`](LICENSE).
 
 ## Releasing
+
+See [docs/RELEASING.md](docs/RELEASING.md) for PyPI trusted-publisher settings
+(owner `ohho-robotics`, repo `ohho-os`, workflow `release.yml`, environment
+`pypi`) and the TestPyPI `workflow_dispatch` dry run.
 
 ```bash
 git tag v1.1.3
