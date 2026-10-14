@@ -182,14 +182,8 @@ See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, an
 
 ## TypeScript
 
-`ts/` is the previous TypeScript workspace (`package.json`,
-`tsconfig.json`, `packages/`), moved with the same file contents. It does
-not typecheck. `tsc --noEmit -p ts/tsconfig.json` (TypeScript 5.6.3)
-exits with 246 `error TS` diagnostics, including missing modules
-(`react`, `vitest`, `@/lib/...`) and files that are not in this tree
-(`packages/schemas/src/types.ts`, `packages/schemas/src/robot-catalog.ts`).
-See `ts/AGENTS.md`. Paths in that file still describe the old repository
-root.
+The TypeScript SDK (`@ohho/schemas`, `@ohho/connect`, `@ohho/client`) lives in
+[ohho-sdk](https://github.com/ohho-robotics/ohho-sdk). See [`ts/README.md`](ts/README.md).
 
 ## Licence
 
