@@ -114,7 +114,7 @@ class TestGo2Schema(unittest.TestCase):
             with open(info_file, encoding="utf-8") as f:
                 info = json.load(f)
 
-            self.assertEqual(info["codebase_version"], "2.0")
+            self.assertEqual(info["codebase_version"], "v2.1")
             self.assertEqual(info["robot_type"], "unitree-go2")
             self.assertIn("observation.state", info["features"])
             self.assertIn("action", info["features"])
