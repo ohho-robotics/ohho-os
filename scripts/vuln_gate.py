@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +148,39 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_allowlist(path: Path) -> set[str]:
+    """Load allowed/ignored vulnerability IDs from a file.
+
+    Supports:
+    - TOML files (e.g. osv-scanner.toml) with [[IgnoredVulns]] blocks
+    - Plain text files with one vulnerability ID per line (# comments supported)
+    """
+    if not path.is_file():
+        return set()
+
+    text = path.read_text(encoding="utf-8")
+    ignored: set[str] = set()
+
+    if path.suffix == ".toml" or "IgnoredVulns" in text:
+        try:
+            import tomllib
+
+            data = tomllib.loads(text)
+            for entry in data.get("IgnoredVulns", []):
+                if isinstance(entry, dict) and "id" in entry:
+                    ignored.add(str(entry["id"]).strip())
+        except Exception:
+            for match in re.finditer(r'id\s*=\s*["\']([^"\']+)["\']', text):
+                ignored.add(match.group(1).strip())
+        return ignored
+
+    for line in text.splitlines():
+        cleaned = line.split("#", 1)[0].strip()
+        if cleaned:
+            ignored.add(cleaned)
+    return ignored
+
+
 def merge_findings(groups: Iterable[list[CriticalFinding]]) -> list[CriticalFinding]:
     merged: list[CriticalFinding] = []
     seen: set[tuple[str, str, str]] = set()
@@ -178,6 +212,20 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="pip-audit JSON output (repeatable)",
     )
+    parser.add_argument(
+        "--allowlist",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Path to osv-scanner.toml or text file of allowed vulnerability IDs (repeatable)",
+    )
+    parser.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="Specific vulnerability ID to ignore (repeatable)",
+    )
     args = parser.parse_args(argv)
 
     all_findings: list[CriticalFinding] = []
@@ -198,8 +246,28 @@ def main(argv: list[str] | None = None) -> int:
             critical_from_pip_audit(load_json(path), source_label=path.name)
         )
 
+    allowed_ids: set[str] = set(args.ignore)
+    for path_str in args.allowlist:
+        p = Path(path_str)
+        if not p.is_file():
+            print(f"missing allowlist file: {p}", file=sys.stderr)
+            return 2
+        allowed_ids.update(load_allowlist(p))
+
+    if not args.allowlist:
+        default_toml = Path("osv-scanner.toml")
+        if default_toml.is_file():
+            allowed_ids.update(load_allowlist(default_toml))
+
     critical = merge_findings([all_findings])
-    if not critical:
+    unignored: list[CriticalFinding] = []
+    for item in critical:
+        if item.vuln_id in allowed_ids:
+            print(f"vuln_gate: ignoring documented vulnerability: {item.line()}")
+        else:
+            unignored.append(item)
+
+    if not unignored:
         print("vuln_gate: no CRITICAL vulnerabilities in scan inputs")
         return 0
 
@@ -207,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         "vuln_gate: CRITICAL vulnerabilities must be fixed or documented:",
         file=sys.stderr,
     )
-    for item in critical:
+    for item in unignored:
         print(f"  {item.line()}", file=sys.stderr)
     return 1
 

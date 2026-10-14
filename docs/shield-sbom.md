@@ -17,7 +17,7 @@ Workflow: [`.github/workflows/shield-sbom.yml`](../.github/workflows/shield-sbom
 5. **`scripts/vuln_gate.py`** fails the job only on **CRITICAL** findings (CVSS ≥
    9.0 in OSV records, or explicit `CRITICAL` severity in pip-audit JSON).
 
-Artifacts (every run): `sbom.spdx.json`, `sbom.cyclonedx.json`, scan JSON, frozen
+Artifacts (every run): `sbom.cdx.json`, `sbom.cyclonedx.json`, `sbom.spdx.json`, scan JSON, frozen
 requirements.
 
 **Release tags (`v*`):** the same SBOM files are attached to the GitHub Release (in
@@ -31,8 +31,8 @@ python -m pip install -e ".[dev,yaml,serial,serve,data,sim-serve,agent]"
 python -m pip freeze > /tmp/requirements-shield-frozen.txt
 # Install syft + osv-scanner from https://github.com/anchore/syft and
 # https://github.com/google/osv-scanner, then:
-syft scan dir:. -o cyclonedx-json=/tmp/sbom.cyclonedx.json
-osv-scanner scan --format=json --output=/tmp/osv-sbom.json --sbom=/tmp/sbom.cyclonedx.json
+syft scan dir:. -o cyclonedx-json=/tmp/sbom.cdx.json
+osv-scanner scan -f json --output-file=/tmp/osv-sbom.json -L /tmp/sbom.cdx.json
 pip-audit --format json -o /tmp/pip-audit.json
 python scripts/vuln_gate.py --osv /tmp/osv-sbom.json --pip-audit /tmp/pip-audit.json
 ```

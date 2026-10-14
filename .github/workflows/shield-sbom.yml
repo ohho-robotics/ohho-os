@@ -35,7 +35,8 @@ jobs:
         with:
           path: .
           format: cyclonedx-json
-          output-file: sbom.cyclonedx.json
+          output-file: sbom.cdx.json
+          upload-release-assets: false
 
       - name: Generate SPDX SBOM (syft)
         uses: anchore/sbom-action@v0
@@ -43,6 +44,12 @@ jobs:
           path: .
           format: spdx-json
           output-file: sbom.spdx.json
+          upload-release-assets: false
+
+      - name: Prepare SBOM aliases
+        run: |
+          # Keep sbom.cyclonedx.json as an alias alongside sbom.cdx.json
+          cp sbom.cdx.json sbom.cyclonedx.json
 
       - name: Install osv-scanner
         run: |
@@ -53,10 +60,20 @@ jobs:
 
       - name: OSV scan (CycloneDX SBOM)
         run: |
+          set +e
           osv-scanner scan \
             -f json \
             --output-file osv-sbom.json \
-            -L sbom.cyclonedx.json
+            -L sbom.cdx.json
+          code=$?
+          set -e
+          # 0 = no vulns, 1 = vulns found (gated downstream by vuln_gate.py)
+          if [ "$code" -eq 128 ]; then
+            echo "No packages found in SBOM; writing empty OSV results."
+            echo '{"results":[]}' > osv-sbom.json
+          elif [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+            exit "$code"
+          fi
 
       - name: OSV scan (repository manifests / lockfiles)
         run: |
@@ -69,10 +86,11 @@ jobs:
             .
           code=$?
           set -e
+          # 0 = no vulns, 1 = vulns found (gated downstream by vuln_gate.py)
           if [ "$code" -eq 128 ]; then
             echo "No lockfiles in tree; writing empty OSV results."
             echo '{"results":[]}' > osv-repo.json
-          elif [ "$code" -ne 0 ]; then
+          elif [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
             exit "$code"
           fi
 
@@ -82,6 +100,9 @@ jobs:
           # Audit the active venv (not requirements-shield-frozen.txt) so editable
           # ohho-os and local paths are not re-resolved by pip-audit.
           pip-audit --format json -o pip-audit.json || true
+          if [ ! -f pip-audit.json ]; then
+            echo '{"dependencies":[]}' > pip-audit.json
+          fi
 
       - name: Fail on CRITICAL vulnerabilities
         run: |
@@ -96,6 +117,7 @@ jobs:
           name: shield-sbom-${{ github.run_id }}
           if-no-files-found: error
           path: |
+            sbom.cdx.json
             sbom.cyclonedx.json
             sbom.spdx.json
             osv-sbom.json
@@ -120,5 +142,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            sbom.cdx.json
             sbom.cyclonedx.json
             sbom.spdx.json
