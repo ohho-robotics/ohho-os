@@ -70,6 +70,18 @@ class TestSimLoop(unittest.TestCase):
             self.assertEqual(reader.state_dim, 9)
             self.assertEqual(reader.action_dim, 9)
 
+            with open(meta / "episodes_stats.jsonl", encoding="utf-8") as f:
+                stat_rows = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual(len(stat_rows), 5)
+            for row in stat_rows:
+                for key in ("observation.state", "action"):
+                    feat = row["stats"][key]
+                    self.assertEqual(feat["count"], [10])
+                    for stat_key in ("min", "max", "mean", "std"):
+                        val = feat[stat_key]
+                        self.assertEqual(len(val), 9)
+                        self.assertFalse(any(isinstance(x, list) for x in val))
+
     def test_validate_schema_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             dataset_dir = os.path.join(tmp, "dataset")

@@ -167,12 +167,13 @@ def _feature_stats(rows: List[List[float]]) -> dict:
         )
         for i in range(dim)
     ]
-    # keepdims=True on vector features → shape (1, dim) when serialized
+    # Vector features (dim > 1): flat length-dim lists, matching keepdims=False.
+    # Scalar features (dim == 1): length-1 lists, matching keepdims=True on 1-D data.
     return {
-        "min": [mins],
-        "max": [maxs],
-        "mean": [means],
-        "std": [stds],
+        "min": mins,
+        "max": maxs,
+        "mean": means,
+        "std": stds,
         "count": [n],
     }
 
