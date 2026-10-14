@@ -52,6 +52,10 @@ def _cmd_doctor(args) -> int:
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
+    print(
+        "  hil         : dry-run by default; hardware needs OHHO_HIL=1, "
+        "an explicit port, --preflight-ok, and a TTY (`ohho hil --mock` for CI)"
+    )
     return 0
 
 
@@ -719,6 +723,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow exit code 0 when all checks are skipped in hardware mode",
     )
     st.set_defaults(func=_cmd_selftest)
+
+    from .hil import add_arguments as _add_hil_arguments
+    from .hil import execute as _execute_hil
+
+    h = sub.add_parser(
+        "hil",
+        help="HIL harness (dry-run by default; hardware is opt-in)",
+    )
+    _add_hil_arguments(h)
+    h.set_defaults(func=_execute_hil)
 
     return p
 
