@@ -5,6 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
+import math
 import os
 import sys
 import time
@@ -12,7 +13,21 @@ from typing import Any
 import unittest
 
 from ohho.cli import main
-from ohho.sim_serve import SimServe, SimServeUnavailable, parse_velocity
+from ohho.sim_serve import (
+    DEADMAN_TIMEOUT_S,
+    SimServe,
+    SimServeUnavailable,
+    backend_entry,
+    build_telemetry_message,
+    camera_jpeg_from_ros,
+    cmd_vel_rosbridge,
+    gated_velocity,
+    joint_command_rosbridge,
+    odom_from_ros,
+    parse_client_command,
+    parse_velocity,
+    serve_sim,
+)
 
 
 def _has_websockets() -> bool:
@@ -60,6 +75,12 @@ class TestVelocityParser(unittest.TestCase):
         self.assertAlmostEqual(vy, -0.2)
         self.assertAlmostEqual(w, 0.1)
 
+    def test_parse_connect_velocity_fields(self):
+        vx, vy, w = parse_velocity({"linearX": 0.2, "linearY": -0.05, "angularZ": 0.3})
+        self.assertAlmostEqual(vx, 0.2)
+        self.assertAlmostEqual(vy, -0.05)
+        self.assertAlmostEqual(w, 0.3)
+
     def test_parse_invalid(self):
         self.assertEqual(parse_velocity(None), (0.0, 0.0, 0.0))
         self.assertEqual(parse_velocity("fast"), (0.0, 0.0, 0.0))
@@ -78,6 +99,8 @@ class TestNotBuiltBackends(unittest.TestCase):
             self.assertNotEqual(code, 0)
             output = stdout.getvalue() + stderr.getvalue()
             self.assertIn("not built", output)
+            self.assertIn("not-implemented", output)
+        self.assertEqual(backend_entry("isaac"), "not-implemented")
         self.assertNotIn("isaac", sys.modules)
         self.assertNotIn("isaacsim", sys.modules)
 
@@ -90,6 +113,8 @@ class TestNotBuiltBackends(unittest.TestCase):
             self.assertNotEqual(code, 0)
             output = stdout.getvalue() + stderr.getvalue()
             self.assertIn("not built", output)
+            self.assertIn("not-implemented", output)
+        self.assertEqual(backend_entry("mujoco"), "not-implemented")
         self.assertNotIn("mujoco", sys.modules)
 
 
@@ -376,6 +401,609 @@ class TestWebsocketsExtraCheck(unittest.TestCase):
             asyncio.run(server.start())
         self.assertIn("websockets", str(ctx.exception))
         self.assertFalse(server._running)
+
+
+class TestTeleopSessionProtocol(unittest.TestCase):
+    """Protocol decisions with no WebSocket, no rosbridge, and no Gazebo."""
+
+    def test_missing_deadman_is_not_held(self):
+        command = parse_client_command(
+            {
+                "velocity": {"linear": {"x": 0.2, "y": 0.0}, "angular": {"z": 0.1}},
+                "joints": {"arm_shoulder_pan": 0.4, "skip": True},
+            }
+        )
+        self.assertFalse(command.deadman)
+        self.assertIsNone(command.estop)
+        self.assertEqual(command.velocity, (0.2, 0.0, 0.1))
+        self.assertEqual(command.joints, {"arm_shoulder_pan": 0.4})
+
+        held = parse_client_command({"deadman": True, "estop": False})
+        self.assertTrue(held.deadman)
+        self.assertIs(held.estop, False)
+        self.assertFalse(parse_client_command({"deadman": "false"}).deadman)
+        self.assertFalse(parse_client_command({"deadman": 0}).deadman)
+        self.assertTrue(parse_client_command({"deadman": "true"}).deadman)
+
+    def test_velocity_gate_zeroes_without_deadman_link_or_fresh_command(self):
+        target = (0.2, -0.05, 0.3)
+        allowed = dict(
+            deadman=True,
+            estopped=False,
+            client_count=1,
+            command_window_open=True,
+            now=10.0,
+            last_msg_time=10.0,
+        )
+        self.assertEqual(gated_velocity(target, **allowed), target)
+        self.assertEqual(
+            gated_velocity(target, **{**allowed, "deadman": False}),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            gated_velocity(target, **{**allowed, "estopped": True}),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            gated_velocity(target, **{**allowed, "client_count": 0}),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            gated_velocity(target, **{**allowed, "command_window_open": False}),
+            (0.0, 0.0, 0.0),
+        )
+        just_inside = allowed["last_msg_time"] + DEADMAN_TIMEOUT_S - 0.001
+        self.assertEqual(
+            gated_velocity(target, **{**allowed, "now": just_inside}),
+            target,
+        )
+        at_timeout = allowed["last_msg_time"] + DEADMAN_TIMEOUT_S
+        self.assertEqual(
+            gated_velocity(target, **{**allowed, "now": at_timeout}),
+            (0.0, 0.0, 0.0),
+        )
+
+    def test_server_message_has_backend_and_camera_or_no_camera(self):
+        quiet = build_telemetry_message(
+            odom={"x": 1.0, "y": 2.0, "yaw": 0.5},
+            joints={"arm_shoulder_pan": 0.25},
+            backend="sim",
+            camera=None,
+        )
+        self.assertEqual(quiet["backend"], "sim")
+        self.assertEqual(quiet["odom"], {"x": 1.0, "y": 2.0, "yaw": 0.5})
+        self.assertEqual(quiet["joints"], {"arm_shoulder_pan": 0.25})
+        self.assertTrue(quiet["no_camera"])
+        self.assertNotIn("camera", quiet)
+
+        framed = build_telemetry_message(
+            odom={"x": 0.0, "y": 0.0, "yaw": 0.0},
+            joints={},
+            backend="ros2",
+            camera="aW1hZ2U=",
+        )
+        self.assertEqual(framed["backend"], "ros2")
+        self.assertEqual(framed["camera"], "aW1hZ2U=")
+        self.assertNotIn("no_camera", framed)
+
+    def test_ros_messages_match_connect_topics(self):
+        twist = cmd_vel_rosbridge(0.2, -0.1, 0.4)
+        self.assertEqual(twist["op"], "publish")
+        self.assertEqual(twist["topic"], "/cmd_vel")
+        self.assertEqual(twist["msg"]["linear"], {"x": 0.2, "y": -0.1, "z": 0.0})
+        self.assertEqual(twist["msg"]["angular"]["z"], 0.4)
+
+        joints = joint_command_rosbridge({"arm_shoulder_pan": 0.5})
+        self.assertEqual(joints["topic"], "/arm/joint_commands")
+        self.assertEqual(joints["msg"]["name"], ["arm_shoulder_pan"])
+        self.assertEqual(joints["msg"]["position"], [0.5])
+
+        half_turn = math.sqrt(2.0) / 2.0
+        odom = odom_from_ros(
+            {
+                "pose": {
+                    "pose": {
+                        "position": {"x": 1.5, "y": -0.25, "z": 0.0},
+                        "orientation": {"w": half_turn, "z": half_turn},
+                    }
+                }
+            }
+        )
+        self.assertIsNotNone(odom)
+        assert odom is not None
+        self.assertAlmostEqual(odom["x"], 1.5)
+        self.assertAlmostEqual(odom["y"], -0.25)
+        self.assertAlmostEqual(odom["yaw"], math.pi / 2.0, places=5)
+
+        self.assertIsNone(
+            camera_jpeg_from_ros(
+                "/camera/front/image_raw/compressed",
+                {"format": "jpeg", "data": ""},
+            )
+        )
+        self.assertIsNone(
+            camera_jpeg_from_ros(
+                "/camera/wrist/image_raw/compressed",
+                {"format": "jpeg", "data": "not-front"},
+            )
+        )
+        self.assertEqual(
+            camera_jpeg_from_ros(
+                "/camera/front/image_raw/compressed",
+                {"format": "jpeg", "data": "aW1hZ2U="},
+            ),
+            "aW1hZ2U=",
+        )
+
+    def test_unimplemented_backends_do_not_import_simulators(self):
+        self.assertEqual(backend_entry("isaac"), "not-implemented")
+        self.assertEqual(backend_entry("mujoco"), "not-implemented")
+        with self.assertRaises(SimServeUnavailable) as ctx:
+            serve_sim(backend="isaac")
+        self.assertIn("not-implemented", str(ctx.exception))
+        with self.assertRaises(SimServeUnavailable) as ctx_mujoco:
+            SimServe(backend="mujoco")
+        self.assertIn("not-implemented", str(ctx_mujoco.exception))
+        self.assertNotIn("isaac", sys.modules)
+        self.assertNotIn("isaacsim", sys.modules)
+        self.assertNotIn("mujoco", sys.modules)
+
+
+@unittest.skipUnless(
+    _has_websockets(), "websockets not installed — [serve] or [sim-serve] extra"
+)
+class TestSimServeDeadmanEdges(unittest.TestCase):
+    """Wire-level deadman rules against the in-process sim. No Gazebo."""
+
+    def test_missing_deadman_does_not_move(self):
+        import json as json_mod
+
+        import websockets
+
+        async def run_test():
+            server = SimServe(
+                backend="sim", robot="omnibot", host="127.0.0.1", port=0, rate_hz=40.0
+            )
+            await server.start()
+            try:
+                async with websockets.connect(
+                    f"ws://127.0.0.1:{server.port}"
+                ) as client:
+                    raw = await asyncio.wait_for(client.recv(), timeout=1.0)
+                    x0 = json_mod.loads(raw)["odom"]["x"]
+                    for _ in range(4):
+                        await client.send(
+                            json_mod.dumps(
+                                {
+                                    "velocity": {
+                                        "linear": {"x": 0.2, "y": 0.0},
+                                        "angular": {"z": 0.0},
+                                    }
+                                }
+                            )
+                        )
+                        await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.1)
+                    x1 = server._bot.telemetry().odom.x
+                self.assertAlmostEqual(x1, x0, places=3)
+            finally:
+                await server.stop()
+
+        asyncio.run(run_test())
+
+    def test_dropped_socket_stops_within_300ms(self):
+        import json as json_mod
+
+        import websockets
+
+        async def run_test():
+            server = SimServe(
+                backend="sim", robot="omnibot", host="127.0.0.1", port=0, rate_hz=40.0
+            )
+            await server.start()
+            try:
+                async with websockets.connect(
+                    f"ws://127.0.0.1:{server.port}"
+                ) as client:
+                    for _ in range(4):
+                        await client.send(
+                            json_mod.dumps(
+                                {
+                                    "deadman": True,
+                                    "velocity": {
+                                        "linear": {"x": 0.2, "y": 0.0},
+                                        "angular": {"z": 0.0},
+                                    },
+                                }
+                            )
+                        )
+                        await asyncio.sleep(0.05)
+                    moving = server._bot.telemetry().odom.x
+                self.assertGreater(moving, 0.01)
+                # Past the 300 ms bound the base must already be stopped.
+                # One 50 Hz sim step is 4 mm, so the check allows that and
+                # rejects a command that is still 0.2 m/s.
+                await asyncio.sleep(0.35)
+                settled = server._bot.telemetry().odom.x
+                await asyncio.sleep(0.2)
+                later = server._bot.telemetry().odom.x
+                self.assertLess(later - settled, 0.01)
+            finally:
+                await server.stop()
+
+        asyncio.run(run_test())
+
+    def test_timeout_is_not_tied_to_telemetry_rate(self):
+        """A 1 Hz broadcast must still zero velocity 300 ms after the last message."""
+        import json as json_mod
+
+        import websockets
+
+        async def run_test():
+            server = SimServe(
+                backend="sim", robot="omnibot", host="127.0.0.1", port=0, rate_hz=1.0
+            )
+            await server.start()
+            try:
+                async with websockets.connect(
+                    f"ws://127.0.0.1:{server.port}"
+                ) as client:
+                    for _ in range(4):
+                        await client.send(
+                            json_mod.dumps(
+                                {
+                                    "deadman": True,
+                                    "velocity": {
+                                        "linear": {"x": 0.2, "y": 0.0},
+                                        "angular": {"z": 0.0},
+                                    },
+                                }
+                            )
+                        )
+                        await asyncio.sleep(0.05)
+                    moving = server._bot.telemetry().odom.x
+                    await asyncio.sleep(0.6)
+                    stopped = server._bot.telemetry().odom.x
+                    await asyncio.sleep(0.15)
+                    later = server._bot.telemetry().odom.x
+                self.assertGreater(moving, 0.01)
+                self.assertAlmostEqual(later, stopped, places=2)
+            finally:
+                await server.stop()
+
+        asyncio.run(run_test())
+
+    def test_joint_command_updates_joint_state(self):
+        import json as json_mod
+
+        import websockets
+
+        async def run_test():
+            server = SimServe(
+                backend="sim", robot="omnibot", host="127.0.0.1", port=0, rate_hz=40.0
+            )
+            await server.start()
+            try:
+                async with websockets.connect(
+                    f"ws://127.0.0.1:{server.port}"
+                ) as client:
+                    await client.send(
+                        json_mod.dumps(
+                            {"deadman": True, "joints": {"arm_shoulder_pan": 0.5}}
+                        )
+                    )
+                    await asyncio.sleep(0.25)
+                    raw = await asyncio.wait_for(client.recv(), timeout=1.0)
+                    # Drain to the newest snapshot.
+                    latest = json_mod.loads(raw)
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(client.recv(), timeout=0.05)
+                            latest = json_mod.loads(raw)
+                        except asyncio.TimeoutError:
+                            break
+                self.assertGreater(latest["joints"].get("arm_shoulder_pan", 0.0), 0.05)
+                self.assertEqual(latest["backend"], "sim")
+                self.assertTrue(latest.get("no_camera"))
+            finally:
+                await server.stop()
+
+        asyncio.run(run_test())
+
+
+@unittest.skipUnless(
+    _has_websockets(), "websockets not installed — [serve] or [sim-serve] extra"
+)
+class TestRos2ProtocolWithoutGazebo(unittest.TestCase):
+    """Fake rosbridge on localhost. Does not open Gazebo or a real robot."""
+
+    def test_connect_session_over_fake_rosbridge(self):
+        import json as json_mod
+
+        import websockets
+
+        received: list[dict[str, Any]] = []
+        outgoing: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def mock_rosbridge(ws: Any) -> None:
+            async def pump_in() -> None:
+                async for raw in ws:
+                    msg = json_mod.loads(raw)
+                    received.append(msg)
+                    if msg.get("op") == "subscribe" and msg.get("topic") == "/odom":
+                        await ws.send(
+                            json_mod.dumps(
+                                {
+                                    "op": "publish",
+                                    "topic": "/odom",
+                                    "msg": {
+                                        "pose": {
+                                            "pose": {
+                                                "position": {
+                                                    "x": 1.25,
+                                                    "y": -0.5,
+                                                    "z": 0.0,
+                                                },
+                                                "orientation": {
+                                                    "x": 0.0,
+                                                    "y": 0.0,
+                                                    "z": 0.0,
+                                                    "w": 1.0,
+                                                },
+                                            }
+                                        }
+                                    },
+                                }
+                            )
+                        )
+                    elif (
+                        msg.get("op") == "subscribe"
+                        and msg.get("topic") == "/joint_states"
+                    ):
+                        await ws.send(
+                            json_mod.dumps(
+                                {
+                                    "op": "publish",
+                                    "topic": "/joint_states",
+                                    "msg": {
+                                        "name": ["arm_shoulder_pan"],
+                                        "position": [0.33],
+                                    },
+                                }
+                            )
+                        )
+
+            async def pump_out() -> None:
+                while True:
+                    payload = await outgoing.get()
+                    if payload is None:
+                        return
+                    await ws.send(payload)
+
+            await asyncio.gather(pump_in(), pump_out())
+
+        async def wait_for(predicate: Any, timeout: float = 1.0) -> None:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if predicate():
+                    return
+                await asyncio.sleep(0.02)
+            raise AssertionError("timed out waiting for rosbridge traffic")
+
+        async def run_test():
+            bridge = await websockets.serve(mock_rosbridge, "127.0.0.1", 0)
+            port = bridge.sockets[0].getsockname()[1]
+            old_rb = os.environ.get("OHHO_ROSBRIDGE")
+            os.environ["OHHO_ROSBRIDGE"] = "1"
+            server = SimServe(
+                backend="ros2",
+                rosbridge=f"ws://127.0.0.1:{port}",
+                host="127.0.0.1",
+                port=0,
+                rate_hz=40.0,
+            )
+            try:
+                await server.start()
+                async with websockets.connect(
+                    f"ws://127.0.0.1:{server.port}"
+                ) as client:
+
+                    async def latest() -> dict[str, Any]:
+                        raw = await asyncio.wait_for(client.recv(), timeout=1.0)
+                        msg = json_mod.loads(raw)
+                        while True:
+                            try:
+                                raw = await asyncio.wait_for(
+                                    client.recv(), timeout=0.05
+                                )
+                                msg = json_mod.loads(raw)
+                            except asyncio.TimeoutError:
+                                return msg
+
+                    async def until_pose() -> dict[str, Any]:
+                        deadline = time.monotonic() + 1.0
+                        last: dict[str, Any] = {}
+                        while time.monotonic() < deadline:
+                            last = await latest()
+                            odom = last.get("odom") or {}
+                            joints = last.get("joints") or {}
+                            if (
+                                abs(odom.get("x", 0.0) - 1.25) < 0.02
+                                and abs(joints.get("arm_shoulder_pan", 0.0) - 0.33)
+                                < 0.02
+                            ):
+                                return last
+                        raise AssertionError(f"odom/joints missing: {last}")
+
+                    tele = await until_pose()
+                    self.assertEqual(tele["backend"], "ros2")
+                    self.assertTrue(tele.get("no_camera"))
+                    self.assertNotIn("camera", tele)
+                    self.assertAlmostEqual(tele["odom"]["y"], -0.5, places=2)
+
+                    subscribed = {
+                        msg.get("topic")
+                        for msg in received
+                        if msg.get("op") == "subscribe"
+                    }
+                    self.assertIn("/odom", subscribed)
+                    self.assertIn("/joint_states", subscribed)
+                    self.assertIn("/camera/front/image_raw", subscribed)
+                    self.assertIn("/camera/front/image_raw/compressed", subscribed)
+
+                    await outgoing.put(
+                        json_mod.dumps(
+                            {
+                                "op": "publish",
+                                "topic": "/camera/wrist/image_raw/compressed",
+                                "msg": {"format": "jpeg", "data": "d3Jpc3Q="},
+                            }
+                        )
+                    )
+                    await outgoing.put(
+                        json_mod.dumps(
+                            {
+                                "op": "publish",
+                                "topic": "/camera/front/image_raw/compressed",
+                                "msg": {"format": "jpeg", "data": ""},
+                            }
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    still_quiet = await latest()
+                    self.assertTrue(still_quiet.get("no_camera"))
+                    self.assertNotIn("camera", still_quiet)
+
+                    await outgoing.put(
+                        json_mod.dumps(
+                            {
+                                "op": "publish",
+                                "topic": "/camera/front/image_raw/compressed",
+                                "msg": {"format": "jpeg", "data": "aW1hZ2U="},
+                            }
+                        )
+                    )
+
+                    async def until_camera() -> dict[str, Any]:
+                        deadline = time.monotonic() + 1.0
+                        last = still_quiet
+                        while time.monotonic() < deadline:
+                            last = await latest()
+                            if last.get("camera") == "aW1hZ2U=":
+                                return last
+                        raise AssertionError(f"camera frame missing: {last}")
+
+                    framed = await until_camera()
+                    self.assertNotIn("no_camera", framed)
+
+                    mark = len(received)
+                    await client.send(
+                        json_mod.dumps(
+                            {
+                                "deadman": True,
+                                "velocity": {
+                                    "linearX": 0.25,
+                                    "linearY": 0.05,
+                                    "angularZ": 0.75,
+                                },
+                            }
+                        )
+                    )
+                    await wait_for(
+                        lambda: any(
+                            msg.get("topic") == "/cmd_vel"
+                            and abs(
+                                msg.get("msg", {}).get("linear", {}).get("x", 0.0)
+                                - 0.25
+                            )
+                            < 1e-6
+                            for msg in received[mark:]
+                        )
+                    )
+
+                    mark = len(received)
+                    await client.send(
+                        json_mod.dumps(
+                            {
+                                "velocity": {
+                                    "linear": {"x": 0.4, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                }
+                            }
+                        )
+                    )
+                    await wait_for(
+                        lambda: any(
+                            msg.get("topic") == "/cmd_vel"
+                            and msg.get("msg", {}).get("linear", {}).get("x") == 0.0
+                            for msg in received[mark:]
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    zeros = [
+                        msg for msg in received[mark:] if msg.get("topic") == "/cmd_vel"
+                    ]
+                    self.assertEqual(zeros[-1]["msg"]["linear"]["x"], 0.0)
+
+                    mark = len(received)
+                    await client.send(
+                        json_mod.dumps(
+                            {"deadman": True, "joints": {"arm_shoulder_pan": 0.4}}
+                        )
+                    )
+                    await wait_for(
+                        lambda: any(
+                            msg.get("topic") == "/arm/joint_commands"
+                            for msg in received[mark:]
+                        )
+                    )
+                    joint_msgs = [
+                        msg
+                        for msg in received
+                        if msg.get("topic") == "/arm/joint_commands"
+                    ]
+                    self.assertEqual(
+                        joint_msgs[-1]["msg"]["name"], ["arm_shoulder_pan"]
+                    )
+                    self.assertAlmostEqual(joint_msgs[-1]["msg"]["position"][0], 0.4)
+
+                    mark = len(received)
+                    await client.send(
+                        json_mod.dumps(
+                            {
+                                "estop": True,
+                                "deadman": True,
+                                "velocity": {
+                                    "linear": {"x": 0.2, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                },
+                            }
+                        )
+                    )
+                    await wait_for(
+                        lambda: any(
+                            msg.get("topic") == "/emergency_stop"
+                            and msg.get("msg", {}).get("data") is True
+                            for msg in received[mark:]
+                        )
+                    )
+                    await asyncio.sleep(0.05)
+                    twists = [
+                        msg for msg in received[mark:] if msg.get("topic") == "/cmd_vel"
+                    ]
+                    self.assertTrue(twists)
+                    self.assertEqual(twists[-1]["msg"]["linear"]["x"], 0.0)
+            finally:
+                await outgoing.put(None)
+                await server.stop()
+                if old_rb is None:
+                    os.environ.pop("OHHO_ROSBRIDGE", None)
+                else:
+                    os.environ["OHHO_ROSBRIDGE"] = old_rb
+                bridge.close()
+                await bridge.wait_closed()
+
+        asyncio.run(run_test())
 
 
 if __name__ == "__main__":
