@@ -14,9 +14,10 @@ tests (returns a callable that yields state dicts — no DDS, no hardware).
 
 from __future__ import annotations
 
+import collections
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Deque, Optional, Tuple
 
 from ..registry import RobotSpec
 from ..schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
@@ -91,6 +92,7 @@ class UnitreeDdsTransport(BaseTransport):
         *,
         iface: str = "",
         state_factory: Optional[StateFactory] = None,
+        lowstate_factory: Optional[StateFactory] = None,
     ) -> None:
         super().__init__()
         self.spec = spec
@@ -108,8 +110,13 @@ class UnitreeDdsTransport(BaseTransport):
         self.domain_id = domain
         self._iface = iface
         self._state_factory = state_factory
+        self._lowstate_factory = lowstate_factory
         self._client: Optional[object] = None
         self._state_getter: Optional[Callable[[], Optional[dict]]] = None
+        self._lowstate_getter: Optional[Callable[[], Optional[dict]]] = None
+        self._latest_lowstate: Optional[dict] = None
+        self._sport_times: Deque[float] = collections.deque(maxlen=256)
+        self._lowstate_times: Deque[float] = collections.deque(maxlen=512)
         self._latest = Telemetry(odom=Odometry())
         self._estopped = False
         self._state = ConnectionState.IDLE
@@ -128,6 +135,8 @@ class UnitreeDdsTransport(BaseTransport):
             self._state_getter = self._state_factory()
         else:
             self._connect_dds()
+        if self._lowstate_factory is not None:
+            self._lowstate_getter = self._lowstate_factory()
         self._state = ConnectionState.CONNECTED
         self._connected_since = time.time()
         self._start_reader()
@@ -195,8 +204,69 @@ class UnitreeDdsTransport(BaseTransport):
 
     def _on_state(self, state: dict) -> None:
         """Bridge a state dict to telemetry and emit."""
+        self._sport_times.append(time.monotonic())
         self._latest = sportstate_to_telemetry(state)
         self._emit_telemetry(self._latest)
+
+    def _on_lowstate(self, state: dict) -> None:
+        self._lowstate_times.append(time.monotonic())
+        self._latest_lowstate = state
+
+    def _stream_rate_hz(self, times: Deque[float], window_s: float = 1.0) -> float:
+        if not times:
+            return 0.0
+        now = time.monotonic()
+        cutoff = now - window_s
+        while times and times[0] < cutoff:
+            times.popleft()
+        if len(times) < 2:
+            return float(len(times)) / window_s if window_s > 0 else 0.0
+        span = times[-1] - times[0]
+        if span <= 0:
+            return 0.0
+        return (len(times) - 1) / span
+
+    def read_legged_diagnostics(self) -> dict:
+        """Snapshot for ``ohho selftest`` (sport/lowstate rates, motors, BMS, IMU)."""
+        t = self._latest
+        custom = dict(t.custom or {})
+        err = custom.get("error_code", 0)
+        rpy = [custom.get("roll", 0.0), custom.get("pitch", 0.0)]
+        if t.odom is not None:
+            rpy.append(float(t.odom.theta))
+        else:
+            rpy.append(0.0)
+        motors: list[dict] = []
+        if self._latest_lowstate:
+            raw = self._latest_lowstate.get("motors")
+            if isinstance(raw, list):
+                motors = list(raw)
+        return {
+            "sport_hz": round(self._stream_rate_hz(self._sport_times), 2),
+            "lowstate_hz": round(self._stream_rate_hz(self._lowstate_times), 2),
+            "motors": motors,
+            "imu_rpy": rpy,
+            "battery_soc": t.battery,
+            "error_code": err,
+            "camera_jpeg_len": None,
+        }
+
+    def capture_front_camera_jpeg(self) -> Optional[bytes]:
+        """Front camera frame via Unitree VideoClient (hardware only)."""
+        if self._client is None or self._state_factory is not None:
+            return None
+        try:
+            from unitree_sdk2py.go2.video.video_client import VideoClient  # type: ignore
+
+            vc = VideoClient()
+            vc.SetTimeout(3.0)
+            vc.Init()
+            code, data = vc.GetImageSample()
+            if code == 0 and data:
+                return bytes(data)
+        except Exception:
+            return None
+        return None
 
     def disconnect(self) -> None:
         self._stop_reader()
@@ -231,6 +301,10 @@ class UnitreeDdsTransport(BaseTransport):
                     state = self._state_getter()
                     if state is not None:
                         self._on_state(state)
+                if self._lowstate_getter is not None:
+                    low = self._lowstate_getter()
+                    if low is not None:
+                        self._on_lowstate(low)
                 time.sleep(period)
 
         self._thread = threading.Thread(

@@ -38,4 +38,6 @@ jobs:
       - name: CLI smoke (sim)
         run: ohho sim --robot omnibot --seconds 2
       - name: CLI smoke (selftest sim)
-        run: ohho selftest --sim
+        run: |
+          ohho selftest --sim
+          ohho selftest --sim --robot unitree-go2
