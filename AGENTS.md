@@ -19,7 +19,7 @@
   independently verified from a fresh install: 151 unittest cases green in a
   fully-equipped env; in a **bare** env the optional-dep tests skip cleanly
   (agent_engine/numpy → brains tests; fastapi → the record→train→serve e2e; 4 HIL
-  tests skip unless `OHHO_HIL=1`). `ohho` CLI works end-to-end with `doctor list
+  tests skip unless `OHHO_HIL=1` and an explicit device variable). `ohho` CLI works end-to-end with `doctor list
   version connect sim drive agent serve market profile`.
 - **v1.0.1 hardening:** `Agent`/`ohho agent` no longer crash on a bare install —
   `brains.harness_available()` probes the real import chain and `HarnessBrain.run`
@@ -57,10 +57,11 @@
 | **Memory + perception** | ✅ **v1.1.0** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, Claude-vision `VlmPerceptor`). CLI `ohho look`, `ohho memory` |
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
+| **HIL harness (OHH-35)** | ⏳ **code done; bench run pending (Varun)** — `tests/hil` skips unless `OHHO_HIL=1` and an explicit port (no default `/dev/ttyUSB0`, `/dev/ttyACM0`, or `eth0`). `ohho hil --mock` / `tests/test_hil_mock.py` run the four scenarios on fake transports in CI. `docs/hil-preflight.md`, `docs/hil-bag.md` (2-min MCAP), empty `docs/hil-results.md`. CLI `ohho hil` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
-| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 383 tests, OK (skipped=7). |
+| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest hil` |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 410 tests, skipped=7 (4 are hardware HIL). `tests/test_hil_mock.py` passed. 3 errors on this checkout are outside OHH-35 (`tests.test_ros2` import in `test_demo_drive`; two `selftest` cases crash importing a broken local `cv2`). |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -181,20 +182,25 @@ sdk/
 │   ├── sim_serve.py      # ohho.sim_serve — WebSocket teleop and telemetry server (`sim` and `ros2`)
 │   ├── sim_loop.py       # ohho.sim_loop — record -> validate -> tiny ACT train -> serve -> eval pipeline
 │   ├── selftest.py       # ohho.selftest — hardware self-test suite (motors, encoders, IMU, servos, camera)
+│   ├── hil.py            # ohho.hil — HIL runner, fake-transport scenarios, results markdown (OHH-35)
 │   ├── safety.py         # ohho.safety — SafetyGate(Transport), SafetyProfile, AuditLog, arming policy
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/hil; main()
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── hil-preflight.md  # bench checklist before hardware HIL (OHH-35)
+│   ├── hil-bag.md        # 2-minute MCAP recording on the Pi 5 Jazzy image
+│   └── hil-results.md    # empty HIL results template; the hardware runner fills it
 ├── scripts/
 │   ├── check_classifiers.py
+│   ├── hil_run.py        # one-command HIL runner (delegates to ohho.hil)
 │   └── sim_loop.py       # one-liner reproducible sim loop runner
-└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_selftest.py
+└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_selftest.py, test_hil_mock.py
 ```
 
 ---
@@ -343,11 +349,14 @@ robot-agnosticism. Pair: **OmniBot** (wheeled, USB serial) + **Unitree Go2**
 - **Mock/loopback tests** (27 new, 85 total): `test_feetech.py`,
   `test_composite.py`, updated `test_unitree.py` + `test_adapters.py`.
 - **HIL test harness**: `tests/hil/test_hil.py` — 4 tests (OmniBot base,
-  OmniBot arm, OmniBot composite, Go2 DDS), skipped unless `OHHO_HIL=1`.
+  OmniBot arm, OmniBot composite, Go2 DDS), skipped unless `OHHO_HIL=1` and
+  the matching device variable is set (no default port). Fake-transport
+  twins live in `tests/test_hil_mock.py`. Bench entry is `ohho hil`.
 
 **Remaining (hardware-gated only):** on-robot bring-up against the real OmniBot
-+ Go2 — run `OHHO_HIL=1 python -m unittest discover -s tests/hil -v` on the
-bench. DJI / MAVLink adapter not started.
++ Go2 — checklist in `docs/hil-preflight.md`, then `ohho hil --hardware
+--preflight-ok` with `OHHO_HIL=1` and explicit ports. DJI / MAVLink adapter
+not started.
 
 ### ✅ M2 — Real agent brain (DONE)
 Wired `ohho.agent._default_brain()` to **`agent_engine`** via the new
@@ -445,16 +454,19 @@ All milestones (M0–M5) are complete. OhhO OS is at v1.1.3. To continue:
 3. **Installer:** `curl | sh` behind `ohho.com/install.sh`.
 4. **New robots/skills:** follow `CONTRIBUTING.md` — one manifest + one
    adapter + one test.
-5. **On-robot M1 bring-up:** `OHHO_HIL=1 python -m unittest discover -s
-   tests/hil -v` on the bench.
+5. **On-robot M1 bring-up:** `docs/hil-preflight.md`, then
+   `OHHO_HIL=1` plus explicit ports and `ohho hil --hardware --preflight-ok`
+   on the bench. Record the 2-minute MCAP from `docs/hil-bag.md`.
 6. Keep `AGENTS.md` §0/§3/§8 in sync as you add features.
 
 ### M1 on-robot bring-up (when hardware is available)
 
 1. Install extras: `pip install -e '.[serial,arm,unitree]'`.
-2. Set env vars: `OHHO_HIL=1`, `OHHO_OMNIBOT_PORT=/dev/ttyUSB0`,
-   `OHHO_OMNIBOT_ARM=/dev/ttyACM0`, `OHHO_GO2_IFACE=eth0`.
-3. Run `python -m unittest discover -s tests/hil -v`.
+2. Complete `docs/hil-preflight.md` (batteries, wiring, e-stop, lidar,
+   cameras, Pi 5 Jazzy image) and record the bag in `docs/hil-bag.md`.
+3. From an interactive terminal, with the device nodes you confirmed:
+   `OHHO_HIL=1 OHHO_OMNIBOT_PORT=... OHHO_OMNIBOT_ARM=... OHHO_GO2_IFACE=... ohho hil --hardware --preflight-ok`
+   (writes `docs/hil-results.md`). Omit a variable to skip that device.
 4. Or drive manually:
    ```python
    from ohho import Robot
@@ -514,7 +526,9 @@ any of them needs an explicit Linear issue, not a drive-by edit.
     fails below 95 % line + branch coverage on `ohho/safety.py`.
 
 Not gated: `ohho selftest` and `tests/hil/` construct adapters directly (they
-have their own consent: `--allow-spin`, `OHHO_HIL=1`). The MuJoCo 2 m/s →
+have their own consent: `--allow-spin`, or `OHHO_HIL=1` plus an explicit
+device variable). `ohho hil --hardware` also requires `--preflight-ok` and a
+TTY. Do not put default serial ports or DDS interfaces back. The MuJoCo 2 m/s →
 0.5 m/s and 300 ms client-kill check is OHH-121. The `ohho-quadruped` repo's
 AGENTS.md needs the same rules section (not edited from here).
 
