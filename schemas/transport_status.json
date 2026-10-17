@@ -1,0 +1,37 @@
+{
+  "$id": "https://ohho-robotics.com/schemas/TransportStatus.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "connected_since": {
+      "type": "number"
+    },
+    "error": {
+      "type": "string"
+    },
+    "label": {
+      "default": "",
+      "type": "string"
+    },
+    "latency_ms": {
+      "default": 0,
+      "type": "number"
+    },
+    "msg_rate": {
+      "default": 0,
+      "type": "number"
+    },
+    "protocol": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "connection_state.json"
+    }
+  },
+  "required": [
+    "protocol",
+    "state"
+  ],
+  "title": "TransportStatus",
+  "type": "object"
+}

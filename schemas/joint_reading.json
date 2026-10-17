@@ -1,0 +1,22 @@
+{
+  "$id": "https://ohho-robotics.com/schemas/JointReading.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "position": {
+      "type": "number"
+    },
+    "velocity": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "name",
+    "position"
+  ],
+  "title": "JointReading",
+  "type": "object"
+}
