@@ -50,6 +50,8 @@ _ENV_KEYS = (
     "OHHO_CONSOLE_URL",
     "OHHO_SAFETY_CONFIG",
     "OHHO_ARM_HARDWARE",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
 )
 
 
@@ -365,10 +367,33 @@ class LoginCheckTests(unittest.TestCase):
 
 
 class RulesCheckTests(unittest.TestCase):
-    def test_skip_when_hook_is_missing(self) -> None:
-        check = check_rules()
-        self.assertEqual(check.status, "skip")
-        self.assertEqual(check.detail, _RULES_SKIP)
+    def test_real_hook_fails_when_rules_are_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with isolated(Path(tmp)):
+                check = check_rules()
+        self.assertEqual(check.status, "fail")
+        self.assertIn("rules missing", check.detail)
+        self.assertEqual(set(check.extra["clients"]), {spec.id for spec in CLIENTS})
+        self.assertTrue(all(path is None for path in check.extra["clients"].values()))
+
+    def test_real_hook_passes_when_every_client_is_installed(self) -> None:
+        from ohho.agent_rules import install_rules
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with isolated(home):
+                status = install_rules(
+                    None,
+                    all_clients=True,
+                    environ=_home_env(home),
+                    stdout=io.StringIO(),
+                )
+                check = check_rules()
+        self.assertEqual(status, 0)
+        self.assertEqual(check.status, "pass")
+        self.assertIn("installed:", check.detail)
+        self.assertTrue(all(check.extra["clients"].values()))
+        self.assertEqual(set(check.extra["clients"]), {spec.id for spec in CLIENTS})
 
     def test_skip_when_loader_raises_import_error(self) -> None:
         def load() -> object:
@@ -599,15 +624,16 @@ class ReportTests(unittest.TestCase):
     def test_json_schema_and_exit_code_when_mcp_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            stream = io.StringIO()
-            code = print_agent_report(
-                as_json=True,
-                environ=_home_env(home),
-                platform_name="linux",
-                stdout=stream,
-                sim_connect=_connected,  # type: ignore[arg-type]
-            )
-            text = stream.getvalue()
+            with isolated(home):
+                stream = io.StringIO()
+                code = print_agent_report(
+                    as_json=True,
+                    environ=_home_env(home),
+                    platform_name="linux",
+                    stdout=stream,
+                    sim_connect=_connected,  # type: ignore[arg-type]
+                )
+                text = stream.getvalue()
         self.assertEqual(code, 1)
         body = json.loads(text)
         self.assertEqual(list(body), ["ok", "version", "checks"])
@@ -621,40 +647,57 @@ class ReportTests(unittest.TestCase):
         by_id = {item["id"]: item for item in body["checks"]}
         self.assertEqual(by_id["mcp"]["status"], "fail")
         self.assertEqual(by_id["login"]["status"], "skip")
-        self.assertEqual(by_id["rules"]["status"], "skip")
-        self.assertEqual(by_id["rules"]["detail"], _RULES_SKIP)
+        self.assertEqual(by_id["rules"]["status"], "fail")
+        self.assertIn("rules missing", by_id["rules"]["detail"])
+        self.assertEqual(set(by_id["rules"]["clients"]), {spec.id for spec in CLIENTS})
+        self.assertTrue(
+            all(path is None for path in by_id["rules"]["clients"].values())
+        )
         self.assertEqual(by_id["sim"]["status"], "pass")
 
     def test_exit_zero_when_nothing_failed(self) -> None:
+        from ohho.agent_rules import install_rules
+
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            env = _home_env(home)
-            root = resolve_home(env, "linux")
-            cursor = client_config_path(
-                "cursor", home=root, environ=env, platform_name="linux"
-            )
-            cursor.parent.mkdir(parents=True)
-            cursor.write_text(
-                json.dumps(
-                    {
-                        "mcpServers": {
-                            "ohho": {"command": "ohho", "args": ["mcp", "serve"]}
+            with isolated(home):
+                env = _home_env(home)
+                installed = install_rules(
+                    None,
+                    all_clients=True,
+                    environ=env,
+                    platform_name="linux",
+                    stdout=io.StringIO(),
+                )
+                self.assertEqual(installed, 0)
+                root = resolve_home(env, "linux")
+                cursor = client_config_path(
+                    "cursor", home=root, environ=env, platform_name="linux"
+                )
+                cursor.parent.mkdir(parents=True, exist_ok=True)
+                cursor.write_text(
+                    json.dumps(
+                        {
+                            "mcpServers": {
+                                "ohho": {"command": "ohho", "args": ["mcp", "serve"]}
+                            }
                         }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            stream = io.StringIO()
-            code = print_agent_report(
-                as_json=False,
-                environ=env,
-                platform_name="linux",
-                stdout=stream,
-                sim_connect=_connected,  # type: ignore[arg-type]
-            )
+                    ),
+                    encoding="utf-8",
+                )
+                stream = io.StringIO()
+                code = print_agent_report(
+                    as_json=False,
+                    environ=env,
+                    platform_name="linux",
+                    stdout=stream,
+                    sim_connect=_connected,  # type: ignore[arg-type]
+                )
+                report = stream.getvalue()
         self.assertEqual(code, 0)
-        self.assertIn("agent readiness", stream.getvalue())
-        self.assertIn("pass", stream.getvalue())
+        self.assertIn("agent readiness", report)
+        self.assertIn("rules   pass", report)
+        self.assertIn("pass", report)
 
     def test_token_never_appears_in_text_json_or_logs(self) -> None:
         handler = _LogCapture()
@@ -663,31 +706,32 @@ class ReportTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp)
-                path = home / ".ohho" / "credentials.json"
-                save_credentials(
-                    path,
-                    Credentials(
-                        token=_FILE_TOKEN,
-                        token_type="Bearer",
-                        scope="mcp",
-                        console_url="https://console.ohho-robotics.com",
-                    ),
-                )
-                env = _home_env(home, OHHO_TOKEN=_TOKEN)
+                with isolated(home, OHHO_TOKEN=_TOKEN):
+                    path = home / ".ohho" / "credentials.json"
+                    save_credentials(
+                        path,
+                        Credentials(
+                            token=_FILE_TOKEN,
+                            token_type="Bearer",
+                            scope="mcp",
+                            console_url="https://console.ohho-robotics.com",
+                        ),
+                    )
+                    env = _home_env(home, OHHO_TOKEN=_TOKEN)
 
-                def fake_whoami(**kwargs: object) -> Whoami:
-                    return Whoami(signed_in=True, email=f"ada+{_TOKEN}@example.com")
+                    def fake_whoami(**kwargs: object) -> Whoami:
+                        return Whoami(signed_in=True, email=f"ada+{_TOKEN}@example.com")
 
-                report = build_agent_report(
-                    online=True,
-                    environ=env,
-                    platform_name="linux",
-                    whoami_fn=fake_whoami,
-                    sim_connect=_connected,  # type: ignore[arg-type]
-                )
-                rendered = format_agent_report(
-                    report, as_json=True
-                ) + format_agent_report(report, as_json=False)
+                    report = build_agent_report(
+                        online=True,
+                        environ=env,
+                        platform_name="linux",
+                        whoami_fn=fake_whoami,
+                        sim_connect=_connected,  # type: ignore[arg-type]
+                    )
+                    rendered = format_agent_report(
+                        report, as_json=True
+                    ) + format_agent_report(report, as_json=False)
         finally:
             root.removeHandler(handler)
         _assert_secret_absent(self, rendered, _TOKEN, _FILE_TOKEN)
@@ -736,6 +780,9 @@ class CliDoctorTests(unittest.TestCase):
         self.assertEqual(code, 1)
         body = json.loads(stdout.getvalue())
         self.assertIn("checks", body)
+        by_id = {item["id"]: item for item in body["checks"]}
+        self.assertEqual(by_id["rules"]["status"], "fail")
+        self.assertIn("rules missing", by_id["rules"]["detail"])
         _assert_secret_absent(self, text, _TOKEN, _FILE_TOKEN)
 
     def test_online_uses_console_url_and_offline_does_not(self) -> None:
