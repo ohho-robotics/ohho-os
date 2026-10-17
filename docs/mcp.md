@@ -141,6 +141,8 @@ User `mcp.json` uses `servers` (not `mcpServers`) and requires `"type": "stdio"`
 | macOS | `~/Library/Application Support/Code/User/mcp.json` |
 | Linux | `$XDG_CONFIG_HOME/Code/User/mcp.json`, or `~/.config/Code/User/mcp.json` |
 
+On Linux, `XDG_CONFIG_HOME=$HOME/.config`, `${HOME}/.config`, or `~/.config` follows the same home directory as the other client files. Any other absolute path is used as written.
+
 ```json
 {
   "servers": {

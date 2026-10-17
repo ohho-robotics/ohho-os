@@ -192,6 +192,17 @@ class TestClientPaths(TempConnect):
             client_config_path("vscode", home=home, environ=xdg, platform_name="linux"),
             Path("/xdg/Code/User/mcp.json"),
         )
+        for value in ("$HOME/.config", "${HOME}/.config", "~/.config"):
+            self.assertEqual(
+                client_config_path(
+                    "vscode",
+                    home=home,
+                    environ={**env, "XDG_CONFIG_HOME": value},
+                    platform_name="linux",
+                ),
+                home / ".config" / "Code" / "User" / "mcp.json",
+                value,
+            )
         mac = Path("/Users/ada")
         self.assertEqual(
             client_config_path(
@@ -213,11 +224,13 @@ class TestClientPaths(TempConnect):
             ),
             Path(r"C:\Users\ada\AppData\Roaming\Code\User\mcp.json"),
         )
+        # Windows separators. On a POSIX host, `win_home / ".cursor"` inserts
+        # forward slashes because `Path(r"C:\Users\ada")` is a single component.
         self.assertEqual(
             client_config_path(
                 "cursor", home=win_home, environ=win_env, platform_name="win32"
             ),
-            win_home / ".cursor" / "mcp.json",
+            Path(r"C:\Users\ada\.cursor\mcp.json"),
         )
 
     def test_windows_vscode_requires_appdata(self) -> None:
@@ -770,6 +783,11 @@ class TestMcpCli(unittest.TestCase):
                 "APPDATA": str(appdata),
             }
             with patch.dict(os.environ, env, clear=False):
+                # GitHub-hosted Ubuntu sets XDG_CONFIG_HOME=/home/runner/.config.
+                # Leaving that absolute path in place writes VS Code's mcp.json
+                # outside this temporary HOME. $HOME/.config / unset both mean
+                # the default under the relocated home.
+                os.environ.pop("XDG_CONFIG_HOME", None)
                 with patch("shutil.which", return_value=None):
                     with patch.object(
                         Path, "home", side_effect=AssertionError("real home")
