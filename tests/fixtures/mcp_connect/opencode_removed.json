@@ -1,0 +1,12 @@
+{
+  "mcp": {
+    "other": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "other-server"
+      ]
+    }
+  }
+}
