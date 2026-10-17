@@ -148,6 +148,38 @@ def _cmd_sim(args) -> int:
     return 0
 
 
+def _cmd_sim_up(args) -> int:
+    from .sessions import run_sim_up
+
+    return run_sim_up(
+        robot_id=args.robot,
+        target=args.target,
+        host=args.host,
+        rosbridge_url=args.rosbridge,
+        video_urls=args.video,
+        webrtc_signal_url=args.webrtc,
+    )
+
+
+def _cmd_sim_down(args) -> int:
+    from .sessions import run_sim_down
+
+    return run_sim_down(robot_id=args.robot, target=args.target)
+
+
+def _cmd_robot_announce(args) -> int:
+    from .sessions import run_robot_announce
+
+    return run_robot_announce(
+        robot_id=args.robot,
+        down=args.down,
+        host=args.host,
+        rosbridge_url=args.rosbridge,
+        video_urls=args.video,
+        webrtc_signal_url=args.webrtc,
+    )
+
+
 def _cmd_drive(args) -> int:
     try:
         bot = _connect(args)
@@ -525,10 +557,53 @@ def build_parser() -> argparse.ArgumentParser:
     _add_robot_args(c)
     c.set_defaults(func=_cmd_connect)
 
-    s = sub.add_parser("sim", help="run a robot in simulation")
+    s = sub.add_parser(
+        "sim",
+        help="drive a simulated robot, or publish a sim session (up/down)",
+    )
     s.add_argument("--robot", default="omnibot")
     s.add_argument("--seconds", type=float, default=8.0)
-    s.set_defaults(func=_cmd_sim)
+    s.set_defaults(func=_cmd_sim, sim_command=None)
+    sim_sub = s.add_subparsers(dest="sim_command", required=False)
+
+    s_up = sim_sub.add_parser(
+        "up",
+        help="register a sim session for the VR garage and heartbeat it",
+    )
+    s_up.add_argument("--robot", default="omnibot")
+    s_up.add_argument(
+        "--target",
+        default="local",
+        choices=["local", "cloud"],
+        help="local registers this PC; cloud needs OHH-216",
+    )
+    s_up.add_argument(
+        "--host",
+        default=None,
+        help="LAN address the headset uses (default: OHHO_SIM_HOST or this PC)",
+    )
+    s_up.add_argument("--rosbridge", default=None, help="rosbridge WebSocket URL")
+    s_up.add_argument(
+        "--video",
+        action="append",
+        default=None,
+        help="video URL (repeatable). Overrides the default camera URL",
+    )
+    s_up.add_argument("--webrtc", default=None, help="WebRTC signaling URL")
+    s_up.set_defaults(func=_cmd_sim_up)
+
+    s_down = sim_sub.add_parser(
+        "down",
+        help="remove the sim session from the VR garage",
+    )
+    s_down.add_argument("--robot", default="omnibot")
+    s_down.add_argument(
+        "--target",
+        default="local",
+        choices=["local", "cloud"],
+        help="cloud needs OHH-216 and removes nothing",
+    )
+    s_down.set_defaults(func=_cmd_sim_down)
 
     d = sub.add_parser("drive", help="drive a robot for a duration")
     _add_robot_args(d)
@@ -682,6 +757,29 @@ def build_parser() -> argparse.ArgumentParser:
         "detect", help="auto-detect the current machine's profile"
     ).set_defaults(action="detect")
     pf.set_defaults(func=_cmd_profile)
+
+    rb = sub.add_parser("robot", help="publish a real robot to the VR garage")
+    rb_sub = rb.add_subparsers(dest="robot_command", required=True)
+    an = rb_sub.add_parser(
+        "announce",
+        help="register this robot (OHH-196 gateway URLs) and heartbeat until stopped",
+    )
+    an.add_argument("--robot", default="omnibot")
+    an.add_argument(
+        "--down",
+        action="store_true",
+        help="remove the announced session",
+    )
+    an.add_argument("--host", default=None, help="LAN address of the robot gateway")
+    an.add_argument("--rosbridge", default=None, help="rosbridge WebSocket URL")
+    an.add_argument(
+        "--video",
+        action="append",
+        default=None,
+        help="video URL (repeatable)",
+    )
+    an.add_argument("--webrtc", default=None, help="WebRTC signaling URL")
+    an.set_defaults(func=_cmd_robot_announce)
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(

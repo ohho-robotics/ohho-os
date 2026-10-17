@@ -1,0 +1,23 @@
+# Local sim stack for `ohho sim up --target local`.
+#
+# The GPU image is OHH-204 and is not published. This service is on the
+# `gpu` profile, so the command the CLI runs by default:
+#
+#   docker compose -f ohho/sim/docker-compose.yml up -d
+#
+# succeeds without pulling an image and without starting a container.
+# When OHH-204 publishes the image, start it with:
+#
+#   docker compose --profile gpu -f ohho/sim/docker-compose.yml up -d
+#
+# Set OHHO_SIM_IMAGE if the published name differs.
+# Published ports are the ones the session row advertises (rosbridge 9090,
+# web video 8080). The OHH-196 gateway is a separate process on :8443.
+
+services:
+  omnibot-sim:
+    profiles: ["gpu"]
+    image: ${OHHO_SIM_IMAGE:-ohho/omnibot-sim:ohh-204}
+    ports:
+      - "9090:9090"
+      - "8080:8080"
