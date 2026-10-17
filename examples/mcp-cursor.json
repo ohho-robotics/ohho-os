@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "ohho-os": {
+    "ohho": {
       "command": "ohho",
-      "args": ["mcp"],
+      "args": ["mcp", "serve"],
       "env": {}
     }
   }
