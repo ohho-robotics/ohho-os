@@ -4,8 +4,10 @@ Sign-in is optional. `sim://`, `ohho sim`, and the local `ohho mcp serve` /
 `ohho mcp connect` stdio server keep working with no account. `ohho mcp
 connect --hosted` stays refused until hosted MCP auth (OHH-274).
 
-The access token is never printed by `login`, `whoami`, `logout`, or
-`ohho doctor`, and it is not written to the log.
+The access token is never printed by `login`, `whoami`, `logout`,
+`ohho doctor`, or `ohho doctor --agent`, and it is not written to the log.
+
+`ohho doctor --agent` and `ohho verify --sim` are documented below.
 
 ## Console
 
@@ -156,6 +158,292 @@ elsewhere by setting those variables.
 `token` is the secret. Do not commit this file. `console_url` is the origin
 that issued it. `OHHO_CONSOLE_URL` still wins for the next API call.
 
+## `ohho doctor --agent`
+
+```bash
+ohho doctor
+ohho doctor --agent
+ohho doctor --agent --json
+ohho doctor --agent --online
+ohho doctor --agent --online --json
+```
+
+`ohho doctor` with no flag is unchanged: it prints the interpreter, runtimes,
+adapters, and robots. `--json` and `--online` do nothing unless `--agent` is
+set.
+
+`ohho doctor --agent` is a readiness report for AI-agent setup. It does not
+move the robot. Each check is `pass`, `fail`, or `skip`. The process exits 0
+when no check failed. A `skip` is not a failure. Exit code 1 means at least
+one check failed.
+
+| Check | Pass | Fail | Skip |
+|-------|------|------|------|
+| `cli` | `ohho-os` version and install method | version string is missing or not numeric | the install layout could not be read |
+| `python` | 3.10 or newer | older than 3.10 | the version could not be read |
+| `login` | a token is configured (`OHHO_TOKEN` or the credentials file) | the credentials file cannot be parsed; or `--online` was asked and the console could not be reached | not signed in. Login is optional for `sim://` |
+| `rules` | `ohho.agent_rules.installed_clients()` reports a path for every client | the hook ran and a client has no rules, or the hook raised | `ohho rules install` is not in this build |
+| `mcp` | at least one of the seven clients has an `ohho` MCP server entry | the home directory was readable and none of the clients have that entry | the home directory could not be resolved |
+| `sim` | `omnibot` on `sim://` returned telemetry | connect or telemetry failed | the simulator is not connected |
+
+Install method is a best-effort label: `pipx`, `pip --user`, `venv`,
+`editable source`, or `unknown`. `unknown` is still a pass.
+
+Login reports the email and the source (`env` or `file`) only. Offline (the
+default) does not call the network, so the email is null: the credentials
+file does not store one. `--online` calls `GET /api/cli/whoami` on
+`OHHO_CONSOLE_URL` or `https://console.ohho-robotics.com`. A rejected token
+is `skip` (signed out), not a crash. The token is not a JSON field and is
+stripped from every string if it would otherwise appear.
+
+### Rules hook (phase 6)
+
+`ohho rules install` is not in this build. When it lands, add a module
+`ohho.agent_rules` with:
+
+```python
+def installed_clients() -> dict[str, str | None]:
+    """Client id → rules path, or None when that client has no rules."""
+```
+
+Until that module exists, the rules check detail is exactly:
+
+```text
+skip: ohho rules install not available in this build
+```
+
+### MCP check
+
+The seven clients are the ones `ohho mcp connect` knows (Claude Code, Codex,
+Cursor, VS Code, Gemini CLI, Windsurf, OpenCode). Paths come from that
+command's config table. The check only reads files. It does not create
+backups or write config. One configured client is enough to pass; the JSON
+still lists every client.
+
+### `sim` check
+
+Connects `omnibot` with transport `sim://`, reads telemetry once, and
+disconnects. It does not send a velocity.
+
+Text (illustrative; install method and Python version vary):
+
+```text
+OhhO OS 1.1.3 agent readiness
+  cli     pass  ohho-os 1.1.3 (editable source)
+  python  pass  3.12.10
+  login   skip  not signed in (optional for sim)
+  rules   skip  skip: ohho rules install not available in this build
+  mcp     fail  no ohho MCP server configured
+  sim     pass  sim:// telemetry ok
+```
+
+That example exits 1 because `mcp` failed.
+
+### `ohho doctor --agent --json`
+
+UTF-8 JSON, one object, no other stdout. Field order is fixed: `ok`,
+`version`, `checks`. Each check starts with `id`, `status`, `detail`. Any
+further keys are sorted by name.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `ok` | bool | True when no check has status `fail`. |
+| `version` | string | `ohho-os` `__version__`. |
+| `checks` | array | One object per check, in the order cli, python, login, rules, mcp, sim. |
+| `checks[].id` | string | `cli`, `python`, `login`, `rules`, `mcp`, or `sim`. |
+| `checks[].status` | string | `pass`, `fail`, or `skip`. |
+| `checks[].detail` | string | Short human text. Never contains the access token. |
+| `checks[].version` | string | Present on `cli` and `python`. |
+| `checks[].install` | string | Present on `cli`. |
+| `checks[].source` | string or null | `login`: `env`, `file`, or null. |
+| `checks[].email` | string or null | `login`: account email when `--online` returned one. |
+| `checks[].clients` | object | `rules`: client → path or null. `mcp`: client → `{configured, path, detail}`. |
+| `checks[].robot` | string | `sim`: the robot id that was connected. |
+
+```json
+{
+  "ok": false,
+  "version": "1.1.3",
+  "checks": [
+    {
+      "id": "cli",
+      "status": "pass",
+      "detail": "ohho-os 1.1.3 (editable source)",
+      "install": "editable source",
+      "version": "1.1.3"
+    },
+    {
+      "id": "python",
+      "status": "pass",
+      "detail": "3.12.10",
+      "version": "3.12.10"
+    },
+    {
+      "id": "login",
+      "status": "skip",
+      "detail": "not signed in (optional for sim)",
+      "email": null,
+      "source": null
+    },
+    {
+      "id": "rules",
+      "status": "skip",
+      "detail": "skip: ohho rules install not available in this build"
+    },
+    {
+      "id": "mcp",
+      "status": "fail",
+      "detail": "no ohho MCP server configured",
+      "clients": {
+        "cursor": {
+          "configured": false,
+          "path": "/home/ada/.cursor/mcp.json",
+          "detail": "not configured"
+        }
+      }
+    },
+    {
+      "id": "sim",
+      "status": "pass",
+      "detail": "sim:// telemetry ok",
+      "robot": "omnibot"
+    }
+  ]
+}
+```
+
+The real `mcp.clients` object has all seven clients. The example shows the
+shape with `cursor` only. There is no `token` field.
+
+Signed in, offline:
+
+```json
+{"id": "login", "status": "pass", "detail": "signed in (source: env)", "email": null, "source": "env"}
+```
+
+Signed in, `--online`:
+
+```json
+{"id": "login", "status": "pass", "detail": "signed in as ada@example.com (source: file)", "email": "ada@example.com", "source": "file"}
+```
+
+## `ohho verify --sim`
+
+```bash
+ohho verify --sim
+ohho verify --sim --json
+ohho verify --sim --robot omnibot
+ohho verify --sim --console
+```
+
+`--sim` is required. Without it the command prints an error and exits 2.
+Hardware is never the default. The only backend is `sim://`.
+
+There is no transport option that selects a real robot. `--transport` with
+any value other than `sim://` exits 2. The same refusal applies when any of
+these name a non-sim URI:
+
+| Source | Name |
+|--------|------|
+| Environment | `OHHO_TRANSPORT`, `OHHO_ROBOT_TRANSPORT`, `OHHO_VERIFY_TRANSPORT`, `OHHO_URI` |
+| Flag | `--transport`, or a `--robot` value that is itself a non-sim URI |
+| Robot config | `OHHO_ROBOT_CONFIG` pointing at JSON whose `transport`, `uri`, or `url` is not `sim://` |
+
+The error names the flag or variable. It does not repeat the URI. A manifest
+that only sets `adapter` (and no URI) is not a hardware connection: verify
+still builds `sim://`. `OHHO_TRANSPORT=sim://` is ignored and the command
+still uses its own simulator.
+
+On success the command connects `omnibot` (or `--robot`) on `sim://`, reads
+telemetry, drives 0.1 m/s forward for 1 second, stops, reads telemetry again,
+and prints the distance moved. The pass band is distance > 0 and distance ≤
+0.1 m plus a 0.05 m tolerance (acceleration limiting means the robot does not
+spend the whole second at 0.1 m/s). Exit 0 on pass, 1 on fail.
+
+The sim transport is wrapped in `SafetyGate` before any motion. Caps, the
+300 ms command watchdog, and the action allowlist apply. Commands are sent
+every 50 ms so the deadman stays fed, then an explicit zero-velocity stop is
+sent. The stop also runs if the drive raises or the process is interrupted.
+`release_stop` is never called. Limits are the built-in profile;
+`OHHO_SAFETY_CONFIG` is not applied. `OHHO_ARM_HARDWARE=1` does not select
+hardware and does not change the distance.
+
+`Robot.connect` does not put `sim://` behind the gate. verify wraps the
+simulator itself and calls `arm()`, which succeeds without a TTY prompt
+because a simulated link does not require hardware arming. The prompt is
+disabled on this command, so a mis-detected hardware link cannot be armed.
+
+The safety log may print `safety: <robot> ARMED (simulated)` on stderr. That
+line is the simulator gate, not a hardware arm.
+
+`--console` (off by default) sends `GET {origin}/sim`. The origin is
+`OHHO_CONSOLE_URL` or `https://console.ohho-robotics.com`. HTTP 404, any
+other non-200, and network errors are reported as `skip` / `unavailable`.
+They do not crash the process and they do not fail a drive that otherwise
+passed. Production `/sim` is 404 today. No HTTP call is made unless
+`--console` is set. `ohho doctor --agent` makes no HTTP call unless
+`--online` is set.
+
+Text:
+
+```text
+verify sim:// omnibot: pass
+  distance: 0.086 m
+  tolerance: 0.050 m
+  commanded: 0.1 m/s for 1 s
+```
+
+### `ohho verify --sim --json`
+
+One JSON object. Field order is fixed. `console` is null unless `--console`
+was set.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `ok` | bool | True when the distance is inside the pass band. |
+| `robot` | string | Robot id. Default `omnibot`. |
+| `transport` | string | Always `sim://`. |
+| `distance_m` | number | Straight-line distance from the start pose, metres. |
+| `tolerance_m` | number | 0.05. |
+| `commanded_mps` | number | 0.1. |
+| `duration_s` | number | 1. |
+| `detail` | string | `moved 0.086 m` or an outside-tolerance / arming failure line. |
+| `console` | object or null | `{status, detail}` when `--console` is set. `status` is `pass` or `skip`. |
+
+```json
+{
+  "ok": true,
+  "robot": "omnibot",
+  "transport": "sim://",
+  "distance_m": 0.086,
+  "tolerance_m": 0.05,
+  "commanded_mps": 0.1,
+  "duration_s": 1.0,
+  "detail": "moved 0.086 m",
+  "console": null
+}
+```
+
+With `--console` when production returns 404:
+
+```json
+{"status": "skip", "detail": "unavailable (HTTP 404)"}
+```
+
+A refusal (missing `--sim`, or a non-sim URI) exits 2. With `--json`, stdout
+is one object and the URI is not copied into it:
+
+```json
+{
+  "ok": false,
+  "robot": "omnibot",
+  "transport": "sim://",
+  "error": "ohho verify accepts only sim:// (refusing --transport)"
+}
+```
+
+Without `--json`, the same message is only on stderr (`error: …`).
+
 ## Human TODO
 
 - Run `ohho login`, `ohho whoami`, and `ohho logout` once against a console
@@ -165,3 +453,13 @@ that issued it. `OHHO_CONSOLE_URL` still wins for the next API call.
   user code.
 - Server-side revoke from the CLI needs a console endpoint. Until that
   exists, revoke the token from the console account page after `ohho logout`.
+- Run `ohho doctor --agent --online` once against a console preview. Tests
+  mock `GET /api/cli/whoami` and do not call production. Confirm the email
+  matches the account and that the token is absent from stdout and stderr.
+- Run `ohho verify --sim --console` once. Against production, `/sim` is 404
+  and the report should say `skip` / `unavailable` while the sim drive still
+  passes. Against a preview where `/sim` exists, it should say `reachable`.
+  Tests mock that GET.
+- Phase 6 (`ohho rules install`) should add `ohho.agent_rules.installed_clients`
+  so `ohho doctor --agent` stops skipping the rules check. That module is not
+  part of this change.

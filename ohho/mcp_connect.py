@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Mapping, Optional, Sequence, TextIO, Tuple
 
-from .mcp_toml import TomlError, edit_codex_server
+from .mcp_toml import TomlError, edit_codex_server, parse_toml
 
 SERVER_NAME = "ohho"
 SERVER_ARGS: Tuple[str, ...] = ("mcp", "serve")
@@ -183,6 +183,111 @@ def _vscode_user_mcp(
     xdg = environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else home / ".config"
     return base / "Code" / "User" / "mcp.json"
+
+
+def inspect_ohho_servers(
+    *,
+    environ: Mapping[str, str],
+    platform_name: str,
+) -> Optional[dict]:
+    """Read whether each client config has an ``ohho`` MCP server entry.
+
+    Uses :func:`client_config_path` (the same paths ``ohho mcp connect``
+    writes). This function never creates, backs up, or modifies a file.
+    Returns ``None`` when the home directory cannot be resolved. Otherwise
+    a dict of client id to ``{"configured", "path", "detail"}``.
+    """
+    try:
+        home = resolve_home(environ, platform_name)
+    except McpConnectError:
+        return None
+    found: dict = {}
+    for spec in CLIENTS:
+        try:
+            path = client_config_path(
+                spec.id,
+                home=home,
+                environ=environ,
+                platform_name=platform_name,
+            )
+        except McpConnectError:
+            found[spec.id] = {
+                "configured": False,
+                "path": "",
+                "detail": "config path unavailable",
+            }
+            continue
+        configured, detail = _read_ohho_entry(spec.id, path)
+        found[spec.id] = {
+            "configured": configured,
+            "path": str(path),
+            "detail": detail,
+        }
+    return found
+
+
+def _read_ohho_entry(client_id: str, path: Path) -> Tuple[bool, str]:
+    """Return whether ``path`` contains an ``ohho`` server object.
+
+    Missing files are "not configured". Unreadable or invalid documents are
+    "config unreadable". Neither case writes anything.
+    """
+    try:
+        if not path.exists():
+            return False, "not configured"
+        if not path.is_file():
+            return False, "config path is not a file"
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeError):
+        return False, "config unreadable"
+    if client_id == "codex":
+        return _codex_has_ohho(text)
+    return _json_has_ohho(client_id, text)
+
+
+def _codex_has_ohho(text: str) -> Tuple[bool, str]:
+    try:
+        data = parse_toml(text)
+    except TomlError:
+        return False, "config unreadable"
+    servers = data.get("mcp_servers")
+    entry = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+    if isinstance(entry, dict):
+        return True, "configured"
+    return False, "not configured"
+
+
+def _json_has_ohho(client_id: str, text: str) -> Tuple[bool, str]:
+    body = text.lstrip("\ufeff").strip()
+    if not body:
+        return False, "not configured"
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return False, "config unreadable"
+    if not isinstance(data, dict):
+        return False, "config unreadable"
+    if client_id == "opencode":
+        return _opencode_has_ohho(data)
+    container = data.get(_JSON_KEY[client_id])
+    entry = container.get(SERVER_NAME) if isinstance(container, dict) else None
+    if isinstance(entry, dict):
+        return True, "configured"
+    return False, "not configured"
+
+
+def _opencode_has_ohho(data: dict) -> Tuple[bool, str]:
+    """True for a v1 ``mcp.ohho`` object or a v2 ``mcp.servers.ohho`` object."""
+    mcp_value = data.get("mcp")
+    if not isinstance(mcp_value, dict):
+        return False, "not configured"
+    if isinstance(mcp_value.get(SERVER_NAME), dict):
+        return True, "configured"
+    servers = mcp_value.get("servers")
+    entry = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+    if isinstance(entry, dict):
+        return True, "configured"
+    return False, "not configured"
 
 
 def resolve_ohho_executable(
