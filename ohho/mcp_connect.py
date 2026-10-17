@@ -7,8 +7,9 @@ and the new text is written atomically. Invalid JSON or TOML is refused.
 The default entry is the local simulator server (``sim://`` only). ``--hosted``
 is reserved until ``ohho login`` (OHH-273) and hosted MCP auth (OHH-274).
 
-Tests must pass a temporary ``environ`` (HOME / USERPROFILE / APPDATA) and a
-``which`` callback. The real process environment is used only by the CLI.
+Tests must pass a temporary ``environ`` (HOME / USERPROFILE / APPDATA /
+XDG_CONFIG_HOME) and a ``which`` callback. The real process environment is
+used only by the CLI.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, List, Mapping, Optional, Sequence, TextIO, Tuple
 
 from .mcp_toml import TomlError, edit_codex_server, parse_toml
@@ -139,6 +140,50 @@ def resolve_home(environ: Mapping[str, str], platform_name: str) -> Path:
     return Path(raw)
 
 
+def _target_path(platform_name: str, first: object, *rest: str) -> Path:
+    """Join ``first`` and ``rest`` using the target platform's separators.
+
+    Host :class:`Path` follows the machine that is running the tests, so
+    ``Path(appdata) / "Code"`` on Linux turns a Windows ``APPDATA`` value
+    into ``C:\\Users\\.../Code/User/mcp.json``. Parse and join with
+    :class:`PureWindowsPath` or :class:`PurePosixPath`, then wrap the
+    result in a concrete :class:`Path` so the caller can create the file.
+    """
+    flavour = PureWindowsPath if platform_name == "win32" else PurePosixPath
+    pure = flavour(os.fspath(first))
+    for part in rest:
+        pure /= part
+    return Path(os.fspath(pure))
+
+
+def _xdg_anchor(home: Path, raw: Optional[str]) -> Tuple[object, ...]:
+    """Directory parts for ``$XDG_CONFIG_HOME`` or ``HOME/.config``.
+
+    ``$HOME/.config``, ``${HOME}/.config`` and ``~/.config`` follow the
+    resolved home, so relocating ``HOME`` does not keep another user's
+    config directory. Any other value (including an absolute path outside
+    that home) is used as given.
+    """
+    if raw is None or not raw.strip():
+        return (home, ".config")
+    text = raw.strip()
+    relative: Optional[str] = None
+    for prefix in ("${HOME}", "$HOME", "~"):
+        if text == prefix:
+            return (home,)
+        for sep in ("/", "\\"):
+            token = prefix + sep
+            if text.startswith(token):
+                relative = text[len(token) :]
+                break
+        if relative is not None:
+            break
+    if relative is None:
+        return (text,)
+    parts = tuple(part for part in relative.replace("\\", "/").split("/") if part)
+    return (home, *parts)
+
+
 def client_config_path(
     client_id: str,
     *,
@@ -148,19 +193,21 @@ def client_config_path(
 ) -> Path:
     """Absolute config path for ``client_id`` on ``platform_name``."""
     if client_id == "claude-code":
-        return home / ".claude.json"
+        return _target_path(platform_name, home, ".claude.json")
     if client_id == "codex":
-        return home / ".codex" / "config.toml"
+        return _target_path(platform_name, home, ".codex", "config.toml")
     if client_id == "cursor":
-        return home / ".cursor" / "mcp.json"
+        return _target_path(platform_name, home, ".cursor", "mcp.json")
     if client_id == "vscode":
         return _vscode_user_mcp(home, environ, platform_name)
     if client_id == "gemini":
-        return home / ".gemini" / "settings.json"
+        return _target_path(platform_name, home, ".gemini", "settings.json")
     if client_id == "windsurf":
-        return home / ".codeium" / "windsurf" / "mcp_config.json"
+        return _target_path(
+            platform_name, home, ".codeium", "windsurf", "mcp_config.json"
+        )
     if client_id == "opencode":
-        return home / ".config" / "opencode" / "opencode.json"
+        return _target_path(platform_name, home, ".config", "opencode", "opencode.json")
     raise McpConnectError(f"unknown client {client_id!r}", code=2)
 
 
@@ -177,12 +224,19 @@ def _vscode_user_mcp(
                 "APPDATA is not set; cannot locate VS Code user mcp.json",
                 code=2,
             )
-        return Path(appdata) / "Code" / "User" / "mcp.json"
+        return _target_path(platform_name, appdata, "Code", "User", "mcp.json")
     if platform_name == "darwin":
-        return home / "Library" / "Application Support" / "Code" / "User" / "mcp.json"
-    xdg = environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else home / ".config"
-    return base / "Code" / "User" / "mcp.json"
+        return _target_path(
+            platform_name,
+            home,
+            "Library",
+            "Application Support",
+            "Code",
+            "User",
+            "mcp.json",
+        )
+    anchor = _xdg_anchor(home, environ.get("XDG_CONFIG_HOME"))
+    return _target_path(platform_name, *anchor, "Code", "User", "mcp.json")
 
 
 def inspect_ohho_servers(
@@ -626,7 +680,9 @@ def connect_clients(
 
     ``which`` and ``runner`` inject the ``claude`` / ``codex`` lookup and
     process spawn so tests never execute those CLIs. ``environ`` supplies
-    HOME, USERPROFILE, and APPDATA; pass a temporary directory from tests.
+    HOME, USERPROFILE, APPDATA, and XDG_CONFIG_HOME; pass a temporary
+    directory from tests. An ambient absolute ``XDG_CONFIG_HOME`` wins over
+    ``HOME/.config``.
     """
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
