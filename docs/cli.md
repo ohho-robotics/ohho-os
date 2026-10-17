@@ -182,7 +182,7 @@ one check failed.
 | `cli` | `ohho-os` version and install method | version string is missing or not numeric | the install layout could not be read |
 | `python` | 3.10 or newer | older than 3.10 | the version could not be read |
 | `login` | a token is configured (`OHHO_TOKEN` or the credentials file) | the credentials file cannot be parsed; or `--online` was asked and the console could not be reached | not signed in. Login is optional for `sim://` |
-| `rules` | `ohho.agent_rules.installed_clients()` reports a path for every client | the hook ran and a client has no rules, or the hook raised | `ohho rules install` is not in this build |
+| `rules` | `ohho.agent_rules.installed_clients()` reports a path for every client | a client has no rules block, the hook raised, or it returned no clients | the `ohho.agent_rules` module or `installed_clients` is missing |
 | `mcp` | at least one of the seven clients has an `ohho` MCP server entry | the home directory was readable and none of the clients have that entry | the home directory could not be resolved |
 | `sim` | `omnibot` on `sim://` returned telemetry | connect or telemetry failed | the simulator is not connected |
 
@@ -196,17 +196,19 @@ file does not store one. `--online` calls `GET /api/cli/whoami` on
 is `skip` (signed out), not a crash. The token is not a JSON field and is
 stripped from every string if it would otherwise appear.
 
-### Rules hook (phase 6)
+### Rules check
 
-`ohho rules install` is not in this build. When it lands, add a module
-`ohho.agent_rules` with:
+`ohho rules install` writes the agent rules and `ohho.agent_rules.installed_clients()`
+reports them. Paths, markers, and per-client files are in [rules.md](rules.md).
 
 ```python
 def installed_clients() -> dict[str, str | None]:
     """Client id → rules path, or None when that client has no rules."""
 ```
 
-Until that module exists, the rules check detail is exactly:
+Pass means every client has a path. Fail means at least one client is missing,
+or the hook raised. The skip detail below is only used when this module cannot
+be imported:
 
 ```text
 skip: ohho rules install not available in this build
@@ -232,12 +234,12 @@ OhhO OS 1.1.3 agent readiness
   cli     pass  ohho-os 1.1.3 (editable source)
   python  pass  3.12.10
   login   skip  not signed in (optional for sim)
-  rules   skip  skip: ohho rules install not available in this build
+  rules   fail  rules missing: claude-code, codex, cursor, vscode, gemini, windsurf, opencode
   mcp     fail  no ohho MCP server configured
   sim     pass  sim:// telemetry ok
 ```
 
-That example exits 1 because `mcp` failed.
+That example exits 1 because `rules` and `mcp` failed.
 
 ### `ohho doctor --agent --json`
 
@@ -287,8 +289,17 @@ further keys are sorted by name.
     },
     {
       "id": "rules",
-      "status": "skip",
-      "detail": "skip: ohho rules install not available in this build"
+      "status": "fail",
+      "detail": "rules missing: claude-code, codex, cursor, vscode, gemini, windsurf, opencode",
+      "clients": {
+        "claude-code": null,
+        "codex": null,
+        "cursor": null,
+        "vscode": null,
+        "gemini": null,
+        "windsurf": null,
+        "opencode": null
+      }
     },
     {
       "id": "mcp",
@@ -460,6 +471,6 @@ Without `--json`, the same message is only on stderr (`error: …`).
   and the report should say `skip` / `unavailable` while the sim drive still
   passes. Against a preview where `/sim` exists, it should say `reachable`.
   Tests mock that GET.
-- Phase 6 (`ohho rules install`) should add `ohho.agent_rules.installed_clients`
-  so `ohho doctor --agent` stops skipping the rules check. That module is not
-  part of this change.
+- `ohho rules install` is documented in [rules.md](rules.md). `ohho doctor
+  --agent` reads `ohho.agent_rules.installed_clients()` and fails the rules
+  check until every client file contains the Ohho block.

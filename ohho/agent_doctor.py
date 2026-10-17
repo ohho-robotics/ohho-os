@@ -1,20 +1,15 @@
 """``ohho doctor --agent`` readiness report (OHH-271 phase 7).
 
 Checks are independent. A ``skip`` is not a failure: login is optional for
-``sim://``, and ``ohho rules install`` (phase 6) is not in this build yet.
-The access token is never placed in a check, a log line, or either output
-format.
+``sim://``. The access token is never placed in a check, a log line, or
+either output format.
 
-Phase 6 hook
-------------
-``ohho rules install`` does not exist yet. When it does, it should ship a
-module ``ohho.agent_rules`` with::
-
-    def installed_clients() -> dict[str, str | None]:
-        '''Client id → rules path, or None when that client has no rules.'''
-
-This report imports that function when the module is present. Until then
-the rules check is ``skip: ohho rules install not available in this build``.
+Rules hook
+----------
+``ohho.agent_rules.installed_clients`` reports each client id and the path
+of an installed rules file, or ``None`` when that client has no Ohho block.
+A missing module or a missing ``installed_clients`` attribute is still a
+skip, with detail ``skip: ohho rules install not available in this build``.
 """
 
 from __future__ import annotations
