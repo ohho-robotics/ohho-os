@@ -141,6 +141,43 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         self.assertAlmostEqual(t.custom["body_height"], 0.31)
         self.assertEqual(t.custom["mode"], 1)
 
+    def test_posture_and_joints_from_low_state(self):
+        class _Motor:
+            def __init__(self, q: float) -> None:
+                self.q = q
+
+        class _Low:
+            imu_state = type("Imu", (), {"rpy": [0.0, 0.0, 0.0]})()
+            motor_state = [_Motor(-1.3 if i % 3 == 2 else 0.0) for i in range(12)]
+            bms_state = type("Bms", (), {"soc": 0})()
+
+        low = UnitreeDdsTransport._lowstate_to_dict(_Low())
+        self.assertEqual(low["imu_rpy"], [0.0, 0.0, 0.0])
+        self.assertNotIn("battery", low)
+        self.assertEqual(low["joints"]["fl_calf_joint"], -1.3)
+        standing = sportstate_to_telemetry({**low, "mode": 1, "body_height": 0.31})
+        self.assertEqual(standing.custom["posture"], "standing")
+        self.assertTrue(any(joint.name == "fl_calf_joint" for joint in standing.joints))
+
+        lying = sportstate_to_telemetry(
+            {"joints": {"fl_calf_joint": -2.65, "fr_calf_joint": -2.65}}
+        )
+        self.assertEqual(lying.custom["posture"], "lying")
+        unset = sportstate_to_telemetry({"mode": 0, "body_height": 0.0})
+        self.assertNotIn("posture", unset.custom)
+        charged = UnitreeDdsTransport._lowstate_to_dict(
+            type(
+                "Low",
+                (),
+                {
+                    "imu_state": None,
+                    "motor_state": None,
+                    "bms_state": type("Bms", (), {"soc": 80})(),
+                },
+            )()
+        )
+        self.assertEqual(charged["battery"], 0.8)
+
     def test_missing_safety_fields_are_not_invented(self):
         t = sportstate_to_telemetry({"position": [0.0, 0.0, 0.0]})
         for key in ("roll", "pitch", "error_code", "body_height", "mode"):

@@ -19,7 +19,7 @@ import time
 from typing import Callable, Optional, Tuple
 
 from ..registry import RobotSpec
-from ..schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
+from ..schema import ConnectionState, JointReading, Odometry, Telemetry, TransportStatus, Velocity
 from ..transport import BaseTransport
 from .errors import AdapterUnavailable
 
@@ -59,7 +59,62 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     for key in ("error_code", "body_height", "mode"):
         if key in state:
             custom[key] = state[key]
-    return Telemetry(odom=odom, battery=state.get("battery"), custom=custom)
+    posture = _posture_label(state)
+    if posture is not None:
+        custom["posture"] = posture
+    joints = _joint_readings(state.get("joints"))
+    return Telemetry(
+        odom=odom,
+        joints=joints,
+        battery=state.get("battery"),
+        custom=custom,
+    )
+
+
+def _joint_readings(raw: object) -> list[JointReading]:
+    if not isinstance(raw, dict):
+        return []
+    joints: list[JointReading] = []
+    for name, position in raw.items():
+        if isinstance(position, (int, float)) and not isinstance(position, bool):
+            joints.append(JointReading(str(name), float(position)))
+    return joints
+
+
+def _posture_label(state: dict) -> Optional[str]:
+    """Human posture for teleop. None when the state does not say."""
+    named = state.get("posture")
+    if isinstance(named, str) and named.strip():
+        return named.strip()
+    mode = state.get("mode")
+    if isinstance(mode, int) and not isinstance(mode, bool):
+        label = _MODE_POSTURE.get(mode)
+        if label:
+            return label
+    height = state.get("body_height")
+    # A zero height is the unset default on some simulators, not a measured lie.
+    if isinstance(height, (int, float)) and not isinstance(height, bool) and height > 0:
+        if height < 0.12:
+            return "lying"
+        if height > 0.2:
+            return "standing"
+    joints = state.get("joints")
+    if isinstance(joints, dict):
+        calves = [
+            float(value)
+            for name, value in joints.items()
+            if isinstance(name, str)
+            and name.endswith("_calf_joint")
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ]
+        if calves:
+            average = sum(calves) / len(calves)
+            if average < -2.2:
+                return "lying"
+            if average > -1.6:
+                return "standing"
+    return None
 
 
 # Sport-mode actions this adapter can forward (snake_case → SportClient method).
@@ -76,6 +131,29 @@ _SPORT_METHODS = {
     "damp": "Damp",
 }
 _SPORT_WHILE_ESTOPPED = frozenset({"stop_move", "damp"})
+
+# Go2 lowcmd / lowstate motor order in unitree_mujoco (FR, FL, RR, RL).
+_GO2_MOTOR_JOINTS = (
+    "fr_hip_joint",
+    "fr_thigh_joint",
+    "fr_calf_joint",
+    "fl_hip_joint",
+    "fl_thigh_joint",
+    "fl_calf_joint",
+    "rr_hip_joint",
+    "rr_thigh_joint",
+    "rr_calf_joint",
+    "rl_hip_joint",
+    "rl_thigh_joint",
+    "rl_calf_joint",
+)
+
+_MODE_POSTURE = {
+    1: "standing",
+    2: "walking",
+    6: "sitting",
+    7: "lying",
+}
 
 
 StateFactory = Callable[[], Callable[[], Optional[dict]]]
@@ -110,6 +188,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._state_factory = state_factory
         self._client: Optional[object] = None
         self._state_getter: Optional[Callable[[], Optional[dict]]] = None
+        self._dds_snapshot: Optional[Callable[[], dict]] = None
         self._latest = Telemetry(odom=Odometry())
         self._estopped = False
         self._state = ConnectionState.IDLE
@@ -151,6 +230,7 @@ class UnitreeDdsTransport(BaseTransport):
         client = SportClient()
         client.Init()
         self._client = client
+        self._dds_snapshot = self._subscribe_dds_state()
         self._state_getter = self._make_sport_state_getter(client)
 
     def _make_sport_state_getter(self, client: object) -> Callable[[], Optional[dict]]:
@@ -161,6 +241,7 @@ class UnitreeDdsTransport(BaseTransport):
         """
 
         def getter() -> Optional[dict]:
+            merged: dict = {}
             try:
                 from unitree_sdk2py.idl.go2.sportmode import SportModeState  # type: ignore
 
@@ -169,11 +250,17 @@ class UnitreeDdsTransport(BaseTransport):
                     state = msg(SportModeState)
                 else:
                     state = getattr(client, "_state", None)
-                if state is None:
-                    return None
-                return self._sportstate_to_dict(state)
+                if state is not None:
+                    merged.update(
+                        state if isinstance(state, dict) else self._sportstate_to_dict(state)
+                    )
             except Exception:
-                return None
+                merged = {}
+            snapshot = self._dds_snapshot() if self._dds_snapshot is not None else {}
+            for key, value in snapshot.items():
+                if key == "joints" or key not in merged or merged.get(key) in (None,):
+                    merged[key] = value
+            return merged or None
 
         return getter
 
@@ -192,6 +279,67 @@ class UnitreeDdsTransport(BaseTransport):
             if hasattr(msg, key):
                 d[key] = getattr(msg, key)
         return d
+
+    def _subscribe_dds_state(self) -> Callable[[], dict]:
+        """Subscribe to sport and low state. Empty snapshot if the IDL is missing."""
+        latest: dict[str, dict] = {}
+        lock = threading.Lock()
+        try:
+            from unitree_sdk2py.core.channel import ChannelSubscriber  # type: ignore
+            from unitree_sdk2py.idl.unitree_go.msg.dds_ import (  # type: ignore
+                LowState_,
+                SportModeState_,
+            )
+        except Exception:
+            return lambda: {}
+
+        def on_sport(msg: object) -> None:
+            with lock:
+                latest["sport"] = self._sportstate_to_dict(msg)
+
+        def on_low(msg: object) -> None:
+            with lock:
+                latest["low"] = self._lowstate_to_dict(msg)
+
+        try:
+            ChannelSubscriber("rt/sportmodestate", SportModeState_).Init(on_sport, 10)
+            ChannelSubscriber("rt/lowstate", LowState_).Init(on_low, 10)
+        except Exception:
+            return lambda: {}
+
+        def snapshot() -> dict:
+            with lock:
+                sport = dict(latest.get("sport") or {})
+                low = dict(latest.get("low") or {})
+            merged = {**sport}
+            for key, value in low.items():
+                if value is not None:
+                    merged[key] = value
+            return merged
+
+        return snapshot
+
+    @staticmethod
+    def _lowstate_to_dict(msg: object) -> dict:
+        out: dict = {}
+        imu = getattr(msg, "imu_state", None)
+        rpy = getattr(imu, "rpy", None) if imu is not None else None
+        if rpy is not None:
+            out["imu_rpy"] = [float(v) for v in list(rpy)[:3]]
+        motors = getattr(msg, "motor_state", None)
+        if motors is not None:
+            joints: dict[str, float] = {}
+            for name, motor in zip(_GO2_MOTOR_JOINTS, list(motors)):
+                position = getattr(motor, "q", None)
+                if isinstance(position, (int, float)) and not isinstance(position, bool):
+                    joints[name] = float(position)
+            if joints:
+                out["joints"] = joints
+        bms = getattr(msg, "bms_state", None)
+        soc = getattr(bms, "soc", None) if bms is not None else None
+        if isinstance(soc, (int, float)) and not isinstance(soc, bool) and float(soc) > 0:
+            out["battery"] = float(soc) / 100.0
+        return out
 
     def _on_state(self, state: dict) -> None:
         """Bridge a state dict to telemetry and emit."""
