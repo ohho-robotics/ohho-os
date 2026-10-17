@@ -61,7 +61,7 @@
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
 | **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): five real sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). Docs `docs/mcp.md` |
 | **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
-| CLI (`ohho`) | ✅ `doctor list version login whoami logout connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest mcp` (`mcp serve`, `mcp connect`) |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest mcp` (`mcp serve`, `mcp connect`) |
 | Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 456 tests, skipped=7. `tests/test_auth.py` covers the OHH-273 device flow. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
@@ -193,7 +193,9 @@ sdk/
 │   ├── mcp_connect.py    # `ohho mcp connect` — merge ohho into 7 AI client configs (OHH-275)
 │   ├── mcp_toml.py       # stdlib TOML read + surgical `[mcp_servers.ohho]` edit (Codex)
 │   ├── auth.py           # device-flow login, ~/.ohho/credentials.json, whoami (OHH-273)
-│   ├── cli.py            # argparse: doctor/list/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/mcp; main()
+│   ├── agent_doctor.py   # ohho doctor --agent readiness (OHH-271 phase 7); rules hook is ohho.agent_rules
+│   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
+│   ├── cli.py            # argparse: doctor/verify/list/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/mcp; main()
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
