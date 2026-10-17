@@ -48,7 +48,7 @@ def available_adapters() -> list[str]:
         out.append("serial")
     if importlib.util.find_spec("lerobot") is not None:
         out.append("feetech")
-    if importlib.util.find_spec("cyclonedds") is not None:
+    if importlib.util.find_spec("unitree_sdk2py") is not None:
         out.append("dds")
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
@@ -67,6 +67,8 @@ def resolve_transport(
     uri: Optional[str] = None,
     spec: Optional[RobotSpec] = None,
     runtime=None,
+    *,
+    read_only: bool = False,
 ) -> Transport:
     """Pick a transport for a robot.
 
@@ -76,7 +78,8 @@ def resolve_transport(
       ``manipulation`` capability, ``<port>`` may be ``base_port,arm_port`` and
       a composite (Yahboom base + Feetech arm) is returned.
     - ``uri="feetech://<port>"`` → Feetech arm adapter (arm only).
-    - ``uri="dds://<iface>"`` → Unitree DDS adapter.
+    - ``uri="dds://<iface>?domain=<n>"`` → Unitree DDS adapter (defaults
+      ``dds://lo?domain=1`` for local simulators such as unitree_mujoco).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
     - any other scheme → ``AdapterUnavailable``.
@@ -107,6 +110,8 @@ def resolve_transport(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
             f"dds, ros2 — or omit the transport to run in simulation."
         )
+    if cls is UnitreeDdsTransport:
+        return UnitreeDdsTransport(spec, address, read_only=read_only)
     return cls(spec, address)
 
 
