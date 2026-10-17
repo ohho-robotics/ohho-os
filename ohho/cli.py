@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import Optional
 
 from . import __version__
 from .adapters import available_adapters
+from .adapters.errors import AdapterUnavailable
 from .agent import Agent
 from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
@@ -370,16 +372,47 @@ def _cmd_nav(args) -> int:
 
 def _cmd_look(args) -> int:
     from .memory import SpatialMemory, default_memory_path
-    from .perception import SimPerceptor, remember_detections
+    from .perception import (
+        CameraPerceptor,
+        SimPerceptor,
+        VlmPerceptor,
+        _FakeClient,
+        remember_detections,
+    )
+
+    if getattr(args, "mock", False):
+        os.environ["OHHO_STUB_DDS"] = "1"
 
     try:
         bot = _connect(args)
-    except UnknownRobot as e:
+    except (UnknownRobot, AdapterUnavailable) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     _maybe_world(bot, args.world)
     try:
-        detections = SimPerceptor(bot).look()
+        # If robot is simulated without camera frames, use SimPerceptor
+        use_camera = callable(getattr(bot.transport, "get_camera_frame", None)) or (
+            bot.has("perception.rgb") and not bot.simulated
+        )
+        if not use_camera and callable(getattr(bot.transport, "world_objects", None)):
+            detections = SimPerceptor(bot).look()
+        else:
+            client = None
+            if getattr(args, "mock", False) or os.environ.get("OHHO_MOCK_VLM") == "1":
+                client = _FakeClient(
+                    '[{"label": "chair", "confidence": 0.85, "x": 0.35}, '
+                    '{"label": "table", "confidence": 0.9, "x": 0.65}]'
+                )
+            try:
+                vlm = VlmPerceptor(client=client)
+            except Exception as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
+            detections = CameraPerceptor(bot, vlm=vlm).look()
+
         if not detections:
             print("nothing detected")
             return 0
@@ -389,7 +422,7 @@ def _cmd_look(args) -> int:
         memory = SpatialMemory(path=path)
         n = remember_detections(memory, detections)
         memory.save()
-        print(f"remembered {n} object(s) → {path}")
+        print(f"remembered {n} object(s) -> {path}")
         return 0
     finally:
         bot.disconnect()
@@ -650,6 +683,11 @@ def build_parser() -> argparse.ArgumentParser:
     lk = sub.add_parser("look", help="perceive surroundings and remember them")
     _add_robot_args(lk)
     lk.add_argument("--world", default="", help="'demo' adds demo obstacles (sim)")
+    lk.add_argument(
+        "--mock",
+        action="store_true",
+        help="use synthetic camera frame and mock VLM detections",
+    )
     lk.set_defaults(func=_cmd_look)
 
     me = sub.add_parser("memory", help="query the robot's spatio-temporal memory")
