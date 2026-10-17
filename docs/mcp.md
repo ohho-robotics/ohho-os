@@ -27,7 +27,7 @@ ohho mcp serve --sim
 `ohho mcp connect` (OHH-275) registers that local server with an AI client.
 The default entry is this stdio server (`sim://` only). `--hosted` is reserved
 and exits with an error: it needs `ohho login` (OHH-273) and hosted MCP auth
-(OHH-274).
+(OHH-274). Account commands are documented in [cli.md](cli.md).
 
 ## `ohho mcp connect`
 
