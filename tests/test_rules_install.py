@@ -565,6 +565,8 @@ class RulesPackageTests(unittest.TestCase):
     def test_wheel_includes_the_rules_source(self) -> None:
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:
+            # Isolated build: pip installs setuptools>=77 from [build-system].
+            # --no-build-isolation uses the image's setuptools and fails CI.
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -572,7 +574,6 @@ class RulesPackageTests(unittest.TestCase):
                     "pip",
                     "wheel",
                     "--no-deps",
-                    "--no-build-isolation",
                     "-w",
                     tmp,
                     str(root),
