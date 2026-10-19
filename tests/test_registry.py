@@ -161,6 +161,7 @@ class TestRobotSpecV2(unittest.TestCase):
         self.assertEqual(spec.assets, RobotAssets())
         self.assertEqual(spec.ci_sim, CiSim(enabled=False, scenario=""))
         self.assertEqual(spec.source, "")
+        self.assertEqual(spec.sim_backend, "")
         self.assertEqual(spec.max_lin, 0.5)
         self.assertEqual(spec.max_ang, 1.0)
         self.assertEqual(spec.max_climb, 0.0)
@@ -190,6 +191,7 @@ class TestRobotSpecV2(unittest.TestCase):
                 "ci_sim",
                 "source",
                 "capability_params",
+                "sim_backend",
             }
             <= names
         )
@@ -341,6 +343,7 @@ class TestRobotSpecV2(unittest.TestCase):
                 ),
                 ci_sim=CiSim(enabled=True, scenario="humanoid_walk"),
                 source="example-plugin",
+                sim_backend="humanoid-mujoco",
                 capability_params={
                     "humanoid.locomotion": {"gaits": ["walk", "turn"], "speed_max": 0.4}
                 },

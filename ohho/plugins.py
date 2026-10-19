@@ -11,10 +11,14 @@ Built-ins use this path. ``pyproject.toml`` registers
 ``ohho.robots.builtin:plugin``. A source checkout that has not been reinstalled
 has no entry point; discovery then loads that same module directly.
 
-One plugin failing to import is recorded and skipped. A duplicate robot id or
-transport scheme is a load error naming both plugins; the earlier plugin keeps
-its robots. The built-in plugin is applied first so a third-party collision
-does not drop sim, OmniBot or Go2.
+One plugin failing to import is recorded and skipped. A duplicate robot id,
+transport scheme or sim backend is a load error naming both plugins; the
+earlier plugin keeps its robots and factories. The built-in plugin is applied
+first so a third-party collision does not drop sim, OmniBot or Go2.
+
+``resolve_transport`` reads the factories stored here. A scheme or backend a
+plugin did not register is absent from these maps, so the adapter scheme dict
+stays the fallback.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import dataclasses
 import importlib.metadata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from .registry import RobotSpec
@@ -108,6 +113,12 @@ class PluginInfo:
     # The instance, so a later policy load can call ``safety_policy`` without
     # discovery calling it. Not part of equality or the list report.
     plugin: Any = field(default=None, compare=False, hash=False)
+    transport_factories: Mapping[str, TransportFactory] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
+    sim_factories: Mapping[str, SimFactory] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
 
     @property
     def ok(self) -> bool:
@@ -297,11 +308,16 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         fallback=fallback,
         distribution=_distribution_name(entry),
         plugin=plugin,
+        transport_factories=MappingProxyType(schemes),
+        sim_factories=MappingProxyType(backends),
     )
 
 
 def _collision_messages(
-    info: PluginInfo, seen_ids: Mapping[str, str], seen_schemes: Mapping[str, str]
+    info: PluginInfo,
+    seen_ids: Mapping[str, str],
+    seen_schemes: Mapping[str, str],
+    seen_backends: Mapping[str, str],
 ) -> list[str]:
     messages: list[str] = []
     seen_in_plugin: set[str] = set()
@@ -326,18 +342,26 @@ def _collision_messages(
                 f"duplicate transport scheme {scheme!r} from plugins "
                 f"{owner!r} and {info.name!r}"
             )
+    for backend in info.sim_backends:
+        owner = seen_backends.get(backend)
+        if owner is not None:
+            messages.append(
+                f"duplicate sim backend {backend!r} from plugins "
+                f"{owner!r} and {info.name!r}"
+            )
     return messages
 
 
 def _reject_collisions(infos: Sequence[PluginInfo]) -> tuple[PluginInfo, ...]:
     seen_ids: dict[str, str] = {}
     seen_schemes: dict[str, str] = {}
+    seen_backends: dict[str, str] = {}
     accepted: list[PluginInfo] = []
     for info in infos:
         if info.error:
             accepted.append(info)
             continue
-        messages = _collision_messages(info, seen_ids, seen_schemes)
+        messages = _collision_messages(info, seen_ids, seen_schemes, seen_backends)
         if messages:
             accepted.append(dataclasses.replace(info, error="; ".join(messages)))
             continue
@@ -345,6 +369,8 @@ def _reject_collisions(infos: Sequence[PluginInfo]) -> tuple[PluginInfo, ...]:
             seen_ids[robot_id] = info.name
         for scheme in info.schemes:
             seen_schemes[scheme] = info.name
+        for backend in info.sim_backends:
+            seen_backends[backend] = info.name
         accepted.append(info)
     return tuple(accepted)
 
@@ -434,6 +460,95 @@ def format_plugin_report(infos: Sequence[PluginInfo] | None = None) -> str:
     return "\n".join(lines)
 
 
+def _usable(infos: Sequence[PluginInfo] | None = None) -> tuple[PluginInfo, ...]:
+    if infos is None:
+        infos = loaded_plugins()
+    return tuple(info for info in infos if info.error is None)
+
+
+def _join_names(info: PluginInfo, names: Sequence[str]) -> str:
+    listed = ", ".join(names) if names else "—"
+    return f"{info.name}: {listed}"
+
+
+def describe_plugin_schemes(infos: Sequence[PluginInfo] | None = None) -> str:
+    """``plugin: scheme, scheme; ...`` for plugins that loaded cleanly."""
+    parts = [_join_names(info, info.schemes) for info in _usable(infos)]
+    if not parts:
+        return "Plugin schemes: —."
+    return "Plugin schemes: " + "; ".join(parts) + "."
+
+
+def describe_plugin_sim_backends(infos: Sequence[PluginInfo] | None = None) -> str:
+    """``plugin: backend, backend; ...`` for plugins that loaded cleanly."""
+    parts = [_join_names(info, info.sim_backends) for info in _usable(infos)]
+    if not parts:
+        return "Plugin sim backends: —."
+    return "Plugin sim backends: " + "; ".join(parts) + "."
+
+
+def plugin_transport(
+    scheme: str, spec: RobotSpec | None, address: str, runtime: Any
+) -> Transport | None:
+    """Build a transport from the first plugin that registered ``scheme``.
+
+    ``None`` means no loaded plugin provides it. Callers then use the scheme
+    dict in :mod:`ohho.adapters`.
+    """
+    factory = None
+    for info in _usable():
+        factory = info.transport_factories.get(scheme)
+        if factory is not None:
+            break
+    if factory is None:
+        return None
+    # ``resolve_transport`` historically allows ``spec=None``; factories match that.
+    return factory(spec, address, runtime)  # type: ignore[arg-type]
+
+
+def declared_sim_backend(spec: object) -> str:
+    """Sim backend name on a spec, or ``""`` when none is declared.
+
+    Reads :attr:`ohho.registry.RobotSpec.sim_backend`. Blank means ``sim://``
+    keeps today's simulator. Lookup is case-insensitive, matching plugin names.
+    """
+    if spec is None:
+        return ""
+    raw = getattr(spec, "sim_backend", "")
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip().lower()
+
+
+def plugin_sim_backend(
+    spec: RobotSpec | None, address: str, runtime: Any
+) -> Transport | None:
+    """Build the spec's declared sim backend, or ``None`` when none is declared.
+
+    A declared name that no plugin registered raises
+    :class:`ohho.adapters.errors.AdapterUnavailable` and lists each plugin's
+    backends. An undeclared spec returns ``None`` so the caller keeps today's
+    ``sim://`` behaviour.
+    """
+    name = declared_sim_backend(spec)
+    if not name:
+        return None
+    factory = None
+    for info in _usable():
+        factory = info.sim_factories.get(name)
+        if factory is not None:
+            break
+    if factory is None:
+        from .adapters.errors import AdapterUnavailable
+
+        raise AdapterUnavailable(
+            f"Unknown sim backend {name!r}. {describe_plugin_sim_backends()}"
+        )
+    if spec is None:
+        return None
+    return factory(spec, address, runtime)
+
+
 __all__ = [
     "BUILTIN_ENTRY_VALUE",
     "ENTRY_GROUP",
@@ -442,9 +557,14 @@ __all__ = [
     "RobotPlugin",
     "SimFactory",
     "TransportFactory",
+    "declared_sim_backend",
+    "describe_plugin_schemes",
+    "describe_plugin_sim_backends",
     "format_plugin_report",
     "loaded_plugins",
     "plugin_named",
+    "plugin_sim_backend",
+    "plugin_transport",
     "register_loaded_specs",
     "reload_plugins",
 ]
