@@ -1543,11 +1543,12 @@ class TestCliSafetyFlags(unittest.TestCase):
 def load_tests(loader, standard_tests, pattern):
     """CI coverage runs ``unittest tests.test_safety`` and nothing else.
 
-    Drone profile coverage lives in ``tests.test_drone_safety``. Load that
-    file when this module is named directly (``pattern is None``). Discovery
-    passes a file pattern and loads the drone module on its own. The file
-    path is used so a third-party ``tests`` package on ``sys.path`` cannot
-    hide it.
+    Drone profile coverage lives in ``tests.test_drone_safety``. The sim-only
+    CI arming tests live in ``tests.test_ci_sim_arming``. Load both when this
+    module is named directly (``pattern is None``). Discovery passes a file
+    pattern and loads those modules on its own. Paths are loaded from this
+    directory so a third-party ``tests`` package on ``sys.path`` cannot hide
+    them.
     """
     suite = unittest.TestSuite()
     suite.addTests(standard_tests)
@@ -1555,13 +1556,17 @@ def load_tests(loader, standard_tests, pattern):
         return suite
     import importlib.util
 
-    path = Path(__file__).with_name("test_drone_safety.py")
-    spec = importlib.util.spec_from_file_location("ohho_test_drone_safety", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    suite.addTests(loader.loadTestsFromModule(module))
+    for filename, module_name in (
+        ("test_drone_safety.py", "ohho_test_drone_safety"),
+        ("test_ci_sim_arming.py", "ohho_test_ci_sim_arming"),
+    ):
+        path = Path(__file__).with_name(filename)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        suite.addTests(loader.loadTestsFromModule(module))
     return suite
 
 

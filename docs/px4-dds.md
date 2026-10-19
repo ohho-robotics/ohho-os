@@ -43,9 +43,9 @@ px4+dds://HOST:PORT?ns=NAME
 ```
 
 `HOST:PORT` is the agent endpoint the operator started. The default port is
-8888. `ns` is optional. With `ns=uav1` the topics are `/uav1/fmu/...`. Without
-it they are `/fmu/...`. The query accepts `ns` only. A URI with a user or
-password is rejected.
+8888. `ns` is optional. With `ns=uav1` the topics are `/uav1/fmu/...` (for
+example `/uav1/fmu/out/vehicle_status_v1`). Without it they are `/fmu/...`.
+The query accepts `ns` only. A URI with a user or password is rejected.
 
 Loopback is a sim target. The check is the host: `localhost`, `::1`, or any
 address in `127.0.0.0/8`. Port 8888 does not make a non-loopback host a sim
@@ -58,24 +58,32 @@ counts.
 
 ## Topics and QoS
 
+PX4 v1.17 appends `_v<MESSAGE_VERSION>` when that constant is non-zero
+(`uxrce_dds_client` `generate_topic_name`). Version 0, and a message with no
+`MESSAGE_VERSION` field, keeps the bare name. The suffix comes from the
+message class when `px4_msgs` is installed, and from the pinned
+`PX4_TOPIC_VERSIONS` table when the constant is absent. A constant that
+disagrees with the pin refuses connect. There is no subscription to the
+unversioned name in that case.
+
 Subscribe:
 
-| Topic | Message |
-|---|---|
-| `/fmu/out/vehicle_status` | `VehicleStatus` |
-| `/fmu/out/vehicle_local_position` | `VehicleLocalPosition` |
-| `/fmu/out/vehicle_attitude` | `VehicleAttitude` |
-| `/fmu/out/battery_status` | `BatteryStatus` |
-| `/fmu/out/vehicle_land_detected` | `VehicleLandDetected` |
-| `/fmu/out/failsafe_flags` | `FailsafeFlags` |
+| Topic | Message | Version |
+|---|---|---|
+| `/fmu/out/vehicle_status_v1` | `VehicleStatus` | 1 |
+| `/fmu/out/vehicle_local_position_v1` | `VehicleLocalPosition` | 1 |
+| `/fmu/out/vehicle_attitude` | `VehicleAttitude` | 0 |
+| `/fmu/out/battery_status_v1` | `BatteryStatus` | 1 |
+| `/fmu/out/vehicle_land_detected` | `VehicleLandDetected` | 0 |
+| `/fmu/out/failsafe_flags` | `FailsafeFlags` | 0 (field absent) |
 
 Publish:
 
-| Topic | Message |
-|---|---|
-| `/fmu/in/offboard_control_mode` | `OffboardControlMode` |
-| `/fmu/in/trajectory_setpoint` | `TrajectorySetpoint` |
-| `/fmu/in/vehicle_command` | `VehicleCommand` |
+| Topic | Message | Version |
+|---|---|---|
+| `/fmu/in/offboard_control_mode` | `OffboardControlMode` | 0 (field absent) |
+| `/fmu/in/trajectory_setpoint` | `TrajectorySetpoint` | 0 |
+| `/fmu/in/vehicle_command` | `VehicleCommand` | 0 |
 
 QoS is best-effort, depth 1, on every endpoint. Publishers are volatile.
 Subscriptions to PX4 are transient-local. The depth-10 reliable profile on
