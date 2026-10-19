@@ -31,8 +31,10 @@ from ohho.adapters.px4_dds import (
     altitude_m_of,
     check_vehicle_command,
     estop_action,
+    fmu_topic,
     is_sim_target,
     landed_state_of,
+    message_version,
     offboard_field_mismatch,
     parse_px4_dds_uri,
 )
@@ -95,17 +97,40 @@ class BadOffboard(_Msg):
         return fields
 
 
+class _V0(_Msg):
+    """px4_msgs constant ``MESSAGE_VERSION = 0`` (no topic suffix)."""
+
+    MESSAGE_VERSION = 0
+
+
+class _V1(_Msg):
+    """px4_msgs constant ``MESSAGE_VERSION = 1`` (topic suffix ``_v1``)."""
+
+    MESSAGE_VERSION = 1
+
+
 class _Factory:
-    def __init__(self, offboard: type) -> None:
+    """Mock ``px4_msgs`` classes.
+
+    Versioned messages carry the v1.17 constant. ``FailsafeFlags`` and the
+    offboard class omit it, matching those ``.msg`` files, so connect uses
+    the pinned table for them.
+    """
+
+    def __init__(self, offboard: type, **overrides: type) -> None:
         self.OffboardControlMode = offboard
-        self.TrajectorySetpoint = _Msg
-        self.VehicleCommand = _Msg
-        self.VehicleStatus = _Msg
-        self.VehicleLocalPosition = _Msg
-        self.VehicleAttitude = _Msg
-        self.BatteryStatus = _Msg
-        self.VehicleLandDetected = _Msg
+        self.TrajectorySetpoint = _V0
+        self.VehicleCommand = _V0
+        self.VehicleStatus = _V1
+        self.VehicleLocalPosition = _V1
+        self.VehicleAttitude = _V0
+        self.BatteryStatus = _V1
+        self.VehicleLandDetected = _V0
         self.FailsafeFlags = _Msg
+        for name, cls in overrides.items():
+            if not hasattr(self, name):
+                raise AssertionError(f"unknown message class {name}")
+            setattr(self, name, cls)
 
 
 class FakePublisher:
@@ -225,7 +250,7 @@ def _prearm(
     node: FakeNode, *, passed: bool = True, nav: int = 2, armed: int = 1
 ) -> None:
     node.inject(
-        "/fmu/out/vehicle_status",
+        "/fmu/out/vehicle_status_v1",
         SimpleNamespace(
             arming_state=armed,
             nav_state=nav,
@@ -331,6 +356,119 @@ class TestMessagePin(unittest.TestCase):
         self.assertIn("v1.18", text)
 
 
+class TestTopicVersions(unittest.TestCase):
+    def test_suffix_follows_message_version_and_namespace(self):
+        self.assertEqual(
+            fmu_topic("", "out", "vehicle_status", version=1),
+            "/fmu/out/vehicle_status_v1",
+        )
+        self.assertEqual(
+            fmu_topic("uav1", "out", "vehicle_local_position", version=1),
+            "/uav1/fmu/out/vehicle_local_position_v1",
+        )
+        self.assertEqual(
+            fmu_topic("uav1", "out", "battery_status", version=1),
+            "/uav1/fmu/out/battery_status_v1",
+        )
+        self.assertEqual(
+            fmu_topic("", "out", "vehicle_attitude", version=0),
+            "/fmu/out/vehicle_attitude",
+        )
+        self.assertEqual(
+            fmu_topic("uav1", "in", "vehicle_command", version=0),
+            "/uav1/fmu/in/vehicle_command",
+        )
+        self.assertEqual(
+            fmu_topic("", "in", "offboard_control_mode", version=0),
+            "/fmu/in/offboard_control_mode",
+        )
+        self.assertEqual(
+            fmu_topic("", "in", "trajectory_setpoint", version=0),
+            "/fmu/in/trajectory_setpoint",
+        )
+
+    def test_constant_and_pinned_table_agree_on_v1_17(self):
+        self.assertEqual(message_version(_V1, "vehicle_status"), 1)
+        self.assertEqual(message_version(_V1, "vehicle_local_position"), 1)
+        self.assertEqual(message_version(_V1, "battery_status"), 1)
+        self.assertEqual(message_version(_V0, "vehicle_attitude"), 0)
+        self.assertEqual(message_version(_V0, "vehicle_land_detected"), 0)
+        self.assertEqual(message_version(_V0, "vehicle_command"), 0)
+        self.assertEqual(message_version(_V0, "trajectory_setpoint"), 0)
+        # FailsafeFlags.msg and OffboardControlMode.msg omit the constant.
+        self.assertEqual(message_version(_Msg, "failsafe_flags"), 0)
+        self.assertEqual(message_version(_Msg, "offboard_control_mode"), 0)
+        # No constant on a version-1 topic still uses the pin, not the bare name.
+        self.assertEqual(message_version(_Msg, "vehicle_status"), 1)
+
+    def test_version_mismatch_refuses_before_any_endpoint(self):
+        class _StatusV0(_Msg):
+            MESSAGE_VERSION = 0
+
+        node = FakeNode()
+        tp = Px4DdsTransport(
+            get_spec("sim"),
+            "px4+dds://127.0.0.1:8888",
+            node=node,
+            msg_factory=_Factory(GoodOffboard, VehicleStatus=_StatusV0),
+        )
+        with self.assertRaises(Px4DdsError) as caught:
+            tp.connect()
+        text = str(caught.exception)
+        self.assertIn("MESSAGE_VERSION", text)
+        self.assertIn("vehicle_status", text)
+        self.assertIn("0", text)
+        self.assertIn("1", text)
+        self.assertEqual(node.publishers, {})
+        self.assertEqual(node.subs, [])
+        self.assertEqual(tp.publisher_topics, [])
+        self.assertEqual(tp.subscription_topics, [])
+
+    def test_missing_constants_still_subscribe_to_pinned_names(self):
+        bare = _Factory(
+            GoodOffboard,
+            TrajectorySetpoint=_Msg,
+            VehicleCommand=_Msg,
+            VehicleStatus=_Msg,
+            VehicleLocalPosition=_Msg,
+            VehicleAttitude=_Msg,
+            BatteryStatus=_Msg,
+            VehicleLandDetected=_Msg,
+            FailsafeFlags=_Msg,
+        )
+        tp, node = _open(factory=bare)
+        self.assertEqual(
+            set(tp.subscription_topics),
+            {
+                "/fmu/out/vehicle_status_v1",
+                "/fmu/out/vehicle_local_position_v1",
+                "/fmu/out/vehicle_attitude",
+                "/fmu/out/battery_status_v1",
+                "/fmu/out/vehicle_land_detected",
+                "/fmu/out/failsafe_flags",
+            },
+        )
+        self.assertEqual(
+            set(node.publishers),
+            {
+                "/fmu/in/offboard_control_mode",
+                "/fmu/in/trajectory_setpoint",
+                "/fmu/in/vehicle_command",
+            },
+        )
+        self.assertNotIn("/fmu/out/vehicle_status", tp.subscription_topics)
+        self.assertNotIn("/fmu/out/vehicle_local_position", tp.subscription_topics)
+        self.assertNotIn("/fmu/out/battery_status", tp.subscription_topics)
+
+    def test_fmu_topic_rejects_a_bad_direction_or_version(self):
+        with self.assertRaises(Px4DdsError):
+            fmu_topic("", "sideways", "vehicle_status", version=1)
+        with self.assertRaises(Px4DdsError):
+            fmu_topic("", "out", "vehicle_status", version=-1)
+        with self.assertRaises(Px4DdsError):
+            message_version(_V1, "not_a_px4_topic")
+
+
 class TestQosAndHeartbeat(unittest.TestCase):
     def test_qos_is_best_effort_depth_1(self):
         tp, node = _open()
@@ -351,21 +489,51 @@ class TestQosAndHeartbeat(unittest.TestCase):
             self.assertIn("transient_local", dur)
             self.assertEqual(depth, 1)
         self.assertEqual(
+            set(tp.publisher_topics),
+            {
+                "/fmu/in/offboard_control_mode",
+                "/fmu/in/trajectory_setpoint",
+                "/fmu/in/vehicle_command",
+            },
+        )
+        self.assertEqual(
             set(tp.subscription_topics),
             {
-                "/fmu/out/vehicle_status",
-                "/fmu/out/vehicle_local_position",
+                "/fmu/out/vehicle_status_v1",
+                "/fmu/out/vehicle_local_position_v1",
                 "/fmu/out/vehicle_attitude",
-                "/fmu/out/battery_status",
+                "/fmu/out/battery_status_v1",
                 "/fmu/out/vehicle_land_detected",
                 "/fmu/out/failsafe_flags",
             },
         )
 
     def test_namespace_prefixes_topics(self):
-        _tp, node = _open("px4+dds://127.0.0.1:8888?ns=uav1")
-        self.assertIn("/uav1/fmu/in/offboard_control_mode", node.publishers)
-        self.assertIn("/uav1/fmu/out/vehicle_status", [sub.topic for sub in node.subs])
+        tp, node = _open("px4+dds://127.0.0.1:8888?ns=uav1")
+        self.assertEqual(
+            set(tp.publisher_topics),
+            {
+                "/uav1/fmu/in/offboard_control_mode",
+                "/uav1/fmu/in/trajectory_setpoint",
+                "/uav1/fmu/in/vehicle_command",
+            },
+        )
+        self.assertEqual(set(node.publishers), set(tp.publisher_topics))
+        self.assertEqual(
+            set(tp.subscription_topics),
+            {
+                "/uav1/fmu/out/vehicle_status_v1",
+                "/uav1/fmu/out/vehicle_local_position_v1",
+                "/uav1/fmu/out/vehicle_attitude",
+                "/uav1/fmu/out/battery_status_v1",
+                "/uav1/fmu/out/vehicle_land_detected",
+                "/uav1/fmu/out/failsafe_flags",
+            },
+        )
+        self.assertEqual(
+            [sub.topic for sub in node.subs],
+            tp.subscription_topics,
+        )
 
     def test_heartbeat_publishes_mode_and_nan_setpoint_not_a_command(self):
         _tp, node = _open()
@@ -453,7 +621,7 @@ class TestEstopAndCommands(unittest.TestCase):
             SimpleNamespace(landed=False, maybe_landed=False),
         )
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(
                 z_valid=True, z=-2.5, xy_valid=False, dist_bottom_valid=False
             ),
@@ -487,7 +655,7 @@ class TestEstopAndCommands(unittest.TestCase):
         tp, node = _open()
         node.inject("/fmu/out/vehicle_land_detected", SimpleNamespace(landed=True))
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(z_valid=True, z=0.0, dist_bottom_valid=False),
         )
         tp.emergency_stop()
@@ -501,7 +669,7 @@ class TestEstopAndCommands(unittest.TestCase):
         tp, node = _open()
         node.inject("/fmu/out/vehicle_land_detected", SimpleNamespace(landed=True))
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(z_valid=True, z=-4.0, dist_bottom_valid=False),
         )
         tp.emergency_stop()
@@ -517,7 +685,7 @@ class TestEstopAndCommands(unittest.TestCase):
         self.assertAlmostEqual(altitude_m_of(local) or -1, 8.0)
         tp, node = _open()
         node.inject("/fmu/out/vehicle_land_detected", SimpleNamespace(landed=True))
-        node.inject("/fmu/out/vehicle_local_position", local)
+        node.inject("/fmu/out/vehicle_local_position_v1", local)
         tp.emergency_stop()
         self.assertEqual([c.command for c in _commands(node)], [21])
 
@@ -525,7 +693,7 @@ class TestEstopAndCommands(unittest.TestCase):
         tp, node = _open()
         node.inject("/fmu/out/vehicle_land_detected", SimpleNamespace(landed=False))
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(z_valid=True, z=0.0, dist_bottom_valid=False),
         )
         with self.assertRaises(Px4CommandRefused) as caught:
@@ -537,7 +705,7 @@ class TestEstopAndCommands(unittest.TestCase):
         tp, node = _open()
         node.inject("/fmu/out/vehicle_land_detected", SimpleNamespace(landed=True))
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(z_valid=True, z=-0.1, dist_bottom_valid=False),
         )
         tp.send_flight("disarm")
@@ -704,7 +872,7 @@ class TestTelemetry(unittest.TestCase):
     def test_drone_custom_fields(self):
         _tp, node = _open()
         node.inject(
-            "/fmu/out/vehicle_status",
+            "/fmu/out/vehicle_status_v1",
             SimpleNamespace(
                 arming_state=2,
                 nav_state=14,
@@ -714,7 +882,7 @@ class TestTelemetry(unittest.TestCase):
             ),
         )
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(
                 xy_valid=True,
                 z_valid=True,
@@ -735,7 +903,7 @@ class TestTelemetry(unittest.TestCase):
             SimpleNamespace(q=(1.0, 0.0, 0.0, 0.0)),
         )
         node.inject(
-            "/fmu/out/battery_status",
+            "/fmu/out/battery_status_v1",
             SimpleNamespace(remaining=0.5, voltage_v=16.2, current_a=3.5),
         )
         node.inject(
@@ -780,7 +948,7 @@ class TestTelemetry(unittest.TestCase):
     def test_invalid_battery_sentinels_stay_empty(self):
         tp, node = _open()
         node.inject(
-            "/fmu/out/battery_status",
+            "/fmu/out/battery_status_v1",
             SimpleNamespace(remaining=-1.0, voltage_v=0.0, current_a=-1.0),
         )
         tele = tp.read()
@@ -949,7 +1117,7 @@ class TestPx4AerialSafetyGate(unittest.TestCase):
     ) -> None:
         _prearm(node, passed=prearm)
         node.inject(
-            "/fmu/out/vehicle_local_position",
+            "/fmu/out/vehicle_local_position_v1",
             SimpleNamespace(
                 xy_valid=True,
                 z_valid=True,
@@ -965,7 +1133,7 @@ class TestPx4AerialSafetyGate(unittest.TestCase):
         )
         if battery is not None:
             node.inject(
-                "/fmu/out/battery_status",
+                "/fmu/out/battery_status_v1",
                 SimpleNamespace(remaining=battery, voltage_v=16.0, current_a=1.0),
             )
         if landed is not None:
@@ -1290,6 +1458,11 @@ class TestPackaging(unittest.TestCase):
             "127.0.0.1",
             "sim_target",
             "OHH-288",
+            "/fmu/out/vehicle_status_v1",
+            "/fmu/out/vehicle_local_position_v1",
+            "/fmu/out/battery_status_v1",
+            "/fmu/in/vehicle_command",
+            "/uav1/fmu/out/vehicle_status_v1",
         ):
             self.assertIn(needle, text)
 

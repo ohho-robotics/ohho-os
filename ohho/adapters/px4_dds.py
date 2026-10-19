@@ -133,6 +133,29 @@ _OUT_TOPICS = (
     ("failsafe_flags", "FailsafeFlags", "_on_failsafe"),
 )
 
+_IN_TOPICS = (
+    ("offboard_control_mode", "OffboardControlMode"),
+    ("trajectory_setpoint", "TrajectorySetpoint"),
+    ("vehicle_command", "VehicleCommand"),
+)
+
+# DDS topic suffix for PX4 v1.17.0 / px4_msgs v1.17.0.
+# uxrce_dds_client generate_topic_name appends ``_v<N>`` only when
+# MESSAGE_VERSION is non-zero. Firmware treats a missing constant as 0
+# (dds_topics.h.em MessageVersionHelper), which keeps the bare name.
+# The integers below are those pinned message files.
+PX4_TOPIC_VERSIONS: dict[str, int] = {
+    "offboard_control_mode": 0,  # OffboardControlMode.msg: no MESSAGE_VERSION
+    "trajectory_setpoint": 0,  # TrajectorySetpoint.msg: MESSAGE_VERSION = 0
+    "vehicle_command": 0,  # VehicleCommand.msg: MESSAGE_VERSION = 0
+    "vehicle_status": 1,  # VehicleStatus.msg: MESSAGE_VERSION = 1
+    "vehicle_local_position": 1,  # VehicleLocalPosition.msg: MESSAGE_VERSION = 1
+    "vehicle_attitude": 0,  # VehicleAttitude.msg: MESSAGE_VERSION = 0
+    "battery_status": 1,  # BatteryStatus.msg: MESSAGE_VERSION = 1
+    "vehicle_land_detected": 0,  # VehicleLandDetected.msg: MESSAGE_VERSION = 0
+    "failsafe_flags": 0,  # FailsafeFlags.msg: no MESSAGE_VERSION
+}
+
 _TYPE_ALIASES = {"boolean": "bool", "bool": "bool", "uint64": "uint64"}
 _NAN = float("nan")
 
@@ -359,13 +382,53 @@ def estop_action(landed_state: str, altitude_m: Optional[float]) -> str:
     return "land"
 
 
-def fmu_topic(namespace: str, direction: str, name: str) -> str:
-    """``/fmu/out/vehicle_status`` or ``/{ns}/fmu/out/vehicle_status``."""
+def message_version(msg_cls: Any, leaf: str) -> int:
+    """DDS suffix version for one pinned topic. ``0`` means no ``_vN``.
+
+    The message class ``MESSAGE_VERSION`` is used when the definition
+    exposes it. Without ``px4_msgs`` that constant is missing, and
+    :data:`PX4_TOPIC_VERSIONS` is the version. A constant that disagrees
+    with the pin raises :class:`Px4DdsError`. This does not subscribe to
+    the bare name instead.
+    """
+    try:
+        pinned = PX4_TOPIC_VERSIONS[leaf]
+    except KeyError as exc:
+        raise Px4DdsError(
+            f"no pinned PX4 v{PX4_VERSION} MESSAGE_VERSION for topic {leaf!r}"
+        ) from exc
+    raw = getattr(msg_cls, "MESSAGE_VERSION", None)
+    if raw is None:
+        return pinned
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise Px4DdsError(
+            f"{leaf} MESSAGE_VERSION must be a non-negative int, got {raw!r}"
+        )
+    if raw != pinned:
+        name = getattr(msg_cls, "__name__", type(msg_cls).__name__)
+        raise Px4DdsError(
+            f"{name}.MESSAGE_VERSION is {raw}, but px4_msgs {PX4_MSGS_BRANCH} "
+            f"(PX4 v{PX4_VERSION}) pins {leaf} at {pinned}. "
+            "Refusing to subscribe to a guessed topic."
+        )
+    return raw
+
+
+def fmu_topic(namespace: str, direction: str, name: str, *, version: int) -> str:
+    """``/fmu/out/vehicle_status_v1`` or ``/{ns}/fmu/in/vehicle_command``.
+
+    ``version`` 0 is the bare name. A positive version is the ``_vN``
+    suffix PX4 v1.17 publishes. The version is required so a caller cannot
+    omit it and land on the unversioned topic.
+    """
     if direction not in ("in", "out"):
         raise Px4DdsError(f"bad fmu direction {direction!r}")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise Px4DdsError(f"bad MESSAGE_VERSION {version!r} for {name}")
+    leaf = name if version == 0 else f"{name}_v{version}"
     if namespace:
-        return f"/{namespace}/fmu/{direction}/{name}"
-    return f"/fmu/{direction}/{name}"
+        return f"/{namespace}/fmu/{direction}/{leaf}"
+    return f"/fmu/{direction}/{leaf}"
 
 
 def attitude_rpy(q: Any) -> Optional[tuple[float, float, float]]:
@@ -966,27 +1029,41 @@ class Px4DdsTransport(BaseTransport):
             )
         pub_qos = qos_for_node(PUBLISHER_QOS)
         sub_qos = qos_for_node(SUBSCRIPTION_QOS)
-        topics = {
-            "offboard_control_mode": fmu_topic(
-                self.namespace, "in", "offboard_control_mode"
-            ),
-            "trajectory_setpoint": fmu_topic(
-                self.namespace, "in", "trajectory_setpoint"
-            ),
-            "vehicle_command": fmu_topic(self.namespace, "in", "vehicle_command"),
+        # Resolve every name before creating an endpoint. A version mismatch
+        # then leaves the graph empty instead of guessing an unversioned topic.
+        pub_topics = {
+            leaf: fmu_topic(
+                self.namespace,
+                "in",
+                leaf,
+                version=message_version(classes[cls_name], leaf),
+            )
+            for leaf, cls_name in _IN_TOPICS
         }
+        sub_plan: list[tuple[str, str, str]] = []
+        for leaf, cls_name, method_name in _OUT_TOPICS:
+            topic = fmu_topic(
+                self.namespace,
+                "out",
+                leaf,
+                version=message_version(classes[cls_name], leaf),
+            )
+            sub_plan.append((topic, cls_name, method_name))
         self._pub_mode = create_pub(
-            classes["OffboardControlMode"], topics["offboard_control_mode"], pub_qos
+            classes["OffboardControlMode"],
+            pub_topics["offboard_control_mode"],
+            pub_qos,
         )
         self._pub_setpoint = create_pub(
-            classes["TrajectorySetpoint"], topics["trajectory_setpoint"], pub_qos
+            classes["TrajectorySetpoint"],
+            pub_topics["trajectory_setpoint"],
+            pub_qos,
         )
         self._pub_command = create_pub(
-            classes["VehicleCommand"], topics["vehicle_command"], pub_qos
+            classes["VehicleCommand"], pub_topics["vehicle_command"], pub_qos
         )
-        self.publisher_topics = list(topics.values())
-        for leaf, cls_name, method_name in _OUT_TOPICS:
-            topic = fmu_topic(self.namespace, "out", leaf)
+        self.publisher_topics = [pub_topics[leaf] for leaf, _cls_name in _IN_TOPICS]
+        for topic, cls_name, method_name in sub_plan:
             callback = getattr(self, method_name)
             sub = create_sub(classes[cls_name], topic, callback, sub_qos)
             self._subs.append(sub)
@@ -1403,6 +1480,7 @@ __all__ = [
     "PINNED_OFFBOARD_FIELDS",
     "PUBLISHER_QOS",
     "PX4_MSGS_BRANCH",
+    "PX4_TOPIC_VERSIONS",
     "PX4_VERSION",
     "Px4CommandRefused",
     "Px4DdsError",
@@ -1424,6 +1502,7 @@ __all__ = [
     "fmu_topic",
     "is_sim_target",
     "landed_state_of",
+    "message_version",
     "offboard_field_mismatch",
     "parse_px4_dds_uri",
     "qos_for_node",
