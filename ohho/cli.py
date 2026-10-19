@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from typing import Optional
 
 from . import __version__
 from .adapters import available_adapters
+from .adapters.errors import AdapterUnavailable
+from .adapters.px4_dds import Px4DdsError
 from .agent import Agent
 from .hardware import resolve_device
-from .registry import UnknownRobot, list_specs
+from .px4_doctor import PX4_DOCTOR_ROBOTS, evaluate_px4_doctor, sample_px4_graph
+from .registry import UnknownRobot, get_spec, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
 
@@ -22,6 +26,11 @@ def _cmd_version(args) -> int:
 
 
 def _cmd_doctor(args) -> int:
+    robot = getattr(args, "robot", None)
+    transport = getattr(args, "transport", None)
+    as_json = bool(getattr(args, "json", False))
+    if robot or transport or as_json:
+        return _cmd_px4_doctor(args)
     import importlib.util
 
     from .brains import harness_available
@@ -55,6 +64,55 @@ def _cmd_doctor(args) -> int:
     return 0
 
 
+def _cmd_px4_doctor(args) -> int:
+    """PX4 uXRCE-DDS checks. Exit 1 when a check fails, 2 on bad arguments."""
+    robot = getattr(args, "robot", None)
+    transport = getattr(args, "transport", None)
+    if not robot or not transport:
+        print(
+            "error: px4 doctor needs --robot px4-sitl|px4-x500 "
+            "and --transport px4+dds://HOST:PORT",
+            file=sys.stderr,
+        )
+        return 2
+    if robot not in PX4_DOCTOR_ROBOTS:
+        print(
+            f"error: px4 doctor does not cover {robot!r}. Use px4-sitl or px4-x500.",
+            file=sys.stderr,
+        )
+        return 2
+    if not str(transport).lower().startswith("px4+dds://"):
+        print(
+            "error: px4 doctor transport must be px4+dds://HOST:PORT",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        get_spec(robot)
+    except UnknownRobot as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    try:
+        sample = sample_px4_graph(str(transport))
+    except Px4DdsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    report = evaluate_px4_doctor(robot, str(transport), sample)
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        _print_px4_doctor(report)
+    return 0 if report.ok else 1
+
+
+def _print_px4_doctor(report) -> None:
+    print(f"px4 doctor: {report.robot}  {report.transport}")
+    for check in report.checks:
+        mark = "ok  " if check.ok else "fail"
+        print(f"  [{mark}] {check.name}: {check.detail}")
+    print(f"ok: {str(report.ok).lower()}")
+
+
 def _cmd_list(args) -> int:
     for s in list_specs():
         caps = ", ".join(s.capabilities) or "—"
@@ -63,12 +121,14 @@ def _cmd_list(args) -> int:
 
 
 def _connect(args) -> Robot:
+    read_only = bool(getattr(args, "read_only", False))
     bot = Robot.connect(
         args.robot,
         transport=args.transport,
         runtime=args.runtime,
         safety_config=args.safety_config,
         estop_damp=args.estop_damp,
+        read_only=read_only,
     )
     if bot.gated:
         if args.arm:
@@ -78,6 +138,12 @@ def _connect(args) -> Robot:
                     "(reason in ~/.ohho/safety/<date>.jsonl)",
                     file=sys.stderr,
                 )
+        elif read_only:
+            print(
+                "safety: read-only px4+dds link — no /fmu/in publishers, "
+                "no VehicleCommand, no arm",
+                file=sys.stderr,
+            )
         else:
             print(
                 "safety: hardware link is disarmed — pass --arm to enable motion",
@@ -87,10 +153,16 @@ def _connect(args) -> Robot:
 
 
 def _cmd_connect(args) -> int:
+    if getattr(args, "read_only", False) and args.arm:
+        print(
+            "error: --read-only does not arm and publishes nothing. Do not pass --arm.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         bot = _connect(args)
-    except UnknownRobot as e:
-        print(f"error: {e}", file=sys.stderr)
+    except (UnknownRobot, AdapterUnavailable, Px4DdsError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
     try:
         print(f"connected: {bot!r}")
@@ -104,6 +176,12 @@ def _cmd_connect(args) -> int:
             )
         if t and t.battery is not None:
             print(f"  battery: {t.battery * 100:.0f}%")
+        drone = t.custom.get("drone") if t is not None and t.custom else None
+        if isinstance(drone, dict):
+            print(f"  armed  : {drone.get('armed')}")
+            print(f"  mode   : {drone.get('flight_mode')}")
+            print(f"  gps    : {drone.get('gps_fix')}")
+            print(f"  landed : {drone.get('landed_state')}")
     finally:
         bot.disconnect()
     return 0
@@ -488,7 +566,9 @@ def _add_robot_args(
 ) -> None:
     sp.add_argument("robot", help="robot id (see `ohho list`)")
     sp.add_argument(
-        "--transport", default=transport_default, help="transport URI, e.g. sim://"
+        "--transport",
+        default=transport_default,
+        help="transport URI, e.g. sim:// or px4+dds://HOST:8888",
     )
     sp.add_argument("--runtime", default="auto", choices=["auto", "native", "ros2"])
     sp.add_argument(
@@ -515,14 +595,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command")
 
-    sub.add_parser(
-        "doctor", help="show environment, runtimes, adapters and robots"
-    ).set_defaults(func=_cmd_doctor)
+    doc = sub.add_parser("doctor", help="show environment, or check a px4+dds:// link")
+    doc.add_argument(
+        "--robot",
+        default=None,
+        help="with --transport, run the px4 doctor for px4-sitl or px4-x500",
+    )
+    doc.add_argument(
+        "--transport",
+        default=None,
+        help="px4+dds://HOST:PORT for the px4 doctor",
+    )
+    doc.add_argument(
+        "--json",
+        action="store_true",
+        help="print the px4 doctor report as JSON",
+    )
+    doc.set_defaults(func=_cmd_doctor)
     sub.add_parser("list", help="list built-in robots").set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
 
     c = sub.add_parser("connect", help="connect and print status + telemetry")
     _add_robot_args(c)
+    c.add_argument(
+        "--read-only",
+        action="store_true",
+        help=(
+            "px4+dds telemetry only: subscribe to /fmu/out, create no /fmu/in "
+            "publisher, send no VehicleCommand, no offboard heartbeat, and do not arm"
+        ),
+    )
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")

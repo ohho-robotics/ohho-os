@@ -90,6 +90,17 @@ NAVIGATION_STATE_AUTO_LAND = 18
 NAVIGATION_STATE_AUTO_PRECLAND = 20
 ARMING_STATE_ARMED = 2
 
+# sensor_gps.msg fix_type on px4_msgs release/1.17. 0 and 1 are both no fix.
+_GPS_FIX_BY_TYPE = {
+    0: "none",
+    1: "none",
+    2: "2d",
+    3: "3d",
+    4: "dgps",
+    5: "rtk_float",
+    6: "rtk_fixed",
+}
+
 _NAV_NAMES = {
     0: "manual",
     1: "altctl",
@@ -549,6 +560,17 @@ def _armed(status: Any) -> bool:
         return False
 
 
+def gps_fix_name(fix_type: Any) -> Optional[str]:
+    """Map a PX4 ``sensor_gps.fix_type`` to the Ohho gps_fix string.
+
+    ``None`` means the value was missing or not a release/1.17 fix type.
+    That is not reported as ``none``: ``none`` is fix type 0 or 1, observed.
+    """
+    if isinstance(fix_type, bool) or not isinstance(fix_type, int):
+        return None
+    return _GPS_FIX_BY_TYPE.get(fix_type)
+
+
 def _prearm_passed(status: Any) -> bool:
     return bool(
         status is not None and getattr(status, "pre_flight_checks_pass", False) is True
@@ -688,7 +710,9 @@ class Px4DdsTransport(BaseTransport):
     this object actually opens. Loopback hosts are sim targets
     (:func:`is_sim_target`). Any other host refuses :meth:`connect` unless
     ``OHHO_ARM_HARDWARE`` is ``1`` in the supplied environment. That check
-    does not arm motors.
+    does not arm motors. ``read_only=True`` skips it because connect then
+    creates no publishers and sends no vehicle command. The hardware-arming
+    flag on the object does not change.
 
     :attr:`sim_target` is the explicit sim classification. ``SafetyGate``
     reads it from :func:`ohho.safety.requires_hardware_arming` and does not
@@ -712,10 +736,12 @@ class Px4DdsTransport(BaseTransport):
         msg_factory: Any = None,
         environ: Optional[Mapping[str, str]] = None,
         clock: Optional[Callable[[], float]] = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
         self.spec = spec
         self.uri = uri
+        self.read_only = read_only
         host, port, namespace = parse_px4_dds_uri(uri)
         self.host = host
         self.port = port
@@ -750,6 +776,8 @@ class Px4DdsTransport(BaseTransport):
         # Land, RTL, hold, and disarm pause the heartbeat so a setpoint does
         # not fight the mode command. A later offboard trajectory clears it.
         self._suppress_offboard = False
+        self._gps_fix: Optional[str] = None
+        self.vehicle_commands_sent = 0
         self._state = ConnectionState.IDLE
         self._connected_since: Optional[float] = None
 
@@ -764,15 +792,23 @@ class Px4DdsTransport(BaseTransport):
         return not self.sim_target
 
     def connect(self) -> TransportStatus:
-        """Create the PX4 graph endpoints and start the offboard heartbeat.
+        """Create the PX4 graph endpoints and, unless read-only, the heartbeat.
 
-        Refuses a non-loopback host without hardware arming, and refuses a
-        message definition that is not ``px4_msgs`` ``release/1.17``. Either
-        refusal happens before any publisher is created.
+        Refuses a message definition that is not ``px4_msgs`` ``release/1.17``
+        before any endpoint is created. A non-loopback host without hardware
+        arming is refused the same way, except a read-only connect: that path
+        creates no ``/fmu/in`` publisher, sends no ``VehicleCommand``, and
+        does not start the offboard heartbeat. ``requires_hardware_arming``
+        stays true for a non-loopback host, so the safety gate still treats
+        it as hardware.
         """
         if self._state is ConnectionState.CONNECTED:
             raise Px4DdsError("already connected")
-        if self.requires_hardware_arming and not self._hardware_arming_granted():
+        if (
+            not self.read_only
+            and self.requires_hardware_arming
+            and not self._hardware_arming_granted()
+        ):
             raise Px4DdsError(
                 f"px4+dds://{self.host}:{self.port} is not a loopback sim target. "
                 "Refusing to connect without hardware arming "
@@ -805,10 +841,11 @@ class Px4DdsTransport(BaseTransport):
 
     def status(self) -> TransportStatus:
         ns = self.namespace or "/"
+        mode = " read-only" if self.read_only else ""
         return TransportStatus(
             protocol=self.protocol,
             state=self._state,
-            label=f"PX4 DDS {self.host}:{self.port} ns={ns}",
+            label=f"PX4 DDS {self.host}:{self.port} ns={ns}{mode}",
             connected_since=self._connected_since,
         )
 
@@ -822,6 +859,9 @@ class Px4DdsTransport(BaseTransport):
         A zero velocity is hover. It is not land. Land is
         :meth:`send_flight` ``land`` or :meth:`emergency_stop`.
         """
+        if self.read_only:
+            self._refuse_readonly_velocity(vel)
+            return
         if self._estopped:
             return
         self._require_connected()
@@ -842,6 +882,11 @@ class Px4DdsTransport(BaseTransport):
         ``disarm`` is refused unless the vehicle is on the ground and low.
         ``land`` is vehicle command 21 (NAV_LAND), never a zero setpoint.
         """
+        if self.read_only:
+            raise Px4CommandRefused(
+                "read-only px4+dds connect does not send VehicleCommand, "
+                "does not arm, and does not start an offboard heartbeat"
+            )
         if self._estopped and action not in ("land",):
             raise Px4CommandRefused("e-stop is latched")
         self._require_connected()
@@ -874,6 +919,13 @@ class Px4DdsTransport(BaseTransport):
         0.25 m: a normal disarm (param2 0). Force-disarm 21196 and flight
         termination 185 are not sent. A zero trajectory setpoint is not sent.
         """
+        if self.read_only:
+            with self._lock:
+                self._estopped = True
+            raise Px4CommandRefused(
+                "read-only px4+dds connect does not publish land, hold, or disarm. "
+                "No VehicleCommand was sent."
+            )
         with self._lock:
             self._estopped = True
             action = estop_action(self._landed_locked(), self._altitude_locked())
@@ -912,6 +964,9 @@ class Px4DdsTransport(BaseTransport):
                 if cls is None:
                     raise Px4DdsError(f"msg_factory is missing {name}")
                 classes[name] = cls
+            extra = getattr(self._msg_factory, "SensorGps", None)
+            if extra is not None:
+                classes["SensorGps"] = extra
             return classes
         try:
             import importlib
@@ -936,6 +991,9 @@ class Px4DdsTransport(BaseTransport):
                     f"px4_msgs.msg has no {name}. Checkout {PX4_MSGS_BRANCH}."
                 )
             classes[name] = cls
+        extra = getattr(module, "SensorGps", None)
+        if extra is not None:
+            classes["SensorGps"] = extra
         return classes
 
     def _resolve_node(self) -> Any:
@@ -952,6 +1010,9 @@ class Px4DdsTransport(BaseTransport):
         )
 
     def _create_graph(self, node: Any, classes: dict[str, Any]) -> None:
+        if self.read_only:
+            self._create_readonly_graph(node, classes)
+            return
         create_pub = getattr(node, "create_publisher", None)
         create_sub = getattr(node, "create_subscription", None)
         create_timer = getattr(node, "create_timer", None)
@@ -995,6 +1056,42 @@ class Px4DdsTransport(BaseTransport):
             raise Px4DdsError("offboard heartbeat must be at least 10 Hz")
         self._timer = create_timer(self.offboard_period_s, self._on_heartbeat)
 
+    def _create_readonly_graph(self, node: Any, classes: dict[str, Any]) -> None:
+        """Subscriptions only. No ``/fmu/in`` publisher and no heartbeat timer."""
+        create_sub = getattr(node, "create_subscription", None)
+        if not callable(create_sub):
+            raise Px4DdsError(
+                "read-only px4+dds needs create_subscription on the ROS node. "
+                "No publisher was created."
+            )
+        sub_qos = qos_for_node(SUBSCRIPTION_QOS)
+        self.publisher_topics = []
+        for leaf, cls_name, method_name in _OUT_TOPICS:
+            topic = fmu_topic(self.namespace, "out", leaf)
+            callback = getattr(self, method_name)
+            sub = create_sub(classes[cls_name], topic, callback, sub_qos)
+            self._subs.append(sub)
+            self.subscription_topics.append(topic)
+        gps_cls = classes.get("SensorGps")
+        if gps_cls is not None:
+            topic = fmu_topic(self.namespace, "out", "sensor_gps")
+            sub = create_sub(gps_cls, topic, self._on_gps, sub_qos)
+            self._subs.append(sub)
+            self.subscription_topics.append(topic)
+        self._timer = None
+
+    def _refuse_readonly_velocity(self, vel: Velocity) -> None:
+        """A zero from SafetyGate is a no-op. Any other velocity is refused."""
+        vx = finite_number("linear_x", vel.linear_x)
+        vy = finite_number("linear_y", vel.linear_y)
+        yaw = finite_number("angular_z", vel.angular_z)
+        if vx == 0.0 and vy == 0.0 and yaw == 0.0:
+            return
+        raise Px4CommandRefused(
+            "read-only px4+dds connect does not publish trajectory setpoints "
+            "or any /fmu/in topic"
+        )
+
     def _destroy_graph(self) -> None:
         timer = self._timer
         self._timer = None
@@ -1033,6 +1130,8 @@ class Px4DdsTransport(BaseTransport):
         self._subs = []
 
     def _on_heartbeat(self) -> None:
+        if self.read_only:
+            return
         with self._lock:
             if (
                 self._estopped
@@ -1066,6 +1165,14 @@ class Px4DdsTransport(BaseTransport):
     def _on_failsafe(self, msg: Any) -> None:
         self._store("_failsafe_msg", msg)
 
+    def _on_gps(self, msg: Any) -> None:
+        name = gps_fix_name(getattr(msg, "fix_type", None))
+        with self._lock:
+            if name is not None:
+                self._gps_fix = name
+            snap = self._snapshot_locked()
+        self._emit_telemetry(snap)
+
     def _store(self, attr: str, msg: Any) -> None:
         with self._lock:
             setattr(self, attr, msg)
@@ -1088,7 +1195,7 @@ class Px4DdsTransport(BaseTransport):
             "velocity_frame": "LOCAL_NED",
             "voltage_v": _voltage_v(self._battery_msg),
             "current_a": _current_a(self._battery_msg),
-            "gps_fix": "none",
+            "gps_fix": self._gps_fix if self._gps_fix is not None else "none",
             "failsafe": _failsafe_names(self._failsafe_msg, status),
             "link_ok": link_ok,
             "link_quality": 1.0 if link_ok else 0.0,
@@ -1267,6 +1374,10 @@ class Px4DdsTransport(BaseTransport):
     def _publish_stream(
         self, mode_pub: Any, sp_pub: Any, mode: Any, setpoint: Any
     ) -> None:
+        if self.read_only:
+            raise Px4CommandRefused(
+                "read-only px4+dds connect does not publish OffboardControlMode"
+            )
         mode_pub.publish(mode)
         sp_pub.publish(setpoint)
         with self._lock:
@@ -1327,6 +1438,10 @@ class Px4DdsTransport(BaseTransport):
         param6: float = 0.0,
         param7: float = 0.0,
     ) -> None:
+        if self.read_only:
+            raise Px4CommandRefused(
+                "read-only px4+dds connect does not send VehicleCommand"
+            )
         check_vehicle_command(command, param1, param2, param3)
         pub = self._pub_command
         if pub is None:
@@ -1351,6 +1466,7 @@ class Px4DdsTransport(BaseTransport):
             from_external=True,
         )
         pub.publish(msg)
+        self.vehicle_commands_sent += 1
 
     def _timestamp_us(self) -> int:
         node = self._node
@@ -1422,6 +1538,7 @@ __all__ = [
     "check_vehicle_command",
     "estop_action",
     "fmu_topic",
+    "gps_fix_name",
     "is_sim_target",
     "landed_state_of",
     "offboard_field_mismatch",

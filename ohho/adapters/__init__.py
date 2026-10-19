@@ -74,6 +74,8 @@ def resolve_transport(
     uri: Optional[str] = None,
     spec: Optional[RobotSpec] = None,
     runtime=None,
+    *,
+    read_only: bool = False,
 ) -> Transport:
     """Pick a transport for a robot.
 
@@ -89,9 +91,18 @@ def resolve_transport(
     - ``uri="px4+dds://HOST:PORT?ns=NAME"`` → PX4 uXRCE-DDS transport. This is
       not ``dds://`` (that scheme stays Unitree). ``Robot.connect`` wraps the
       result in ``SafetyGate``. Loopback hosts set ``sim_target``, which is
-      how the gate tells a sim agent from a vehicle.
+      how the gate tells a sim agent from a vehicle. ``read_only=True``
+      subscribes to ``/fmu/out`` and does not create ``/fmu/in`` publishers.
     - any other scheme → ``AdapterUnavailable``.
     """
+    if read_only and not (
+        isinstance(uri, str) and uri.lower().startswith("px4+dds://")
+    ):
+        raise AdapterUnavailable(
+            "read-only connect is only implemented for px4+dds:// "
+            "(telemetry on /fmu/out, no /fmu/in publishers). "
+            f"Got {uri!r}."
+        )
     if uri is None:
         return SimTransport(spec)
     scheme, _sep, address = uri.partition("://")
@@ -113,7 +124,7 @@ def resolve_transport(
         return Ros2Transport(spec, address, runtime=runtime)
 
     if scheme == "px4+dds":
-        return Px4DdsTransport(spec, uri, runtime=runtime)
+        return Px4DdsTransport(spec, uri, runtime=runtime, read_only=read_only)
 
     cls = _HARDWARE.get(scheme)
     if cls is None:
