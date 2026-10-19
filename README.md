@@ -15,6 +15,8 @@ ohho doctor
 ohho sim --robot omnibot --seconds 2
 ```
 
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only ([`docs/cli.md`](docs/cli.md)). `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)).
+
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
 adapters it can import, and the built-in robot ids. `ohho sim` connects with
@@ -22,6 +24,13 @@ transport `sim://` and runtime `native`, then drives an in-process pattern for
 the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
+
+Sign-in is optional. `ohho sim` and `ohho mcp serve` keep working with no
+account. `ohho login` uses the console device flow and stores a token in
+`~/.ohho/credentials.json` (mode `0600`, or a user-only ACL on Windows).
+`ohho whoami` prints the account; `ohho whoami --json` is the agent schema
+in [`docs/cli.md`](docs/cli.md). `OHHO_TOKEN` overrides the file and is never
+written to disk. The token is not printed.
 
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,

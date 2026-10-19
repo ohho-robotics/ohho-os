@@ -83,6 +83,71 @@ headless agent or CI job. It does not stop code that runs in the same Python
 process and reaches into private attributes; this is a software guard, not a
 replacement for the robot's own e-stop or the remote.
 
+## MCP server (OHH-278)
+
+`ohho mcp serve` accepts only `sim://`. A human can pass `--allow-hardware`
+on that command to let a tool open a non-sim URI. Nothing else turns hardware
+on: not `OHHO_ALLOW_HARDWARE`, not `OHHO_ARM_HARDWARE`, and not a tool
+argument such as `allowHardware`.
+
+With the flag, `Robot.connect` wraps the link in `SafetyGate` the same way
+`ohho connect` does (profile, caps, watchdogs, allowlist, audit). The process
+never calls `arm()` or `release_stop()`. Its stdin is the JSON-RPC pipe, not
+an interactive terminal, so arming would fail closed even if it tried. Motion
+tools return a structured error (`motion_refused` / `not_armed`) and send
+zero velocity. The message tells the agent to ask the human. The human arms
+from their own terminal
+(`OHHO_ARM_HARDWARE=1`, `ohho connect … --arm`, then the typed phrase).
+
+`emergency_stop` is always registered and always allowed, on `sim://` and on
+a gated link. It latches. There is no MCP tool to clear that latch.
+
+Tool registration rejects names that arm, release an e-stop, or change a
+safety profile or a limit (`arm`, `release_stop`, `release-stop`,
+`disarm-override`, `profile`, `limit`, and the same words inside a longer
+name). `emergency_stop` stays allowed.
+
+Every tool result that talks to a robot includes `"backend": "sim"` or
+`"backend": "hardware"`. A velocity result includes `requested`, `applied`,
+`clamped`, and `cap`. A 2 m/s request is clamped to the simulator limit or
+the safety-profile cap, whichever is lower. A disarmed hardware link does
+not accept that command (`sent: false`); the gate is left with zero velocity.
+
+`ohho mcp connect` records `ohho mcp serve` with no `--allow-hardware` and
+no `--arm`.
+
+### Aircraft tools (OHH-293)
+
+The same server registers `drone_connect`, `drone_telemetry`,
+`drone_velocity`, `drone_hold`, and `drone_land`. It does not register
+`drone_arm`, `drone_takeoff`, `drone_rtl`, or `release_stop`. A future tool
+with one of those names, or a name that changes the geofence, fails when the
+tool list is built. `drone_mcp_allowed` is that check for `hold`, `land`,
+and `offboard_velocity`.
+
+`drone_connect` does not call `Robot.arm()` or `Robot.arm_flight()`.
+`OHHO_ARM_HARDWARE=1` in the server environment does not arm: stdin is not
+an interactive terminal. `drone_velocity` on hardware returns `not_armed`
+and does not send the setpoint until a human has armed the gate from their
+own terminal.
+
+Caps are applied before the backend. Horizontal speed is 1.5 m/s, vertical
+speed 1.0 m/s, yaw rate 0.8 rad/s. The altitude ceiling is 3 m on `sim://`
+and the gate's geofence ceiling on hardware. A setpoint that is already
+outside that cylinder, or that the clamped velocity would leave within the
+command window, is an error. The tool requests hold and does not clip the
+position onto the fence.
+
+`drone_land` is always attempted, including when `--allow-hardware` was not
+passed. `emergency_stop` is always allowed and latches. On a gated aircraft
+it uses the drone e-stop map (land in the air, hold then land when the
+landed state is unknown, disarm only on the ground at or below 0.25 m). On
+`drone-sim` the simulator freezes horizontal motion and descends. Neither
+path is a force-disarm.
+
+Every drone tool result includes `"backend": "sim"` or `"backend": "hardware"`.
+Details and the tool table are in [mcp.md](mcp.md).
+
 ## Profiles
 
 | Robot | `max_vx` | `max_vy` | `max_wz` | accel x / y / yaw | Notes |

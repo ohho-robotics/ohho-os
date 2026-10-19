@@ -59,8 +59,11 @@
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
-| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 383 tests, OK (skipped=7). |
+| **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`, plus `emergency_stop`. **OHH-278**: hardware URIs need a human `--allow-hardware`; the process never arms or releases an e-stop; results carry `backend` and velocity clamps. **OHH-293**: drone tools `drone_connect`, `drone_telemetry`, `drone_velocity`, `drone_hold`, `drone_land` (`ohho/mcp_drone.py`); no `drone_arm`, `drone_takeoff`, `drone_rtl`, or `release_stop`. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). Docs `docs/mcp.md` |
+| **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
+| **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`) |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 456 tests, skipped=7. `tests/test_auth.py` covers the OHH-273 device flow. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -185,12 +188,25 @@ sdk/
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── mcp_server.py     # stdio JSON-RPC MCP server (OHH-173; tools from mcp_tools)
+│   ├── mcp_tools.py      # on-robot catalog + sim tools (OHH-47); OHH-278 sim-only unless --allow-hardware
+│   ├── mcp_drone.py      # OHH-293 drone tools: connect/telemetry/velocity/hold/land; no arm/takeoff/rtl
+│   ├── mcp_split.py      # hosted vs on-robot MCP product sets
+│   ├── mcp_connect.py    # `ohho mcp connect` — merge ohho into 7 AI client configs (OHH-275)
+│   ├── mcp_toml.py       # stdlib TOML read + surgical `[mcp_servers.ohho]` edit (Codex)
+│   ├── auth.py           # device-flow login, ~/.ohho/credentials.json, whoami (OHH-273)
+│   ├── agent_doctor.py   # ohho doctor --agent readiness (OHH-271 phase 7); rules hook is ohho.agent_rules
+│   ├── agent_rules/      # ohho rules install (OHH-271 phase 6); body is ohho-rules.md
+│   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
+│   ├── cli.py            # argparse: doctor/verify/list/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/mcp; main()
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── mcp.md            # stdio MCP server + `ohho mcp connect` client configs
+│   ├── rules.md          # `ohho rules install` paths, markers, and safety text
+│   └── cli.md            # ohho login / whoami / logout and whoami --json schema
 ├── scripts/
 │   ├── check_classifiers.py
 │   └── sim_loop.py       # one-liner reproducible sim loop runner
