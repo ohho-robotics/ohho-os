@@ -45,7 +45,25 @@ still wins over a config file.
 `arm_flight` and `takeoff` are not on that allowlist. A human at a TTY may
 request them. On hardware that is the same typed phrase `SafetyGate.arm`
 already uses, plus `OHHO_ARM_HARDWARE=1`. A simulated link still needs a TTY,
-so a headless caller cannot take off. CI is refused. They are not MCP tools.
+so a headless caller cannot take off. They are not MCP tools.
+
+GitHub Actions may arm and take off only a proven simulator, and only with
+an explicit opt-in. All of these must hold: `CI` and `GITHUB_ACTIONS` are
+`true` (any case, surrounding space ignored), `OHHO_CI_SIM_ARMING` is exactly
+`1`, `OHHO_ARM_HARDWARE` is unset, and the gate is not a hardware gate. If
+the transport exposes `requires_hardware_arming`, that must be false too.
+The target is `drone-sim` (backend id `drone-sim`, or protocol `simulated`
+with no other backend id), or a loopback `px4+dds://` link whose
+`sim_target` is true, or a loopback `mavlink+udp://` link whose
+`simulation_target` is true. Loopback means `127.0.0.0/8`, `::1`, or
+`localhost`. The PX4 and MAVLink cases also need `OHHO_CI_SITL` exactly `1`.
+Serial, radio, Crazyflie, docker names, non-loopback hosts, and every other
+backend are refused. When the exception is used the gate logs
+`safety: CI sim-only arming exception used` and writes a `ci_sim_arming`
+audit line (action, backend, host). If that line cannot be written the
+command is refused. Geofence, takeoff altitude, battery, link, the setpoint
+stream, the allowlist, speed caps, and the e-stop latch still apply.
+`release_stop()` and ground `arm()` are unchanged. This never arms hardware.
 
 `arm_flight` also needs an offboard setpoint forwarded in the last 300 ms.
 The gate does not arm the autopilot by calling `arm()`. `Robot.arm()` only
