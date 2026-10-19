@@ -1525,5 +1525,30 @@ class TestCliSafetyFlags(unittest.TestCase):
         fake.arm.assert_not_called()
 
 
+def load_tests(loader, standard_tests, pattern):
+    """CI coverage runs ``unittest tests.test_safety`` and nothing else.
+
+    Drone profile coverage lives in ``tests.test_drone_safety``. Load that
+    file when this module is named directly (``pattern is None``). Discovery
+    passes a file pattern and loads the drone module on its own. The file
+    path is used so a third-party ``tests`` package on ``sys.path`` cannot
+    hide it.
+    """
+    suite = unittest.TestSuite()
+    suite.addTests(standard_tests)
+    if pattern is not None:
+        return suite
+    import importlib.util
+
+    path = Path(__file__).with_name("test_drone_safety.py")
+    spec = importlib.util.spec_from_file_location("ohho_test_drone_safety", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    suite.addTests(loader.loadTestsFromModule(module))
+    return suite
+
+
 if __name__ == "__main__":
     unittest.main()
