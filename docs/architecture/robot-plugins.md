@@ -96,9 +96,20 @@ Velocity fields default from the flat clamps (`max_vx` and `max_vy` from
 `None` (not declared). Aerial extras default to the drone drafts' ground-robot
 defaults: climb `0.0`, `gps_fix` `""`, flags false.
 
-`capability_params` is an open mapping until C-04 types the parameters and
-rejects unknown capability names. `CiSim.enabled` defaults to false so existing
-robots do not join a matrix that does not exist yet. Scenario ids, when a
+`capability_params` is a JSON object keyed by capability name. `has()` stays a
+string check. The names that carry parameters are `base.drive`,
+`base.holonomic_drive`, `legged.pose`, `aerial`, `humanoid.locomotion`,
+`humanoid.posture`, `whole_body.joint`, `manipulation`, `manipulation.dual_arm`,
+`end_effector.gripper`, `end_effector.dex_hand` and `head.gaze`. Perception
+capabilities stay strings with no parameter schema. When the field is omitted,
+parameters are filled from the spec's limits and joint groups.
+They describe the robot. They are not safety caps, and `SafetyGate` does not
+read them. `register()` rejects a capability name that is not in the
+vocabulary. `RobotSpec(...)` still accepts an explicit mapping, so a document
+that already stored one round-trips.
+
+`CiSim.enabled` defaults to false so existing robots do not join a matrix that
+does not exist yet. Scenario ids, when a
 plugin opts in, come from `CI_SCENARIOS`:
 
 | Class | Scenario |

@@ -200,9 +200,9 @@ def detect_profile() -> HardwareProfile:
 
 
 def emit_robot_descriptor(robot_id: str = "omnibot", *, kind: str = "real") -> str:
-    """JSON text of the RobotDescriptor v1 document for a built-in robot.
+    """JSON text of the RobotDescriptor v1 document for a registered robot.
 
-    Caps come from the safety profile and stay at or below the OmniBot ceilings.
+    Drive and safety caps stay at or below the descriptor ceilings.
     """
     from .descriptor import emit_descriptor, robot_descriptor
 

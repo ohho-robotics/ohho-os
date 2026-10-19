@@ -148,6 +148,7 @@ sdk/
 │   ├── __init__.py       # exports Robot, connect, schema types, registry fns; __version__
 │   ├── schema.py         # Velocity, Odometry, JointReading, Telemetry, TransportStatus, ConnectionState, clamp()
 │   ├── capabilities.py   # capability string constants + ALL + is_known()
+│   ├── capability_params.py  # typed parameters for those capabilities (OHH-312)
 │   ├── registry.py       # RobotSpec v2 (frozen dataclass) + _BUILTINS + get_spec/list_specs/register/load_manifest
 │   ├── robot_spec.py     # RobotClass, per-class limits, assets, CiSim, category table (OHH-309)
 │   ├── transport.py      # Transport (ABC) + BaseTransport (callback bookkeeping)
@@ -240,8 +241,13 @@ loads; it maps onto `robot_class`. Built-ins: `omnibot` (mobile manipulator,
 (mobile base, generic holonomic). Safety caps are unchanged. ADR:
 `docs/architecture/robot-plugins.md`.
 
-**Capabilities (`ohho/capabilities.py`):** `base.drive`, `base.holonomic_drive`,
-`legged.pose`, `manipulation`, `perception.rgb`, `perception.depth`.
+**Capabilities (`ohho/capabilities.py`, parameters in `ohho/capability_params.py`):**
+`base.drive`, `base.holonomic_drive`, `legged.pose`, `aerial`,
+`humanoid.locomotion`, `humanoid.posture`, `whole_body.joint`, `manipulation`,
+`manipulation.dual_arm`, `end_effector.gripper`, `end_effector.dex_hand`,
+`head.gaze`, `perception.rgb`, `perception.depth`, `perception.scan`. `has()`
+stays a string check. Typed parameters live on `spec.capability_params` and are
+descriptive; they are not safety caps. `register()` rejects an unknown name.
 
 **Transport interface (`ohho/transport.py`):** `connect()`, `disconnect()`,
 `status()`, `read()->Telemetry`, `send_velocity(Velocity)`,

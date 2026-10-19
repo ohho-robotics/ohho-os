@@ -4,6 +4,9 @@ Emits the ohho.descriptor.v1 document from the registry spec, the safety
 profile, and the capability vocabulary. Hard caps are the minimum of those
 sources and the OmniBot ceilings (0.2 m/s linear, 1.0 rad/s yaw, 0.15 rad
 joint step). This module does not raise a cap.
+
+``capability_params`` is an optional descriptive field. It copies the spec's
+parameters and is not copied into ``drive.caps`` or ``safety.hard``.
 """
 
 from __future__ import annotations
@@ -15,8 +18,10 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 
 from . import capabilities as caps
+from .capability_params import validate_capability_params
 from .registry import RobotSpec, get_spec
-from .safety import OMNIBOT_PROFILE
+from .robot_spec import RobotAssets, RobotClass, thaw_json
+from .safety import PROFILES
 
 DESCRIPTOR_VERSION = "1.0.0"
 TELEMETRY_SCHEMA_ID = "ohho.telemetry.v1"
@@ -120,32 +125,69 @@ def _min_cap(*values: float) -> float:
     return min(float(v) for v in values)
 
 
-def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
-    """Build a RobotDescriptor for a built-in robot.
+def _drive_kind(spec: RobotSpec) -> str:
+    """Drive kind in the v1 enum.
 
-    Only OmniBot has a topic map today. Caps cannot exceed the safety profile
-    or the module ceilings.
+    ``mecanum`` is that enum's holonomic wheeled kind. The enum has no aerial
+    kind; flight is described by the ``aerial`` capability parameters, and the
+    drive block stays ``fixed-base``.
     """
-    if kind not in _SAMPLE_KINDS:
-        raise ValueError("telemetry kind must be sim or real")
-    if robot_id != "omnibot":
-        raise KeyError(f"no RobotDescriptor for {robot_id!r}")
+    robot_class = spec.robot_class
+    if robot_class is RobotClass.QUADRUPED:
+        return "quadruped"
+    if robot_class is RobotClass.HUMANOID:
+        return "bipedal"
+    if robot_class is RobotClass.ARM or robot_class is RobotClass.AERIAL:
+        return "fixed-base"
+    if spec.has(caps.BASE_HOLONOMIC):
+        return "mecanum"
+    return "differential"
 
-    spec = get_spec(robot_id)
-    profile = OMNIBOT_PROFILE
-    vx = _min_cap(spec.max_lin, profile.max_vx, MAX_VX_MPS)
-    vy = _min_cap(spec.max_lin, profile.max_vy, MAX_VY_MPS)
-    wz = _min_cap(spec.max_ang, profile.max_wz, MAX_WZ_RAD_S)
+
+def _hard_and_drive_caps(spec: RobotSpec) -> tuple[dict[str, float], dict[str, float]]:
+    """Safety block and drive caps. Neither value exceeds the module ceilings."""
+    profile = PROFILES.get(spec.id)
+    vy_spec = spec.max_lin if spec.has(caps.BASE_HOLONOMIC) else 0.0
+    if profile is None:
+        vx = _min_cap(spec.max_lin, MAX_VX_MPS)
+        vy = _min_cap(vy_spec, MAX_VY_MPS)
+        wz = _min_cap(spec.max_ang, MAX_WZ_RAD_S)
+        accel_x = MAX_ACCEL_X_MPS2
+        accel_y = MAX_ACCEL_Y_MPS2
+        accel_wz = MAX_ACCEL_WZ_RAD_S2
+        joint_step = MAX_JOINT_STEP_RAD
+    else:
+        vx = _min_cap(spec.max_lin, profile.max_vx, MAX_VX_MPS)
+        vy = _min_cap(vy_spec, profile.max_vy, MAX_VY_MPS)
+        wz = _min_cap(spec.max_ang, profile.max_wz, MAX_WZ_RAD_S)
+        accel_x = _min_cap(profile.max_accel_x, MAX_ACCEL_X_MPS2)
+        accel_y = _min_cap(profile.max_accel_y, MAX_ACCEL_Y_MPS2)
+        accel_wz = _min_cap(profile.max_accel_wz, MAX_ACCEL_WZ_RAD_S2)
+        joint_step = _min_cap(profile.max_joint_step, MAX_JOINT_STEP_RAD)
+    drive_caps = {"vx_mps": vx, "vy_mps": vy, "wz_rad_s": wz}
     hard = {
         "max_vx_mps": vx,
         "max_vy_mps": vy,
         "max_wz_rad_s": wz,
-        "max_accel_x_mps2": _min_cap(profile.max_accel_x, MAX_ACCEL_X_MPS2),
-        "max_accel_y_mps2": _min_cap(profile.max_accel_y, MAX_ACCEL_Y_MPS2),
-        "max_accel_wz_rad_s2": _min_cap(profile.max_accel_wz, MAX_ACCEL_WZ_RAD_S2),
-        "max_joint_step_rad": _min_cap(profile.max_joint_step, MAX_JOINT_STEP_RAD),
+        "max_accel_x_mps2": accel_x,
+        "max_accel_y_mps2": accel_y,
+        "max_accel_wz_rad_s2": accel_wz,
+        "max_joint_step_rad": joint_step,
     }
+    return hard, drive_caps
 
+
+def _urdf_url(spec: RobotSpec) -> str:
+    """Use a declared package or http URL. Otherwise a stable locator."""
+    assets = spec.assets
+    urdf = assets.urdf if isinstance(assets, RobotAssets) else ""
+    if _URL_RE.fullmatch(urdf):
+        return urdf
+    return f"package://ohho/robots/{spec.id}.urdf"
+
+
+def _omnibot_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) -> dict:
+    profile = PROFILES["omnibot"]
     joints = []
     for name in spec.joint_names:
         if name not in profile.joint_limits:
@@ -162,15 +204,14 @@ def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
                 "home": 0.0,
             }
         )
-
-    document = {
+    return {
         "v": DESCRIPTOR_VERSION,
         "id": spec.id,
         "model": spec.name,
         "drive": {
             "kind": "mecanum",
             "holonomic": spec.has(caps.BASE_HOLONOMIC),
-            "caps": {"vx_mps": vx, "vy_mps": vy, "wz_rad_s": wz},
+            "caps": drive_caps,
         },
         "arms": [{"name": "so101", "joints": joints}] if joints else [],
         "topics": {
@@ -192,6 +233,59 @@ def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
         },
         "safety": {"hard": hard},
     }
+
+
+def _generic_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) -> dict:
+    fields = ["base"]
+    if spec.joint_names or spec.dof_arm:
+        fields.append("joints")
+    return {
+        "v": DESCRIPTOR_VERSION,
+        "id": spec.id,
+        "model": spec.name,
+        "drive": {
+            "kind": _drive_kind(spec),
+            "holonomic": spec.has(caps.BASE_HOLONOMIC),
+            "caps": drive_caps,
+        },
+        "arms": [],
+        "topics": {
+            "cmd": "/cmd_vel",
+            "state": "/odom",
+            "estop": "/emergency_stop",
+            "heartbeat": "/ohho/heartbeat",
+            "telemetry": "/ohho/telemetry",
+            "images": [],
+        },
+        "cameras": [],
+        "urdf_url": _urdf_url(spec),
+        "apriltags": [],
+        "telemetry": {
+            "schema_id": TELEMETRY_SCHEMA_ID,
+            "robot_id": spec.id,
+            "kind": kind,
+            "fields": fields,
+        },
+        "safety": {"hard": hard},
+    }
+
+
+def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
+    """Build a RobotDescriptor for a registered robot.
+
+    OmniBot keeps its topic map, cameras and URDF. Every other registered spec
+    gets a document in the same schema. ``capability_params`` is copied from
+    the spec. Drive and safety caps cannot exceed the module ceilings.
+    """
+    if kind not in _SAMPLE_KINDS:
+        raise ValueError("telemetry kind must be sim or real")
+    spec = get_spec(robot_id)
+    hard, drive_caps = _hard_and_drive_caps(spec)
+    if spec.id == "omnibot":
+        document = _omnibot_document(spec, kind, hard, drive_caps)
+    else:
+        document = _generic_document(spec, kind, hard, drive_caps)
+    document["capability_params"] = thaw_json(spec.capability_params)
     validate_descriptor(document)
     return document
 
@@ -227,9 +321,7 @@ def spec_from_descriptor(document: Mapping[str, Any]) -> RobotSpec:
     ``max_lin`` is the smaller of the two linear hard caps.
     """
     validate_descriptor(document)
-    joints = tuple(
-        joint["name"] for arm in document["arms"] for joint in arm["joints"]
-    )
+    joints = tuple(joint["name"] for arm in document["arms"] for joint in arm["joints"])
     hard = document["safety"]["hard"]
     drive = document["drive"]
     if drive["holonomic"]:
@@ -247,6 +339,7 @@ def spec_from_descriptor(document: Mapping[str, Any]) -> RobotSpec:
         max_lin=max_lin,
         max_ang=hard["max_wz_rad_s"],
         joint_names=joints,
+        capability_params=document.get("capability_params"),
     )
 
 
@@ -254,7 +347,7 @@ def validate_descriptor(document: Mapping[str, Any]) -> None:
     """Refuse a document that is incomplete or above a hard ceiling."""
     if not isinstance(document, Mapping):
         raise ValueError("descriptor must be an object")
-    _exact_keys(
+    _keys(
         document,
         {
             "v",
@@ -270,7 +363,10 @@ def validate_descriptor(document: Mapping[str, Any]) -> None:
             "safety",
         },
         "descriptor",
+        optional={"capability_params"},
     )
+    if "capability_params" in document:
+        validate_capability_params(document["capability_params"])
     _match("v", document["v"], _VERSION_RE)
     _match("id", document["id"], _ROBOT_ID_RE)
     _match("model", document["model"], _DISPLAY_RE)
@@ -284,15 +380,25 @@ def validate_descriptor(document: Mapping[str, Any]) -> None:
     _validate_safety(document["safety"], document["drive"]["caps"])
 
 
-def _exact_keys(obj: Mapping[str, Any], allowed: set, where: str) -> None:
+def _keys(
+    obj: Mapping[str, Any],
+    required: set[str],
+    where: str,
+    optional: set[str] | None = None,
+) -> None:
     if not isinstance(obj, Mapping):
         raise ValueError(f"{where} must be an object")
+    allowed = set(required) if optional is None else set(required) | set(optional)
     extra = set(obj) - allowed
-    missing = allowed - set(obj)
+    missing = set(required) - set(obj)
     if missing:
         raise ValueError(f"{where} missing {sorted(missing)}")
     if extra:
         raise ValueError(f"{where} unknown keys {sorted(extra)}")
+
+
+def _exact_keys(obj: Mapping[str, Any], allowed: set, where: str) -> None:
+    _keys(obj, set(allowed), where)
 
 
 def _match(name: str, value: Any, pattern: re.Pattern) -> None:
@@ -300,7 +406,13 @@ def _match(name: str, value: Any, pattern: re.Pattern) -> None:
         raise ValueError(f"{name} is invalid")
 
 
-def _number(name: str, value: Any, *, ceiling: Optional[float] = None, gt: Optional[float] = None) -> float:
+def _number(
+    name: str,
+    value: Any,
+    *,
+    ceiling: Optional[float] = None,
+    gt: Optional[float] = None,
+) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number")
     number = float(value)
@@ -398,7 +510,11 @@ def _validate_tags(tags: Any) -> None:
     for index, tag in enumerate(tags):
         where = f"apriltags[{index}]"
         _exact_keys(tag, {"id", "size", "T_tag_base"}, where)
-        if isinstance(tag["id"], bool) or not isinstance(tag["id"], int) or tag["id"] < 0:
+        if (
+            isinstance(tag["id"], bool)
+            or not isinstance(tag["id"], int)
+            or tag["id"] < 0
+        ):
             raise ValueError(f"{where}.id must be an integer >= 0")
         _number(f"{where}.size", tag["size"], ceiling=1.0, gt=0.0)
         matrix = tag["T_tag_base"]

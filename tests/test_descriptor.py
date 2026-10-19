@@ -15,8 +15,9 @@ from ohho.descriptor import (
     validate_descriptor,
 )
 from ohho.profiles import emit_robot_descriptor, load_robot_descriptor
-from ohho.registry import get_spec
-from ohho.safety import OMNIBOT_PROFILE
+from ohho.registry import RobotSpec, _REGISTRY, get_spec, register
+from ohho.robot_spec import AerialLimits, thaw_json
+from ohho.safety import GO2_PROFILE, OMNIBOT_PROFILE
 
 
 class TestRobotDescriptor(unittest.TestCase):
@@ -65,7 +66,9 @@ class TestRobotDescriptor(unittest.TestCase):
         self.assertEqual(doc["drive"]["caps"]["vx_mps"], hard["max_vx_mps"])
 
         joints = doc["arms"][0]["joints"]
-        self.assertEqual(tuple(joint["name"] for joint in joints), get_spec("omnibot").joint_names)
+        self.assertEqual(
+            tuple(joint["name"] for joint in joints), get_spec("omnibot").joint_names
+        )
         for joint in joints:
             lo, hi = OMNIBOT_PROFILE.joint_limits[joint["name"]]
             self.assertEqual(joint["min"], lo)
@@ -90,6 +93,25 @@ class TestRobotDescriptor(unittest.TestCase):
         self.assertFalse(spec.has(caps.PERCEPTION_SCAN))
         self.assertTrue(get_spec("omnibot").has(caps.PERCEPTION_SCAN))
 
+        params = doc["capability_params"]
+        self.assertEqual(
+            params[caps.BASE_DRIVE], {"max_vx": 0.2, "max_vy": 0.2, "max_wz": 1.0}
+        )
+        self.assertEqual(params[caps.BASE_HOLONOMIC], params[caps.BASE_DRIVE])
+        self.assertEqual(
+            params[caps.MANIPULATION], {"arm_groups": ["arm"], "ee_frames": []}
+        )
+        self.assertEqual(
+            doc["urdf_url"], "package://omnibot_description/urdf/omnibot.urdf.xacro"
+        )
+        self.assertEqual(
+            spec.capability_params[caps.BASE_DRIVE]["max_vx"],
+            params[caps.BASE_DRIVE]["max_vx"],
+        )
+        bare = dict(doc)
+        del bare["capability_params"]
+        validate_descriptor(bare)
+
     def test_sim_kind_does_not_change_caps(self):
         real = robot_descriptor("omnibot")
         sim = robot_descriptor("omnibot", kind="sim")
@@ -105,7 +127,72 @@ class TestRobotDescriptor(unittest.TestCase):
 
     def test_unknown_robot_is_refused(self):
         with self.assertRaises(KeyError):
-            robot_descriptor("unitree-go2")
+            robot_descriptor("does-not-exist")
+
+    def test_go2_emits_descriptive_params_under_the_ceiling(self):
+        spec = get_spec("unitree-go2")
+        doc = robot_descriptor("unitree-go2")
+        self.assertEqual(doc["capability_params"], thaw_json(spec.capability_params))
+        self.assertEqual(doc["drive"]["kind"], "quadruped")
+        self.assertTrue(doc["drive"]["holonomic"])
+        self.assertEqual(doc["capability_params"][caps.BASE_DRIVE]["max_vx"], 1.5)
+        self.assertEqual(doc["capability_params"][caps.BASE_DRIVE]["max_wz"], 2.0)
+        self.assertEqual(
+            doc["capability_params"][caps.LEGGED_POSE]["poses"],
+            [
+                "stand_up",
+                "stand_down",
+                "balance_stand",
+                "recovery_stand",
+                "sit",
+                "rise_sit",
+                "damp",
+            ],
+        )
+        self.assertEqual(doc["safety"]["hard"]["max_vx_mps"], 0.2)
+        self.assertEqual(doc["safety"]["hard"]["max_wz_rad_s"], 1.0)
+        self.assertLessEqual(doc["drive"]["caps"]["vx_mps"], MAX_VX_MPS)
+        self.assertEqual(GO2_PROFILE.max_vx, 0.5)
+        self.assertNotEqual(
+            doc["capability_params"][caps.BASE_DRIVE]["max_vx"], GO2_PROFILE.max_vx
+        )
+        recovered = spec_from_descriptor(doc)
+        self.assertTrue(recovered.has(caps.LEGGED_POSE))
+        self.assertEqual(recovered.capability_params[caps.BASE_DRIVE]["max_vx"], 1.5)
+
+    def test_sim_emits_capability_params(self):
+        spec = get_spec("sim")
+        doc = robot_descriptor("sim")
+        self.assertEqual(doc["capability_params"], thaw_json(spec.capability_params))
+        self.assertEqual(doc["drive"]["kind"], "mecanum")
+        self.assertTrue(doc["drive"]["holonomic"])
+        self.assertEqual(doc["capability_params"][caps.BASE_DRIVE]["max_vx"], 1.0)
+        self.assertEqual(doc["capability_params"][caps.BASE_DRIVE]["max_wz"], 2.0)
+        self.assertEqual(doc["safety"]["hard"]["max_vx_mps"], MAX_VX_MPS)
+        self.assertEqual(doc["safety"]["hard"]["max_wz_rad_s"], 1.0)
+        self.assertEqual(doc["arms"], [])
+        self.assertEqual(doc["cameras"], [])
+        self.assertEqual(doc["urdf_url"], "package://ohho/robots/sim.urdf")
+
+    def test_registered_spec_emits_its_params(self):
+        spec = register(
+            RobotSpec(
+                id="desc-air",
+                name="Desc Air",
+                category="aerial",
+                capabilities=(caps.AERIAL,),
+                max_lin=3.0,
+                max_ang=1.2,
+                limits=AerialLimits(max_climb=2.0),
+            )
+        )
+        self.addCleanup(lambda: _REGISTRY.pop("desc-air", None))
+        doc = robot_descriptor("desc-air")
+        self.assertEqual(doc["capability_params"][caps.AERIAL]["max_climb"], 2.0)
+        self.assertEqual(doc["capability_params"][caps.AERIAL]["frames"], [])
+        self.assertLessEqual(doc["safety"]["hard"]["max_vx_mps"], MAX_VX_MPS)
+        self.assertEqual(doc["drive"]["kind"], "fixed-base")
+        self.assertIs(get_spec("desc-air"), spec)
 
 
 if __name__ == "__main__":

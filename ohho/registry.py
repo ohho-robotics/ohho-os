@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Union
 
 from . import capabilities as caps
+from .capability_params import reject_unknown_capabilities
 from .robot_spec import (
     BUILTIN_SOURCE,
     GENERIC_CAPABILITIES,
@@ -40,6 +41,7 @@ from .robot_spec import (
     limits_to_dict,
     limits_type_for,
     parse_robot_class,
+    resolve_capability_params,
     robot_class_for_category,
     thaw_json,
 )
@@ -90,9 +92,6 @@ class RobotSpec:
         object.__setattr__(self, "robot_class", robot_class)
 
         object.__setattr__(self, "joint_groups", freeze_joint_groups(self.joint_groups))
-        object.__setattr__(
-            self, "capability_params", freeze_capability_params(self.capability_params)
-        )
 
         if not isinstance(self.source, str):
             raise TypeError("source must be a string")
@@ -118,6 +117,20 @@ class RobotSpec:
                 f"not {type(limits).__name__}"
             )
         object.__setattr__(self, "limits", limits)
+        object.__setattr__(
+            self,
+            "capability_params",
+            freeze_capability_params(
+                resolve_capability_params(
+                    self.capabilities,
+                    self.capability_params,
+                    limits,
+                    self.joint_groups,
+                    max_lin=self.max_lin,
+                    max_ang=self.max_ang,
+                )
+            ),
+        )
 
     def has(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -195,6 +208,19 @@ class RobotSpec:
         return False if limits is None else limits.flight_ready
 
 
+# Poses the built-in quadruped adapter already forwards
+# (``ohho/adapters/unitree.py`` sport methods). ``euler`` and ``stop_move`` are
+# commands, not poses, so they are not listed. This is not a safety allowlist.
+_QUADRUPED_POSES = (
+    "stand_up",
+    "stand_down",
+    "balance_stand",
+    "recovery_stand",
+    "sit",
+    "rise_sit",
+    "damp",
+)
+
 # OmniBot's SO-101 arm joints (kept in sync with the ROS arm driver defaults).
 _OMNIBOT_ARM = (
     "arm_shoulder_pan",
@@ -247,6 +273,7 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_ang=2.0,
         robot_class=RobotClass.QUADRUPED,
         source=BUILTIN_SOURCE,
+        capability_params={caps.LEGGED_POSE: {"poses": list(_QUADRUPED_POSES)}},
     ),
     "sim": RobotSpec(
         id="sim",
@@ -263,13 +290,23 @@ _BUILTINS: dict[str, RobotSpec] = {
     ),
 }
 
-_REGISTRY: dict[str, RobotSpec] = dict(_BUILTINS)
+_REGISTRY: dict[str, RobotSpec] = {}
 
 
 def register(spec: RobotSpec) -> RobotSpec:
-    """Add (or replace) a robot in the registry."""
+    """Add (or replace) a robot in the registry.
+
+    Capability names must be in the vocabulary. Parameter objects are checked
+    against their schemas. The parameters describe the robot; they do not
+    change safety caps.
+    """
+    reject_unknown_capabilities(spec.capabilities, spec.capability_params)
     _REGISTRY[spec.id] = spec
     return spec
+
+
+for _builtin_spec in _BUILTINS.values():
+    register(_builtin_spec)
 
 
 def get_spec(robot_id: str) -> RobotSpec:
