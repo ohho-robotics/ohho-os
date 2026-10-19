@@ -1,7 +1,8 @@
 """Sim-only GitHub Actions arming exception (OHH-288).
 
-Fake transports and an injected env mapping. No ``os.environ`` mutation, no
-sleeps, and no hardware.
+Fake transports and an injected env mapping. The mavlink cases construct
+``MavlinkDroneTransport`` with a ``RecordingLink`` and do not open a socket.
+No ``os.environ`` mutation, no sleeps, and no hardware.
 """
 
 from __future__ import annotations
@@ -12,9 +13,11 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from ohho.adapters.mavlink_drone import MavlinkDroneTransport, RecordingLink
 from ohho.aerial import Frame
-from ohho.registry import RobotSpec
+from ohho.registry import RobotSpec, get_spec
 from ohho.safety import (
     ARM_ENV,
     CI_SIM_ARMING_ENV,
@@ -24,6 +27,7 @@ from ohho.safety import (
     AuditLog,
     SafetyGate,
     ci_sim_arming_reason,
+    requires_hardware_arming,
 )
 from ohho.schema import ConnectionState, Telemetry, TransportStatus, Velocity
 from ohho.transport import BaseTransport
@@ -638,6 +642,142 @@ class TestCiSimHelper(unittest.TestCase):
         # raises and the helper denies rather than trusting simulation_target.
         self.assertEqual(
             ci_sim_arming_reason(WrongFlag(), good, hardware=False), "inspect_error"
+        )
+
+
+_SITL = "mavlink+udp://127.0.0.1:14540"
+
+
+def _ci_env(**overrides: str | None) -> dict[str, str]:
+    env = _github(**{CI_SITL_ENV: "1"})
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+class TestRealMavlinkSitlCi(unittest.TestCase):
+    """Real ``MavlinkDroneTransport`` plus ``RecordingLink``. No MAVSDK, no socket."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="ohho-ci-mavlink-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.clock = FakeClock()
+
+    def _prompt(self, prompt: str) -> str:
+        raise AssertionError(prompt)
+
+    def _transport(
+        self, uri: str, link: RecordingLink | None = None
+    ) -> MavlinkDroneTransport:
+        return MavlinkDroneTransport(
+            get_spec("px4-sitl"),
+            uri,
+            link=link if link is not None else RecordingLink(),
+        )
+
+    def _assert_hardware(
+        self, transport: MavlinkDroneTransport, env: dict[str, str]
+    ) -> None:
+        self.assertTrue(requires_hardware_arming(transport, env))
+        self.assertNotEqual(
+            ci_sim_arming_reason(
+                transport, env, hardware=requires_hardware_arming(transport, env)
+            ),
+            "",
+        )
+
+    def test_loopback_udp_is_eligible_only_with_every_flag(self) -> None:
+        env = _ci_env()
+        self.assertNotIn(ARM_ENV, env)
+        transport = self._transport(_SITL)
+        self.assertTrue(transport.simulation_target)
+        self.assertFalse(requires_hardware_arming(transport, env))
+        self.assertEqual(
+            ci_sim_arming_reason(
+                transport, env, hardware=requires_hardware_arming(transport, env)
+            ),
+            "",
+        )
+        mixed = _ci_env(CI=" TRUE ", GITHUB_ACTIONS="True")
+        self.assertFalse(requires_hardware_arming(transport, mixed))
+
+        missing = (
+            _ci_env(CI=None),
+            _ci_env(CI="1"),
+            _ci_env(GITHUB_ACTIONS=None),
+            _ci_env(**{CI_SIM_ARMING_ENV: None}),
+            _ci_env(**{CI_SIM_ARMING_ENV: "true"}),
+            _ci_env(**{CI_SITL_ENV: None}),
+            _ci_env(**{ARM_ENV: "0"}),
+            _ci_env(**{ARM_ENV: "1"}),
+            {},
+        )
+        for sample in missing:
+            with self.subTest(env=sorted(sample)):
+                self._assert_hardware(transport, sample)
+
+        refused_uris = (
+            "mavlink+serial:///dev/ttyACM0",
+            "mavlink+udp://10.0.0.5:14540",
+            "mavlink+udp://host.docker.internal:14540?sitl=1",
+            "mavlink+udp://[::ffff:127.0.0.1]:14540",
+        )
+        for uri in refused_uris:
+            with self.subTest(uri=uri):
+                other = self._transport(uri)
+                self._assert_hardware(other, env)
+        docker = self._transport("mavlink+udp://host.docker.internal:14540?sitl=1")
+        self.assertTrue(docker.simulation_target)
+        mapped = self._transport("mavlink+udp://[::ffff:127.0.0.1]:14540")
+        self.assertTrue(mapped.simulation_target)
+
+    def test_inspection_error_stays_hardware(self) -> None:
+        transport = self._transport(_SITL)
+        with mock.patch("ohho.safety.urlparse", side_effect=RuntimeError("boom")):
+            self.assertTrue(requires_hardware_arming(transport, _ci_env()))
+
+    def test_gate_arms_and_still_refuses_a_geofence_takeoff(self) -> None:
+        link = RecordingLink(
+            {
+                "battery": 0.9,
+                "link_ok": True,
+                "landed_state": "on_ground",
+            }
+        )
+        transport = self._transport(_SITL, link)
+        env = _ci_env()
+        gate = SafetyGate(
+            transport,
+            get_spec("px4-sitl"),
+            clock=self.clock,
+            environ=env,
+            isatty=lambda: False,
+            input_fn=self._prompt,
+            audit=AuditLog(self.tmp),
+            auto_tick=False,
+        )
+        self.assertFalse(gate.requires_hardware_arming)
+        self.assertFalse(gate.arm())
+        gate.connect()
+        self.assertEqual(link.urls, ["udpin://127.0.0.1:14540"])
+        self.assertTrue(gate.arm())
+        self.assertTrue(gate.armed)
+        self.assertFalse(gate.latched)
+        self.assertTrue(
+            gate.command("offboard_velocity", 0.1, 0.0, 0.0, 0.0, Frame.BODY_FRD)
+        )
+        self.assertTrue(gate.command("arm_flight"))
+        self.assertTrue(gate.command("takeoff", 2.0))
+        names = [command.name for command in link.commands]
+        self.assertIn("arm", names)
+        self.assertEqual(names.count("takeoff"), 1)
+        self.assertFalse(gate.command("takeoff", 4.0))
+        self.assertEqual(gate.last_error, "geofence")
+        self.assertEqual(
+            [command.name for command in link.commands].count("takeoff"), 1
         )
 
 
