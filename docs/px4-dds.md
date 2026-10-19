@@ -214,8 +214,10 @@ A non-loopback host is still hardware for the safety gate
 `OHHO_ARM_HARDWARE`, because it publishes nothing. A message-field mismatch
 still refuses connect before any subscription is created.
 
-`sensor_gps`, when that message is present, updates `gps_fix`. A missing fix
-type is not stored as `none`.
+`sensor_gps`, when that message is present, updates `gps_fix`. It has no
+`MESSAGE_VERSION` on release/1.17, so the topic stays `/fmu/out/sensor_gps`.
+The other subscriptions use the versioned names above (`vehicle_status_v1`,
+`battery_status_v1`). A missing fix type is not stored as `none`.
 
 ## Doctor
 
@@ -229,8 +231,8 @@ ohho doctor --robot px4-x500 --transport px4+dds://HOST:8888 --json
 
 | Check | Pass |
 |---|---|
-| XRCE agent | A publisher on `/fmu/out/vehicle_status`, or a UDP reply from the agent. No reply is not reachable. |
-| `/fmu/out/vehicle_status` rate | At least 1 Hz in the sample window. |
+| XRCE agent | A publisher on `/fmu/out/vehicle_status_v1`, or a UDP reply from the agent. No reply is not reachable. |
+| `/fmu/out/vehicle_status_v1` rate | At least 1 Hz in the sample window. |
 | `px4_msgs` | `OffboardControlMode` matches `release/1.17`. |
 | ROS 2 distro | `jazzy`, or `humble` as the alternative. Unset is a failure. |
 | QoS | The discovered publisher is best-effort. Not observed is not assumed. |

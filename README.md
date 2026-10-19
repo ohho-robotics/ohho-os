@@ -24,7 +24,7 @@ the given number of seconds.
 `ohho connect px4-sitl --transport px4+dds://127.0.0.1:8888 --read-only` prints
 telemetry and does not publish on `/fmu/in`. `ohho doctor --robot px4-sitl
 --transport px4+dds://127.0.0.1:8888 --json` checks the XRCE agent,
-`/fmu/out/vehicle_status`, the `px4_msgs` pin, ROS 2, QoS, armed, GPS, and
+`/fmu/out/vehicle_status_v1`, the `px4_msgs` pin, ROS 2, QoS, armed, GPS, and
 battery. Those checks need a ROS 2 graph. This package does not start SITL.
 
 From a git checkout, `pip install -e .` is the same base install, editable.

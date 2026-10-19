@@ -165,6 +165,9 @@ PX4_TOPIC_VERSIONS: dict[str, int] = {
     "battery_status": 1,  # BatteryStatus.msg: MESSAGE_VERSION = 1
     "vehicle_land_detected": 0,  # VehicleLandDetected.msg: MESSAGE_VERSION = 0
     "failsafe_flags": 0,  # FailsafeFlags.msg: no MESSAGE_VERSION
+    # SensorGps.msg has no MESSAGE_VERSION on release/1.17, so the topic
+    # stays bare. Read-only connect and the doctor subscribe to it.
+    "sensor_gps": 0,
 }
 
 _TYPE_ALIASES = {"boolean": "bool", "bool": "bool", "uint64": "uint64"}
@@ -1144,14 +1147,24 @@ class Px4DdsTransport(BaseTransport):
         sub_qos = qos_for_node(SUBSCRIPTION_QOS)
         self.publisher_topics = []
         for leaf, cls_name, method_name in _OUT_TOPICS:
-            topic = fmu_topic(self.namespace, "out", leaf)
+            topic = fmu_topic(
+                self.namespace,
+                "out",
+                leaf,
+                version=message_version(classes[cls_name], leaf),
+            )
             callback = getattr(self, method_name)
             sub = create_sub(classes[cls_name], topic, callback, sub_qos)
             self._subs.append(sub)
             self.subscription_topics.append(topic)
         gps_cls = classes.get("SensorGps")
         if gps_cls is not None:
-            topic = fmu_topic(self.namespace, "out", "sensor_gps")
+            topic = fmu_topic(
+                self.namespace,
+                "out",
+                "sensor_gps",
+                version=message_version(gps_cls, "sensor_gps"),
+            )
             sub = create_sub(gps_cls, topic, self._on_gps, sub_qos)
             self._subs.append(sub)
             self.subscription_topics.append(topic)

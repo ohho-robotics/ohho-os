@@ -176,9 +176,9 @@ def _info(reliability: str) -> SimpleNamespace:
 def _healthy_sample(**overrides: object) -> Px4DoctorSample:
     base: dict[str, object] = {
         "agent_reachable": True,
-        "agent_detail": "1 publisher on /fmu/out/vehicle_status",
+        "agent_detail": "1 publisher on /fmu/out/vehicle_status_v1",
         "vehicle_status_hz": 5.0,
-        "vehicle_status_detail": "/fmu/out/vehicle_status at 5.00 Hz",
+        "vehicle_status_detail": "/fmu/out/vehicle_status_v1 at 5.00 Hz",
         "px4_msgs_fields": dict(PINNED_OFFBOARD_FIELDS),
         "px4_msgs_detail": "fields read",
         "ros_distro": "jazzy",
@@ -219,7 +219,7 @@ class TestReadOnlyTransport(unittest.TestCase):
         self.assertEqual(transport.vehicle_commands_sent, 0)
         self.assertIsNone(transport._timer)
         self.assertTrue(
-            any(sub.topic == "/fmu/out/vehicle_status" for sub in node.subs)
+            any(sub.topic == "/fmu/out/vehicle_status_v1" for sub in node.subs)
         )
         self.assertFalse(any("/fmu/in/" in sub.topic for sub in node.subs))
         for sub in node.subs:
@@ -287,7 +287,7 @@ class TestReadOnlyTransport(unittest.TestCase):
             read_only=True,
         )
         transport.connect()
-        self.assertIn("/fmu/out/vehicle_status", node.subs)
+        self.assertIn("/fmu/out/vehicle_status_v1", node.subs)
         self.assertNotIn("/fmu/in/vehicle_command", node.subs)
 
     def test_namespace_and_gps_sample(self) -> None:
@@ -295,7 +295,7 @@ class TestReadOnlyTransport(unittest.TestCase):
             "px4+dds://127.0.0.1:8888?ns=uav1", factory=_GpsFactory
         )
         topics = [sub.topic for sub in node.subs]
-        self.assertIn("/uav1/fmu/out/vehicle_status", topics)
+        self.assertIn("/uav1/fmu/out/vehicle_status_v1", topics)
         self.assertIn("/uav1/fmu/out/sensor_gps", topics)
         self.assertFalse(any("/fmu/in/" in topic for topic in topics))
         node.inject("/uav1/fmu/out/sensor_gps", SimpleNamespace(fix_type=3))
@@ -467,7 +467,7 @@ class TestDoctorGraph(unittest.TestCase):
 
     def test_mock_graph_passes_and_creates_no_publisher(self) -> None:
         node = GraphNode()
-        topic = "/fmu/out/vehicle_status"
+        topic = "/fmu/out/vehicle_status_v1"
 
         def probe(host: str, port: int) -> tuple[bool, str]:
             raise AssertionError(f"UDP probe {host}:{port} should not run")
@@ -480,7 +480,7 @@ class TestDoctorGraph(unittest.TestCase):
                     SimpleNamespace(arming_state=1, nav_state=2),
                 )
             graph.inject(
-                "/fmu/out/battery_status",
+                "/fmu/out/battery_status_v1",
                 SimpleNamespace(remaining=0.7, voltage_v=15.5),
             )
             graph.inject("/fmu/out/sensor_gps", SimpleNamespace(fix_type=3))
@@ -549,13 +549,13 @@ class TestDoctorGraph(unittest.TestCase):
 
     def test_reliable_publisher_qos_fails(self) -> None:
         node = GraphNode()
-        topic = "/fmu/out/vehicle_status"
+        topic = "/fmu/out/vehicle_status_v1"
         node.publisher_infos[topic] = [_info("RELIABLE")]
 
         def spin(graph: GraphNode, window: float) -> None:
             graph.inject(topic, SimpleNamespace(arming_state=1))
             graph.inject(
-                "/fmu/out/battery_status",
+                "/fmu/out/battery_status_v1",
                 SimpleNamespace(remaining=0.5, voltage_v=16.0),
             )
             graph.inject("/fmu/out/sensor_gps", SimpleNamespace(fix_type=3))
@@ -573,13 +573,13 @@ class TestDoctorGraph(unittest.TestCase):
 
     def test_status_without_arming_state_is_not_false(self) -> None:
         node = GraphNode()
-        topic = "/fmu/out/vehicle_status"
+        topic = "/fmu/out/vehicle_status_v1"
         node.publisher_infos[topic] = [_info("best_effort")]
 
         def spin(graph: GraphNode, window: float) -> None:
             graph.inject(topic, SimpleNamespace(nav_state=2))
             graph.inject(
-                "/fmu/out/battery_status",
+                "/fmu/out/battery_status_v1",
                 SimpleNamespace(remaining=-1.0, voltage_v=0.0),
             )
             graph.inject("/fmu/out/sensor_gps", SimpleNamespace(fix_type=99))
@@ -596,7 +596,7 @@ class TestDoctorGraph(unittest.TestCase):
 
     def test_bool_arming_state_is_not_reported_disarmed(self) -> None:
         node = GraphNode()
-        topic = "/fmu/out/vehicle_status"
+        topic = "/fmu/out/vehicle_status_v1"
         node.publisher_infos[topic] = [_info("best_effort")]
 
         def spin(graph: GraphNode, window: float) -> None:
@@ -611,7 +611,7 @@ class TestDoctorGraph(unittest.TestCase):
 
     def test_namespaced_topic_is_what_gets_sampled(self) -> None:
         node = GraphNode()
-        topic = "/uav1/fmu/out/vehicle_status"
+        topic = "/uav1/fmu/out/vehicle_status_v1"
         node.publisher_infos[topic] = [_info("best_effort")]
 
         def spin(graph: GraphNode, window: float) -> None:
@@ -804,7 +804,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(node.publisher_calls, 0)
         self.assertEqual(node.timers, [])
         self.assertTrue(
-            any(sub.topic == "/fmu/out/vehicle_status" for sub in node.subs)
+            any(sub.topic == "/fmu/out/vehicle_status_v1" for sub in node.subs)
         )
         self.assertFalse(any("/fmu/in/" in sub.topic for sub in node.subs))
 

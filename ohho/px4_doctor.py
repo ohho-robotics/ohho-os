@@ -21,6 +21,7 @@ from .adapters.px4_dds import (
     ARMING_STATE_ARMED,
     MICRO_XRCE_AGENT_VERSION,
     PX4_MSGS_BRANCH,
+    PX4_TOPIC_VERSIONS,
     PX4_VERSION,
     ROS_DISTRO,
     ROS_DISTRO_ALTERNATIVE,
@@ -28,11 +29,22 @@ from .adapters.px4_dds import (
     Px4DdsError,
     fmu_topic,
     gps_fix_name,
+    message_version,
     offboard_field_mismatch,
     parse_px4_dds_uri,
     qos_for_node,
     read_offboard_fields,
 )
+
+
+def _out_topic(namespace: str, leaf: str, msg_cls: Any = None) -> str:
+    """Versioned ``/fmu/out`` name. A missing class uses the pin."""
+    if msg_cls is None:
+        version = PX4_TOPIC_VERSIONS[leaf]
+    else:
+        version = message_version(msg_cls, leaf)
+    return fmu_topic(namespace, "out", leaf, version=version)
+
 
 PX4_DOCTOR_ROBOTS = ("px4-sitl", "px4-x500")
 PX4_DOCTOR_CHECKS = (
@@ -238,9 +250,11 @@ def observe_px4_graph(
     if window_s <= 0:
         raise ValueError("window_s must be positive")
     host, port, namespace = parse_px4_dds_uri(uri)
-    status_topic = fmu_topic(namespace, "out", "vehicle_status")
-    battery_topic = fmu_topic(namespace, "out", "battery_status")
-    gps_topic = fmu_topic(namespace, "out", "sensor_gps")
+    status_topic = _out_topic(namespace, "vehicle_status", classes.get("VehicleStatus"))
+    battery_topic = _out_topic(
+        namespace, "battery_status", classes.get("BatteryStatus")
+    )
+    gps_topic = _out_topic(namespace, "sensor_gps", classes.get("SensorGps"))
     state = _Seen()
     sub_error = ""
     create_sub = getattr(node, "create_subscription", None)
@@ -364,12 +378,13 @@ def _check_rate(sample: Px4DoctorSample) -> DoctorCheck:
     if sample.vehicle_status_detail:
         detail = sample.vehicle_status_detail
     elif ok:
-        detail = f"/fmu/out/vehicle_status at {float(hz):.2f} Hz"  # type: ignore[arg-type]
+        detail = f"{_out_topic('', 'vehicle_status')} at {float(hz):.2f} Hz"  # type: ignore[arg-type]
     elif hz is None:
-        detail = "/fmu/out/vehicle_status was not sampled"
+        detail = f"{_out_topic('', 'vehicle_status')} was not sampled"
     else:
         detail = (
-            f"/fmu/out/vehicle_status at {hz} Hz, below {MIN_VEHICLE_STATUS_HZ:g} Hz"
+            f"{_out_topic('', 'vehicle_status')} at {hz} Hz, "
+            f"below {MIN_VEHICLE_STATUS_HZ:g} Hz"
         )
     if not ok and hz is not None and _finite(hz) and float(hz) < MIN_VEHICLE_STATUS_HZ:
         detail = (
@@ -544,7 +559,7 @@ def _unobserved(
     uri: str,
 ) -> Px4DoctorSample:
     host, port, namespace = parse_px4_dds_uri(uri)
-    topic = fmu_topic(namespace, "out", "vehicle_status")
+    topic = _out_topic(namespace, "vehicle_status")
     return Px4DoctorSample(
         agent_reachable=False,
         agent_detail=(
