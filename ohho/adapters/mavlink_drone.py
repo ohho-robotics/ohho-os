@@ -602,6 +602,18 @@ def _mode_name(value: object) -> str:
     return _MODE_ALIASES.get(text, text)
 
 
+def _mavsdk4_value(value: object, user_data: object = None) -> object:
+    """Return the sample from a MAVSDK 4 subscription callback.
+
+    ``mavsdk`` 4.0.6 ``Telemetry.subscribe_*`` always calls
+    ``callback(value, user_data)``. ``user_data`` is the object passed to
+    ``subscribe_*`` and is ``None`` when that argument is omitted; it is not
+    a sample. A one-argument call is accepted for a binding that drops the
+    unused token. A further positional argument raises ``TypeError``.
+    """
+    return value
+
+
 class RecordingLink:
     """In-memory MAVSDK stand-in. Records commands and does not open a socket."""
 
@@ -824,6 +836,7 @@ class MavsdkLink:
         self._publish()
 
     def _bind_telemetry(self, telemetry: object) -> None:
+        """Subscribe handlers that accept MAVSDK 4's ``callback(value, user_data)``."""
         bindings = (
             ("subscribe_armed", self._on_armed),
             ("subscribe_flight_mode", self._on_mode),
@@ -855,18 +868,20 @@ class MavsdkLink:
         if callback is not None:
             callback(self.read_sample())
 
-    def _on_armed(self, armed: object) -> None:
-        self._update(armed=bool(armed))
+    def _on_armed(self, armed: object, user_data: object = None) -> None:
+        self._update(armed=bool(_mavsdk4_value(armed, user_data)))
 
-    def _on_mode(self, mode: object) -> None:
-        self._update(flight_mode=_mode_name(mode))
+    def _on_mode(self, mode: object, user_data: object = None) -> None:
+        self._update(flight_mode=_mode_name(_mavsdk4_value(mode, user_data)))
 
-    def _on_landed(self, state: object) -> None:
-        self._update(landed_state=_mode_name(getattr(state, "name", state)))
+    def _on_landed(self, state: object, user_data: object = None) -> None:
+        landed = _mavsdk4_value(state, user_data)
+        self._update(landed_state=_mode_name(getattr(landed, "name", landed)))
 
-    def _on_position_velocity(self, sample: object) -> None:
-        position = getattr(sample, "position", sample)
-        velocity = getattr(sample, "velocity", None)
+    def _on_position_velocity(self, sample: object, user_data: object = None) -> None:
+        reading = _mavsdk4_value(sample, user_data)
+        position = getattr(reading, "position", reading)
+        velocity = getattr(reading, "velocity", None)
         fields: dict[str, object] = {
             "x": _as_float(getattr(position, "north_m", 0.0)),
             "y": _as_float(getattr(position, "east_m", 0.0)),
@@ -878,18 +893,21 @@ class MavsdkLink:
             fields["vz"] = _as_float(getattr(velocity, "down_m_s", 0.0))
         self._update(**fields)
 
-    def _on_attitude(self, attitude: object) -> None:
+    def _on_attitude(self, attitude: object, user_data: object = None) -> None:
+        reading = _mavsdk4_value(attitude, user_data)
         self._update(
-            roll=math.radians(_as_float(getattr(attitude, "roll_deg", 0.0))),
-            pitch=math.radians(_as_float(getattr(attitude, "pitch_deg", 0.0))),
-            yaw=math.radians(_as_float(getattr(attitude, "yaw_deg", 0.0))),
+            roll=math.radians(_as_float(getattr(reading, "roll_deg", 0.0))),
+            pitch=math.radians(_as_float(getattr(reading, "pitch_deg", 0.0))),
+            yaw=math.radians(_as_float(getattr(reading, "yaw_deg", 0.0))),
         )
 
-    def _on_yaw_rate(self, rate: object) -> None:
-        self._update(yaw_rate=_as_float(getattr(rate, "yaw_rad_s", 0.0)))
+    def _on_yaw_rate(self, rate: object, user_data: object = None) -> None:
+        reading = _mavsdk4_value(rate, user_data)
+        self._update(yaw_rate=_as_float(getattr(reading, "yaw_rad_s", 0.0)))
 
-    def _on_battery(self, battery: object) -> None:
-        remaining = getattr(battery, "remaining_percent", None)
+    def _on_battery(self, battery: object, user_data: object = None) -> None:
+        reading = _mavsdk4_value(battery, user_data)
+        remaining = getattr(reading, "remaining_percent", None)
         fraction: float | None
         if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
             fraction = None
@@ -900,12 +918,13 @@ class MavsdkLink:
             fraction = number
         self._update(
             battery=fraction,
-            voltage_v=_as_float(getattr(battery, "voltage_v", 0.0)),
-            current_a=_as_float(getattr(battery, "current_battery_a", 0.0)),
+            voltage_v=_as_float(getattr(reading, "voltage_v", 0.0)),
+            current_a=_as_float(getattr(reading, "current_battery_a", 0.0)),
         )
 
-    def _on_gps(self, info: object) -> None:
-        fix = getattr(info, "fix_type", info)
+    def _on_gps(self, info: object, user_data: object = None) -> None:
+        reading = _mavsdk4_value(info, user_data)
+        fix = getattr(reading, "fix_type", reading)
         value = getattr(fix, "value", fix)
         if isinstance(value, int) and not isinstance(value, bool):
             self._update(gps_fix=gps_fix_from_mav(value).value)

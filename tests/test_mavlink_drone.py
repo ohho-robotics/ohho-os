@@ -7,13 +7,16 @@ param2 is the force-disarm magic.
 
 from __future__ import annotations
 
+import enum
 import importlib.util
+import inspect
 import math
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from ohho.adapters import AdapterUnavailable, available_adapters, resolve_transport
@@ -607,6 +610,204 @@ class TestMavlinkTelemetry(unittest.TestCase):
         self.assertAlmostEqual(snap.odom.x, 1.0)
         self.assertAlmostEqual(snap.odom.theta, 0.4)
         self.assertEqual(snap.timestamp, 12.0)
+
+
+class _MavsdkFlightMode(enum.IntEnum):
+    """Names and values from mavsdk 4.0.6 ``telemetry.FlightMode``."""
+
+    HOLD = 3
+    RETURN_TO_LAUNCH = 5
+
+
+class _MavsdkLandedState(enum.IntEnum):
+    """Names and values from mavsdk 4.0.6 ``telemetry.LandedState``."""
+
+    ON_GROUND = 1
+    IN_AIR = 2
+
+
+class _MavsdkFixType(enum.IntEnum):
+    """Names and values from mavsdk 4.0.6 ``telemetry.FixType``."""
+
+    FIX_3D = 3
+
+
+class _Mavsdk4Telemetry:
+    """Records subscribe callbacks and invokes them as mavsdk 4.0.6 does.
+
+    ``Telemetry.subscribe_*`` calls ``callback(value, user_data)``.
+    ``user_data`` is the object passed to subscribe, ``None`` when omitted.
+    """
+
+    def __init__(self) -> None:
+        self.subscribed: dict[str, tuple[object, object]] = {}
+
+    def _remember(self, name: str, callback: object, user_data: object = None) -> None:
+        self.subscribed[name] = (callback, user_data)
+
+    def subscribe_armed(self, callback: object, user_data: object = None) -> None:
+        self._remember("armed", callback, user_data)
+
+    def subscribe_flight_mode(self, callback: object, user_data: object = None) -> None:
+        self._remember("flight_mode", callback, user_data)
+
+    def subscribe_landed_state(
+        self, callback: object, user_data: object = None
+    ) -> None:
+        self._remember("landed_state", callback, user_data)
+
+    def subscribe_position_velocity_ned(
+        self, callback: object, user_data: object = None
+    ) -> None:
+        self._remember("position_velocity_ned", callback, user_data)
+
+    def subscribe_attitude_euler(
+        self, callback: object, user_data: object = None
+    ) -> None:
+        self._remember("attitude_euler", callback, user_data)
+
+    def subscribe_attitude_angular_velocity_body(
+        self, callback: object, user_data: object = None
+    ) -> None:
+        self._remember("attitude_angular_velocity_body", callback, user_data)
+
+    def subscribe_battery(self, callback: object, user_data: object = None) -> None:
+        self._remember("battery", callback, user_data)
+
+    def subscribe_gps_info(self, callback: object, user_data: object = None) -> None:
+        self._remember("gps_info", callback, user_data)
+
+    def deliver(self, name: str, value: object) -> None:
+        callback, user_data = self.subscribed[name]
+        if not callable(callback):
+            raise AssertionError(name)
+        callback(value, user_data)
+
+
+_SUBSCRIPTION_HANDLERS = (
+    "_on_armed",
+    "_on_mode",
+    "_on_landed",
+    "_on_position_velocity",
+    "_on_attitude",
+    "_on_yaw_rate",
+    "_on_battery",
+    "_on_gps",
+)
+
+
+class TestMavsdk4SubscriptionCallbacks(unittest.TestCase):
+    def test_handlers_take_value_and_optional_user_data(self) -> None:
+        for name in _SUBSCRIPTION_HANDLERS:
+            signature = inspect.signature(getattr(MavsdkLink, name))
+            parameters = list(signature.parameters.values())
+            self.assertGreaterEqual(len(parameters), 3, name)
+            self.assertEqual(parameters[0].name, "self", name)
+            user_data = signature.parameters["user_data"]
+            self.assertIsNone(user_data.default, name)
+            self.assertEqual(
+                user_data.kind, inspect.Parameter.POSITIONAL_OR_KEYWORD, name
+            )
+            self.assertNotIn("args", signature.parameters, name)
+            self.assertNotIn("kwargs", signature.parameters, name)
+
+    def test_mavsdk4_callback_shape_fills_every_subscription(self) -> None:
+        telemetry = _Mavsdk4Telemetry()
+        link = MavsdkLink()
+        link._bind_telemetry(telemetry)
+        self.assertEqual(
+            set(telemetry.subscribed),
+            {
+                "armed",
+                "flight_mode",
+                "landed_state",
+                "position_velocity_ned",
+                "attitude_euler",
+                "attitude_angular_velocity_body",
+                "battery",
+                "gps_info",
+            },
+        )
+        for _callback, user_data in telemetry.subscribed.values():
+            self.assertIsNone(user_data)
+
+        telemetry.deliver("armed", True)
+        telemetry.deliver("flight_mode", _MavsdkFlightMode.HOLD)
+        telemetry.deliver("landed_state", _MavsdkLandedState.ON_GROUND)
+        telemetry.deliver(
+            "position_velocity_ned",
+            SimpleNamespace(
+                position=SimpleNamespace(north_m=1.0, east_m=2.0, down_m=-2.5),
+                velocity=SimpleNamespace(north_m_s=0.1, east_m_s=-0.2, down_m_s=0.3),
+            ),
+        )
+        telemetry.deliver(
+            "attitude_euler",
+            SimpleNamespace(roll_deg=0.0, pitch_deg=90.0, yaw_deg=180.0),
+        )
+        telemetry.deliver(
+            "attitude_angular_velocity_body",
+            SimpleNamespace(yaw_rad_s=0.25),
+        )
+        telemetry.deliver(
+            "battery",
+            SimpleNamespace(
+                remaining_percent=0.8, voltage_v=16.2, current_battery_a=4.5
+            ),
+        )
+        telemetry.deliver(
+            "gps_info",
+            SimpleNamespace(fix_type=_MavsdkFixType.FIX_3D),
+        )
+
+        sample = link.read_sample()
+        self.assertIs(sample["armed"], True)
+        self.assertEqual(sample["flight_mode"], "hold")
+        self.assertEqual(sample["landed_state"], "on_ground")
+        self.assertEqual(sample["gps_fix"], "3d")
+        self.assertIs(sample["link_ok"], True)
+        for key, expected in (
+            ("x", 1.0),
+            ("y", 2.0),
+            ("z", -2.5),
+            ("vx", 0.1),
+            ("vy", -0.2),
+            ("vz", 0.3),
+            ("pitch", math.pi / 2),
+            ("yaw", math.pi),
+            ("yaw_rate", 0.25),
+            ("battery", 0.8),
+            ("voltage_v", 16.2),
+            ("current_a", 4.5),
+        ):
+            reading = sample[key]
+            self.assertIsInstance(reading, float, key)
+            self.assertAlmostEqual(reading, expected, msg=key)
+
+    def test_user_data_is_not_the_sample(self) -> None:
+        link = MavsdkLink()
+        link._on_armed(False, True)
+        link._on_landed(_MavsdkLandedState.ON_GROUND, _MavsdkLandedState.IN_AIR)
+        link._on_mode(_MavsdkFlightMode.HOLD, _MavsdkFlightMode.RETURN_TO_LAUNCH)
+        sample = link.read_sample()
+        self.assertIs(sample["armed"], False)
+        self.assertEqual(sample["landed_state"], "on_ground")
+        self.assertEqual(sample["flight_mode"], "hold")
+
+    def test_one_argument_call_still_delivers_the_sample(self) -> None:
+        telemetry = _Mavsdk4Telemetry()
+        link = MavsdkLink()
+        link._bind_telemetry(telemetry)
+        callback, _user_data = telemetry.subscribed["landed_state"]
+        self.assertTrue(callable(callback))
+        callback(_MavsdkLandedState.ON_GROUND)
+        self.assertEqual(link.read_sample()["landed_state"], "on_ground")
+
+    def test_extra_positional_argument_raises(self) -> None:
+        link = MavsdkLink()
+        with self.assertRaises(TypeError):
+            link._on_landed(_MavsdkLandedState.ON_GROUND, None, "extra")  # type: ignore[call-arg]
+        self.assertEqual(link.read_sample()["landed_state"], "unknown")
 
 
 if __name__ == "__main__":
