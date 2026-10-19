@@ -3,8 +3,9 @@
 Adapters connect the unified Transport interface to a robot's native protocol.
 This build bundles: ``sim`` (always), ``serial`` (Yahboom / OmniBot base, needs
 the ``[serial]`` extra at connect time), ``feetech`` (SO-101 arm, needs ``[arm]``),
-``composite`` (base+arm merge for mobile-manipulators), and ``dds`` (Unitree Go2,
-needs ``[unitree]``).
+``composite`` (base+arm merge for mobile-manipulators), ``dds`` (Unitree Go2,
+needs ``[unitree]``), and ``px4+dds`` (PX4 v1.17 uXRCE-DDS, needs a ROS 2
+graph and ``px4_msgs`` release/1.17 at connect time).
 
 Policy: **auto (no explicit transport) runs in simulation** so zero-config use and
 tests never touch hardware; pass an explicit transport URI (``serial://…``,
@@ -25,6 +26,7 @@ from .composite import CompositeTransport
 from .errors import AdapterUnavailable
 from .feetech import DEFAULT_PORT as DEFAULT_ARM_PORT
 from .feetech import FeetechTransport
+from .px4_dds import Px4DdsTransport
 from .ros2 import Ros2Transport
 from .sim import SimTransport
 from .unitree import UnitreeDdsTransport
@@ -52,6 +54,11 @@ def available_adapters() -> list[str]:
         out.append("dds")
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
+    if (
+        importlib.util.find_spec("rclpy") is not None
+        and importlib.util.find_spec("px4_msgs") is not None
+    ):
+        out.append("px4+dds")
     return out
 
 
@@ -79,6 +86,8 @@ def resolve_transport(
     - ``uri="dds://<iface>"`` → Unitree DDS adapter.
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
+    - ``uri="px4+dds://HOST:PORT?ns=NAME"`` → PX4 uXRCE-DDS transport. This is
+      not ``dds://`` (that scheme stays Unitree).
     - any other scheme → ``AdapterUnavailable``.
     """
     if uri is None:
@@ -101,11 +110,14 @@ def resolve_transport(
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
 
+    if scheme == "px4+dds":
+        return Px4DdsTransport(spec, uri, runtime=runtime)
+
     cls = _HARDWARE.get(scheme)
     if cls is None:
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation."
+            f"dds, ros2, px4+dds — or omit the transport to run in simulation."
         )
     return cls(spec, address)
 
@@ -116,6 +128,7 @@ __all__ = [
     "FeetechTransport",
     "UnitreeDdsTransport",
     "Ros2Transport",
+    "Px4DdsTransport",
     "CompositeTransport",
     "AdapterUnavailable",
     "resolve_transport",
