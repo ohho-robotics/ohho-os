@@ -50,6 +50,28 @@ class TestSimTransport(unittest.TestCase):
         positions = {j.name: j.position for j in tp.read().joints}
         self.assertAlmostEqual(positions["arm_gripper"], 1.0, places=2)
 
+    def test_emergency_stop_disables_torque(self):
+        tp = self._sim("omnibot")
+        tp.send_joint_command("arm_gripper", 1.0)
+        tp.step(0.05)
+        self.assertTrue(tp.torque_enabled)
+        self.assertTrue(tp.read().custom["torque_enabled"])
+        tp.emergency_stop()
+        self.assertFalse(tp.torque_enabled)
+        self.assertFalse(tp.read().custom["torque_enabled"])
+        held = {j.name: j.position for j in tp.read().joints}["arm_gripper"]
+        tp.send_joint_command("arm_gripper", 1.0)
+        tp.step(0.5)
+        positions = {j.name: j.position for j in tp.read().joints}
+        self.assertAlmostEqual(positions["arm_gripper"], held, places=5)
+        tp.release_stop()
+        self.assertTrue(tp.torque_enabled)
+        tp.send_joint_command("arm_gripper", 1.0)
+        for _ in range(40):
+            tp.step(0.05)
+        positions = {j.name: j.position for j in tp.read().joints}
+        self.assertAlmostEqual(positions["arm_gripper"], 1.0, places=2)
+
     def test_telemetry_callback(self):
         tp = self._sim()
         seen = []
