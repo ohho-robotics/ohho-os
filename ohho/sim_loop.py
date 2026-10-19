@@ -154,11 +154,23 @@ def _set_offline_flags(enabled: bool) -> None:
             setattr(mod, attr, enabled)
 
 
+def _lerobot_revision_from_info(info: Dict[str, Any]) -> str:
+    """Revision tag for LeRobotDataset — matches ``meta/info.json`` codebase_version."""
+    raw = str(info.get("codebase_version", "v2.1"))
+    if raw and raw[0].isdigit():
+        return f"v{raw}"
+    return raw
+
+
 def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
     """Load a local dataset with lerobot's LeRobotDataset.
 
     In lerobot 0.3.x ``root`` is the dataset directory itself. Loading is forced
     offline so a missing file cannot fall through to the Hugging Face Hub.
+
+    Loads from disk only: uses ``repo_id`` and codebase revision from ``meta/info.json``
+    and sets ``HF_HUB_OFFLINE=1`` so a local validation failure cannot fall through to
+    the Hub (which would 401 for bogus repo ids like the output folder name ``dataset``).
 
     In non-mock mode (mock=False), if lerobot is missing, or LeRobotDataset raises,
     or 0 frames are loaded, an exception is raised so the run exits non-zero.
@@ -203,11 +215,27 @@ def _load_lerobot_dataset(dataset_dir: str, mock: bool) -> bool:
         ) from e
 
     p = Path(dataset_dir).expanduser()
-    repo_id = _dataset_repo_id(p)
+    info_path = p / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"meta/info.json missing in {dataset_dir}")
+
+    with open(info_path, encoding="utf-8") as f:
+        info = json.load(f)
+    repo_id = info.get("repo_id") or _dataset_repo_id(p)
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        repo_id = _dataset_repo_id(p)
+    revision = _lerobot_revision_from_info(info)
     try:
         # root is the dataset directory (lerobot 0.3.x). Do not retry with the
         # parent: that misses the local files and queries the Hub as repo_id.
-        ds = LeRobotDataset(repo_id=repo_id, root=str(p), download_videos=False)
+        # revision is the codebase_version tag (v2.1). download_videos stays
+        # off so a local dataset cannot fall through to the Hub.
+        ds = LeRobotDataset(
+            repo_id=repo_id,
+            root=str(p),
+            revision=revision,
+            download_videos=False,
+        )
         if len(ds) > 0:
             return True
         raise ValueError(f"LeRobotDataset loaded 0 frames from {dataset_dir}")
