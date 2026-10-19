@@ -1,14 +1,23 @@
 """Episode recorder — captures state/action frames from a Robot.
 
-The recorder wraps the robot's ``drive`` and ``move_joints`` methods to intercept
-commands (the "action"), and polls ``telemetry()`` for the "state". Frames are
-captured either on a timer (live) or manually (deterministic tests / sim).
+The recorder wraps ``drive``, ``move_joints``, and ``offboard_velocity`` so the
+action column is the command that was sent, and polls ``telemetry()`` for the
+state. Frames are captured on a timer (live) or manually (deterministic tests).
 
-Frame schema (matches LeRobot v2.1 + the mobile-manipulation spec):
-  - ``observation.state``: arm joints (6) + base velocity (3) = 9-D
-  - ``action``: commanded arm joints (6) + base velocity (3) = 9-D
-  - ``timestamp`` (``frame_index / fps``), ``frame_index``, ``episode_index``,
-    ``task_index``, ``next.done``
+Frame schemas (LeRobot v2.1):
+
+* Aerial (``px4-sitl`` and the other aerial specs): ``observation.state`` is
+  11-D (x, y, z, roll, pitch, yaw, vx, vy, vz, yaw_rate, battery) and
+  ``action`` is the 4-D velocity setpoint that was sent (vx, vy, vz,
+  yaw_rate). ``meta/info.json`` stores ``action_frame`` ``BODY_FRD``.
+  ``observation.images.front`` is optional and absent unless a camera is
+  attached. LiDAR is not recorded.
+* Legged (Unitree Go2): 31-D state, 4-D action.
+* Mobile-manipulation: arm joints (6) + base velocity (3) = 9-D.
+* Base-only: 3-D base velocity.
+
+Also ``timestamp`` (``frame_index / fps``), ``frame_index``, ``episode_index``,
+``task_index``, ``next.done``.
 """
 
 from __future__ import annotations
@@ -157,6 +166,36 @@ BASE_ACTION_NAMES = [
     "base_omega",
 ]
 
+# Published pose and velocity, then battery fraction. Names live in info.json.
+AERIAL_STATE_NAMES = [
+    "x",
+    "y",
+    "z",
+    "roll",
+    "pitch",
+    "yaw",
+    "vx",
+    "vy",
+    "vz",
+    "yaw_rate",
+    "battery",
+]
+
+# Velocity setpoint that was sent. The frame is a dataset constant, not a column.
+AERIAL_ACTION_NAMES = [
+    "vx",
+    "vy",
+    "vz",
+    "yaw_rate",
+]
+
+AERIAL_ACTION_FRAME = "BODY_FRD"
+
+AERIAL_ROBOT_TYPES = frozenset({"px4-sitl", "crazyflie-sim", "px4-x500"})
+
+# drone-sim phase string while a velocity setpoint is the active command.
+_AERIAL_VELOCITY_PHASE = "offboard_velocity"
+
 MODE_TO_ID: Dict[str, float] = {
     "idle": 0.0,
     "stand": 1.0,
@@ -182,14 +221,103 @@ def _is_legged(robot: Robot) -> bool:
     )
 
 
+def _is_aerial(robot: Robot) -> bool:
+    """Return True if the robot is an aircraft (``px4-sitl`` and kin)."""
+    return bool(
+        robot.has(caps.AERIAL) or getattr(robot.spec, "category", "") == "aerial"
+    )
+
+
+def _finite(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return number
+
+
+def _battery_fraction(telemetry: Any, drone: Dict[str, Any]) -> float:
+    """Battery fraction from ``Telemetry.battery``, else the drone blob."""
+    if getattr(telemetry, "battery", None) is not None:
+        return _finite(telemetry.battery)
+    battery = drone.get("battery")
+    if isinstance(battery, dict):
+        return _finite(battery.get("fraction"))
+    if battery is not None:
+        return _finite(battery)
+    return 0.0
+
+
+def _aerial_observation(telemetry: Any) -> List[float]:
+    """11-D aerial state from ``custom['drone']`` pose, velocity, and battery.
+
+    Values are stored as the backend published them. ``drone-sim`` uses
+    ``LOCAL_NED`` (z down). This does not invent a LiDAR or a camera frame.
+    """
+    custom = telemetry.custom if isinstance(telemetry.custom, dict) else {}
+    drone = custom.get("drone")
+    drone = drone if isinstance(drone, dict) else {}
+    pose = drone.get("pose") if isinstance(drone.get("pose"), dict) else {}
+    velocity = drone.get("velocity") if isinstance(drone.get("velocity"), dict) else {}
+    return [
+        _finite(pose.get("x")),
+        _finite(pose.get("y")),
+        _finite(pose.get("z")),
+        _finite(pose.get("roll")),
+        _finite(pose.get("pitch")),
+        _finite(pose.get("yaw")),
+        _finite(velocity.get("vx")),
+        _finite(velocity.get("vy")),
+        _finite(velocity.get("vz")),
+        _finite(velocity.get("yaw_rate")),
+        _battery_fraction(telemetry, drone),
+    ]
+
+
+def _applied_velocity_setpoint(robot: Robot, requested: List[float]) -> List[float]:
+    """4-D velocity setpoint the transport kept.
+
+    ``drone-sim`` stores an accepted command on ``_cmd_vx`` .. ``_cmd_yaw_rate``
+    only while its phase is ``offboard_velocity``. A command the stub ignores
+    (on the ground, during takeoff, landing, or RTL) leaves that phase, so the
+    recorded action is zeros. A :class:`~ohho.safety.SafetyGate` sits in front
+    of the transport; follow ``_inner`` to the stub. Transports without those
+    fields fall back to the requested setpoint.
+    """
+    node = getattr(robot, "transport", None)
+    seen: set[int] = set()
+    while node is not None and id(node) not in seen:
+        seen.add(id(node))
+        if all(
+            hasattr(node, name)
+            for name in ("_cmd_vx", "_cmd_vy", "_cmd_vz", "_cmd_yaw_rate")
+        ):
+            phase = getattr(node, "_phase", None)
+            if phase is not None and phase != _AERIAL_VELOCITY_PHASE:
+                return [0.0, 0.0, 0.0, 0.0]
+            return [
+                _finite(getattr(node, "_cmd_vx")),
+                _finite(getattr(node, "_cmd_vy")),
+                _finite(getattr(node, "_cmd_vz")),
+                _finite(getattr(node, "_cmd_yaw_rate")),
+            ]
+        node = getattr(node, "_inner", None)
+    return [float(v) for v in requested]
+
+
 def _telemetry_to_state(robot: Robot) -> List[float]:
     """Extract the observation state vector from telemetry.
 
+    - Aerial 11-D: pose xyz, roll, pitch, yaw, velocity xyz, yaw rate, battery
     - Legged 31-D: base velocity (3) + rpy (3) + 12 joint q + 12 joint dq + posture id
     - Mobile-manipulation 9-D: arm joints (6) + base velocity (3)
     - Base-only 3-D: base velocity (vx, vy, omega)
     """
     t = robot.telemetry()
+    if _is_aerial(robot):
+        return _aerial_observation(t)
     base_vel = (
         [float(t.odom.vx), float(t.odom.vy), float(t.odom.omega)]
         if t.odom
@@ -363,6 +491,8 @@ class Recorder:
 
     def _zero_action(self) -> List[float]:
         """Zero action vector sized to the robot's DOF and category."""
+        if _is_aerial(self.robot):
+            return [0.0, 0.0, 0.0, 0.0]
         if _is_legged(self.robot):
             return [0.0, 0.0, 0.0, getattr(self, "_current_mode", 0.0)]
         n_arm = (
@@ -371,16 +501,24 @@ class Recorder:
         return [0.0] * (n_arm + 3)
 
     def _wrap_robot(self) -> None:
-        """Intercept drive/move_joints to capture both raw requests and clamped actions."""
+        """Intercept drive, move_joints, and offboard_velocity.
+
+        Aerial actions come from ``offboard_velocity``. Wrapping only ``drive``
+        leaves the action column at zeros for the whole flight.
+        """
         original_drive = self.robot.drive
         original_move_joints = self.robot.move_joints
+        original_offboard = self.robot.offboard_velocity
 
         recorder = self
 
         def drive(vx: float = 0.0, vy: float = 0.0, w: float = 0.0):
             # 1. Capture raw action requested
             raw_action = recorder._last_action_raw[:]
-            if _is_legged(recorder.robot):
+            if _is_aerial(recorder.robot):
+                # Planar drive holds climb at zero. vz is the down channel.
+                raw_action = [float(vx), float(vy), 0.0, float(w)]
+            elif _is_legged(recorder.robot):
                 raw_action = [
                     float(vx),
                     float(vy),
@@ -396,6 +534,12 @@ class Recorder:
 
             # 2. Invoke Robot.drive (passes through Robot clamp and SafetyGate)
             res = original_drive(vx, vy, w)
+
+            if _is_aerial(recorder.robot):
+                recorder._last_action = _applied_velocity_setpoint(
+                    recorder.robot, raw_action
+                )
+                return res
 
             # 3. Determine clamped action that actually reached the motors
             tp = recorder.robot.transport
@@ -435,6 +579,8 @@ class Recorder:
             return res
 
         def move_joints(positions):
+            if _is_aerial(recorder.robot):
+                return original_move_joints(positions)
             positions = list(positions)
             raw_action = recorder._last_action_raw[:]
             n_arm = min(
@@ -457,8 +603,20 @@ class Recorder:
             recorder._last_action = clamped_action
             return res
 
+        def offboard_velocity(vx, vy, vz, yaw_rate, frame):
+            raw_action = [float(vx), float(vy), float(vz), float(yaw_rate)]
+            if _is_aerial(recorder.robot):
+                recorder._last_action_raw = raw_action
+            res = original_offboard(vx, vy, vz, yaw_rate, frame)
+            if _is_aerial(recorder.robot):
+                recorder._last_action = _applied_velocity_setpoint(
+                    recorder.robot, raw_action
+                )
+            return res
+
         self.robot.drive = drive  # type: ignore[method-assign]
         self.robot.move_joints = move_joints  # type: ignore[method-assign]
+        self.robot.offboard_velocity = offboard_velocity  # type: ignore[method-assign]
 
     # ── manual recording ─────────────────────────────────────────────────────
     def start_episode(self, task: str = "") -> Episode:
@@ -475,6 +633,7 @@ class Recorder:
         )
         self._frame_idx = 0
         self._last_action = self._zero_action()
+        self._last_action_raw = self._zero_action()
         return self._current
 
     def _capture_camera_frame(self) -> Optional[Any]:

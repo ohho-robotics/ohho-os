@@ -28,6 +28,10 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from .recorder import (
+    AERIAL_ACTION_FRAME,
+    AERIAL_ACTION_NAMES,
+    AERIAL_ROBOT_TYPES,
+    AERIAL_STATE_NAMES,
     BASE_ACTION_NAMES,
     BASE_STATE_NAMES,
     GO2_ACTION_NAMES,
@@ -75,6 +79,10 @@ def write_dataset(
     if robot_type is None:
         if state_dim == 31 and action_dim == 4:
             robot_type = "unitree-go2"
+        elif state_dim == len(AERIAL_STATE_NAMES) and action_dim == len(
+            AERIAL_ACTION_NAMES
+        ):
+            robot_type = "px4-sitl"
         elif state_dim == 9:
             robot_type = "omnibot"
         else:
@@ -151,7 +159,13 @@ def _write_info(
     state_dim = episodes[0].state_dim if episodes else 0
     action_dim = episodes[0].action_dim if episodes else 0
 
-    if robot_type == "unitree-go2" or state_dim == 31:
+    aerial = robot_type in AERIAL_ROBOT_TYPES or (
+        state_dim == len(AERIAL_STATE_NAMES) and action_dim == len(AERIAL_ACTION_NAMES)
+    )
+    if aerial:
+        state_names = list(AERIAL_STATE_NAMES)[:state_dim]
+        action_names = list(AERIAL_ACTION_NAMES)[:action_dim]
+    elif robot_type == "unitree-go2" or state_dim == 31:
         state_names = GO2_STATE_NAMES[:state_dim]
         action_names = GO2_ACTION_NAMES[:action_dim]
     elif state_dim == 9:
@@ -234,6 +248,9 @@ def _write_info(
         "tasks": tasks,
         "features": {**features, **_SCALAR_FEATURES},
     }
+    if aerial:
+        # Teleop setpoints are BODY_FRD. One constant for the dataset, not a column.
+        info["action_frame"] = AERIAL_ACTION_FRAME
     with open(meta_dir / "info.json", "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2)
     return features
@@ -511,6 +528,11 @@ This dataset contains teleoperation demonstrations recorded with OhhO OS on {rob
 - `action`: shape {action_feat.get("shape", [])} ({action_names})
 - `action_raw`: shape {action_feat.get("shape", [])} (raw requested action before SafetyGate clamping)
 """
+    if robot_type in AERIAL_ROBOT_TYPES:
+        card += (
+            f"- action frame: `{AERIAL_ACTION_FRAME}` "
+            "(constant in info.json `action_frame`; LiDAR is not in this dataset)\n"
+        )
     if has_videos:
         card += "- `observation.images.front`: shape [3, H, W] front-camera video encoded as MP4 per episode\n"
 
