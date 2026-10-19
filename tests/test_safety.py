@@ -1178,6 +1178,20 @@ class TestArming(GateCase):
             (FakeTransport("ros2"), True),
             (FakeTransport("composite"), True),
         ]
+
+        class _Px4Flag:
+            protocol = "px4-dds"
+
+            def __init__(self, sim_target: object) -> None:
+                self.sim_target = sim_target
+
+        cases.extend(
+            (
+                (_Px4Flag(True), False),
+                (_Px4Flag(False), True),
+                (_Px4Flag("yes"), True),
+            )
+        )
         for tp, expected in cases:
             with self.subTest(tp=tp.protocol, iface=getattr(tp, "iface", None)):
                 self.assertEqual(requires_hardware_arming(tp), expected)

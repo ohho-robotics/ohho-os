@@ -87,7 +87,9 @@ def resolve_transport(
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
     - ``uri="px4+dds://HOST:PORT?ns=NAME"`` → PX4 uXRCE-DDS transport. This is
-      not ``dds://`` (that scheme stays Unitree).
+      not ``dds://`` (that scheme stays Unitree). ``Robot.connect`` wraps the
+      result in ``SafetyGate``. Loopback hosts set ``sim_target``, which is
+      how the gate tells a sim agent from a vehicle.
     - any other scheme → ``AdapterUnavailable``.
     """
     if uri is None:

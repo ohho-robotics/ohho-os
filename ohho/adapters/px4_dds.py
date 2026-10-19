@@ -690,12 +690,17 @@ class Px4DdsTransport(BaseTransport):
     ``OHHO_ARM_HARDWARE`` is ``1`` in the supplied environment. That check
     does not arm motors.
 
-    :attr:`sim_target` is the explicit sim classification. ``SafetyGate`` on
-    this branch does not read it yet (OHH-288 / D-04). E-stop land versus
-    disarm is implemented here so it already matches that profile.
+    :attr:`sim_target` is the explicit sim classification. ``SafetyGate``
+    reads it from :func:`ohho.safety.requires_hardware_arming` and does not
+    parse this URI. ``Robot`` flight methods on a gated connection call
+    ``command``, which applies the aerial profile and then
+    :meth:`send_flight`. ``backend_id`` is ``px4-dds`` so that e-stop stays
+    land / hold-then-land / disarm-on-ground and is not treated as a sim
+    descent or a Crazyflie motor cut.
     """
 
     protocol = "px4-dds"
+    backend_id = "px4-dds"
 
     def __init__(
         self,
@@ -742,6 +747,9 @@ class Px4DdsTransport(BaseTransport):
         self._offboard_published = 0
         self._last_offboard_t: Optional[float] = None
         self._estopped = False
+        # Land, RTL, hold, and disarm pause the heartbeat so a setpoint does
+        # not fight the mode command. A later offboard trajectory clears it.
+        self._suppress_offboard = False
         self._state = ConnectionState.IDLE
         self._connected_since: Optional[float] = None
 
@@ -1026,7 +1034,12 @@ class Px4DdsTransport(BaseTransport):
 
     def _on_heartbeat(self) -> None:
         with self._lock:
-            if self._estopped or self._pub_mode is None or self._pub_setpoint is None:
+            if (
+                self._estopped
+                or self._suppress_offboard
+                or self._pub_mode is None
+                or self._pub_setpoint is None
+            ):
                 return
             mode = self._make_mode_locked()
             setpoint = self._make_setpoint_locked()
@@ -1198,6 +1211,7 @@ class Px4DdsTransport(BaseTransport):
         with self._lock:
             if self._estopped:
                 raise Px4CommandRefused("e-stop is latched")
+            self._suppress_offboard = False
             self._traj = traj
             mode = self._make_mode_locked()
             setpoint = self._make_setpoint_locked()
@@ -1267,7 +1281,13 @@ class Px4DdsTransport(BaseTransport):
             param3=0.0,
         )
 
+    def _pause_offboard_stream(self) -> None:
+        """Stop the heartbeat until the next explicit trajectory."""
+        with self._lock:
+            self._suppress_offboard = True
+
     def _publish_hold(self) -> None:
+        self._pause_offboard_stream()
         self._publish_command(
             VEHICLE_CMD_DO_SET_MODE,
             param1=_MAV_MODE_CUSTOM,
@@ -1279,6 +1299,7 @@ class Px4DdsTransport(BaseTransport):
         self._publish_simple(VEHICLE_CMD_NAV_LAND)
 
     def _publish_disarm(self) -> None:
+        self._pause_offboard_stream()
         self._publish_arm_disarm(0.0)
 
     def _publish_arm_disarm(self, param1: float) -> None:
@@ -1287,6 +1308,11 @@ class Px4DdsTransport(BaseTransport):
         )
 
     def _publish_simple(self, command: int) -> None:
+        if command in (
+            VEHICLE_CMD_NAV_LAND,
+            VEHICLE_CMD_NAV_RETURN_TO_LAUNCH,
+        ):
+            self._pause_offboard_stream()
         self._publish_command(command)
 
     def _publish_command(

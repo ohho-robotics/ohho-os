@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import logging
 import math
 import os
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,9 +41,35 @@ from ohho.aerial import Frame
 from ohho.registry import RobotSpec, get_spec
 from ohho.robot import Robot
 from ohho.runtime.native import NativeRuntime
+from ohho.safety import (
+    DRONE_FENCE_ALT_M,
+    DRONE_FENCE_RADIUS_M,
+    DRONE_MAX_HORIZONTAL,
+    DRONE_MAX_VERTICAL,
+    DRONE_MAX_YAW,
+    AuditLog,
+    SafetyGate,
+    requires_hardware_arming,
+)
 from ohho.schema import Velocity
 
 _ROOT = Path(__file__).resolve().parents[1]
+_WALL = 1_760_000_000.0
+
+
+def setUpModule() -> None:
+    logging.getLogger("ohho.safety").addHandler(logging.NullHandler())
+
+
+class _Clock:
+    def __init__(self, t: float = 100.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
 
 
 class _Msg:
@@ -648,6 +678,27 @@ class TestEstopAndCommands(unittest.TestCase):
             )
         self.assertEqual(_setpoints(node), [])
 
+    def test_hold_pauses_the_heartbeat_until_the_next_setpoint(self):
+        tp, node = _open()
+        node.fire_timers()
+        self.assertGreater(len(_setpoints(node)), 0)
+        tp.send_flight("hold")
+        paused = len(_setpoints(node))
+        node.fire_timers()
+        self.assertEqual(len(_setpoints(node)), paused)
+        tp.send_flight(
+            "offboard_velocity",
+            vx=0.1,
+            vy=0.0,
+            vz=0.0,
+            yaw_rate=0.0,
+            frame=Frame.LOCAL_NED,
+        )
+        self.assertGreater(len(_setpoints(node)), paused)
+        resumed = len(_setpoints(node))
+        node.fire_timers()
+        self.assertGreater(len(_setpoints(node)), resumed)
+
 
 class TestTelemetry(unittest.TestCase):
     def test_drone_custom_fields(self):
@@ -816,6 +867,395 @@ class TestRobotDispatch(unittest.TestCase):
         finally:
             bot.disconnect()
         self.assertEqual(_commands(node), [])
+
+
+def _aerial_px4_spec() -> RobotSpec:
+    """Aerial spec that is not a built-in profile id.
+
+    ``profile_for`` then selects ``DRONE_PROFILE`` from the capability, which
+    is what ``Robot.connect`` does for an aerial robot on ``px4+dds://``.
+    """
+    return RobotSpec(
+        id="px4-dds-gate",
+        name="PX4 DDS gate",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="px4-dds",
+        max_lin=2.0,
+        max_ang=0.8,
+    )
+
+
+class TestPx4AerialSafetyGate(unittest.TestCase):
+    """px4+dds flight requests go through the OHH-288 aerial profile."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="ohho-px4-gate-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.clock = _Clock()
+
+    def _records(self, name: str | None = None) -> list[dict]:
+        out: list[dict] = []
+        for path in sorted(Path(self.tmp).glob("*.jsonl")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                rec = json.loads(line)
+                if name is None or rec["event"] == name:
+                    out.append(rec)
+        return out
+
+    def _audit_text(self) -> str:
+        return "".join(
+            path.read_text(encoding="utf-8") for path in Path(self.tmp).glob("*.jsonl")
+        )
+
+    def _open_gate(
+        self, uri: str = "px4+dds://127.0.0.1:8888"
+    ) -> tuple[SafetyGate, Px4DdsTransport, FakeNode, Robot]:
+        spec = _aerial_px4_spec()
+        node = FakeNode()
+        tp = Px4DdsTransport(
+            spec,
+            uri,
+            node=node,
+            msg_factory=_good(),
+            environ={},
+            clock=self.clock,
+        )
+        gate = SafetyGate(
+            tp,
+            spec,
+            clock=self.clock,
+            environ={},
+            isatty=lambda: True,
+            input_fn=lambda _prompt: "",
+            auto_tick=False,
+            audit=AuditLog(self.tmp, wall_clock=lambda: _WALL),
+        )
+        gate.connect()
+        bot = Robot(spec, gate, NativeRuntime())
+        self.addCleanup(bot.disconnect)
+        return gate, tp, node, bot
+
+    def _feed(
+        self,
+        node: FakeNode,
+        *,
+        landed: bool | None = True,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = -0.2,
+        battery: float | None = 0.9,
+        prearm: bool = True,
+    ) -> None:
+        _prearm(node, passed=prearm)
+        node.inject(
+            "/fmu/out/vehicle_local_position",
+            SimpleNamespace(
+                xy_valid=True,
+                z_valid=True,
+                v_xy_valid=False,
+                v_z_valid=False,
+                x=x,
+                y=y,
+                z=z,
+                heading=0.0,
+                dist_bottom_valid=False,
+                dist_bottom=0.0,
+            ),
+        )
+        if battery is not None:
+            node.inject(
+                "/fmu/out/battery_status",
+                SimpleNamespace(remaining=battery, voltage_v=16.0, current_a=1.0),
+            )
+        if landed is not None:
+            node.inject(
+                "/fmu/out/vehicle_land_detected",
+                SimpleNamespace(landed=landed),
+            )
+
+    def _assert_no_forbidden(self, node: FakeNode) -> None:
+        for cmd in _commands(node):
+            self.assertNotEqual(cmd.command, VEHICLE_CMD_DO_FLIGHTTERMINATION)
+            self.assertNotEqual(cmd.param2, FORCE_DISARM_PARAM2)
+            self.assertNotEqual(cmd.param2, 21196)
+        self.assertNotIn("21196", self._audit_text())
+        self.assertNotIn("force_disarm", self._audit_text())
+        self.assertNotIn("flight_termination", self._audit_text())
+
+    def test_loopback_selects_the_aerial_profile(self) -> None:
+        gate, tp, _node, bot = self._open_gate()
+        self.assertIsInstance(bot.transport, SafetyGate)
+        self.assertIs(bot.transport, gate)
+        self.assertEqual(tp.backend_id, "px4-dds")
+        self.assertTrue(tp.sim_target)
+        self.assertFalse(requires_hardware_arming(tp, {}))
+        self.assertFalse(gate.requires_hardware_arming)
+        self.assertNotIn(gate.robot_id, ("px4-sitl", "crazyflie-cf21", "px4-x500"))
+        profile = gate.profile
+        self.assertTrue(profile.aerial)
+        self.assertEqual(profile.max_horizontal, DRONE_MAX_HORIZONTAL)
+        self.assertEqual(profile.max_vz, DRONE_MAX_VERTICAL)
+        self.assertEqual(profile.max_wz, DRONE_MAX_YAW)
+        self.assertEqual(profile.fence_radius_m, DRONE_FENCE_RADIUS_M)
+        self.assertEqual(profile.fence_max_alt_m, DRONE_FENCE_ALT_M)
+        for action in ("hold", "land", "rtl", "offboard_velocity", "offboard_position"):
+            self.assertIn(action, profile.allowlist)
+        self.assertNotIn("flip", profile.allowlist)
+        self.assertNotIn("arm", profile.allowlist)
+        self.assertNotIn("takeoff", profile.allowlist)
+
+    def test_ground_spec_does_not_become_the_drone_profile(self) -> None:
+        spec = get_spec("sim")
+        tp = resolve_transport("px4+dds://127.0.0.1:8888", spec)
+        gate = SafetyGate(
+            tp,
+            spec,
+            clock=self.clock,
+            environ={},
+            auto_tick=False,
+            audit=AuditLog(self.tmp, wall_clock=lambda: _WALL),
+        )
+        self.assertIsInstance(tp, Px4DdsTransport)
+        self.assertFalse(gate.profile.aerial)
+        self.assertFalse(gate.requires_hardware_arming)
+
+    def test_non_loopback_gate_still_requires_hardware_arming(self) -> None:
+        spec = _aerial_px4_spec()
+        tp = Px4DdsTransport(
+            spec,
+            "px4+dds://192.168.1.20:8888",
+            node=FakeNode(),
+            msg_factory=_good(),
+            environ={},
+            clock=self.clock,
+        )
+        gate = SafetyGate(
+            tp,
+            spec,
+            clock=self.clock,
+            environ={},
+            isatty=lambda: False,
+            auto_tick=False,
+            audit=AuditLog(self.tmp, wall_clock=lambda: _WALL),
+        )
+        self.assertFalse(tp.sim_target)
+        self.assertTrue(tp.requires_hardware_arming)
+        self.assertTrue(requires_hardware_arming(tp, {}))
+        self.assertTrue(gate.requires_hardware_arming)
+        self.assertTrue(gate.profile.aerial)
+        self.assertFalse(gate.armed)
+
+    def test_flight_requests_reach_px4_through_the_gate(self) -> None:
+        gate, _tp, node, bot = self._open_gate()
+        self._feed(node)
+        self.assertTrue(gate.arm())
+        bot.offboard_velocity(0.2, 0.0, 0.0, 0.0, Frame.LOCAL_NED)
+        bot.arm_flight()
+        bot.takeoff(2.5)
+        bot.hold()
+        bot.rtl()
+        bot.land()
+        cmds = _commands(node)
+        self.assertEqual(
+            [(c.command, c.param1, c.param2, c.param3, c.param7) for c in cmds],
+            [
+                (VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0, 0.0, 0.0),
+                (VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0, 0.0, 0.0),
+                (VEHICLE_CMD_NAV_TAKEOFF, 0.0, 0.0, 0.0, 2.5),
+                (VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0, 0.0),
+                (VEHICLE_CMD_NAV_RETURN_TO_LAUNCH, 0.0, 0.0, 0.0, 0.0),
+                (VEHICLE_CMD_NAV_LAND, 0.0, 0.0, 0.0, 0.0),
+            ],
+        )
+        self.assertEqual(_nums(_setpoints(node)[-1].velocity), [0.2, 0.0, 0.0])
+        names = [rec["flight_request"] for rec in self._records("flight")]
+        self.assertEqual(
+            names,
+            ["offboard_velocity", "arm", "takeoff", "hold", "rtl", "land"],
+        )
+        self.assertTrue(
+            all(rec["backend"] == "px4-dds" for rec in self._records("flight"))
+        )
+        self._assert_no_forbidden(node)
+        self.assertFalse(gate.latched)
+
+    def test_three_mps_is_clamped_and_reported(self) -> None:
+        gate, _tp, node, bot = self._open_gate()
+        self._feed(node)
+        self.assertTrue(gate.arm())
+        node.inject(
+            "/fmu/out/vehicle_attitude",
+            SimpleNamespace(q=(1.0, 0.0, 0.0, 0.0)),
+        )
+        bot.offboard_velocity(3.0, 0.0, 0.0, 0.0, Frame.LOCAL_NED)
+        self.assertEqual(
+            _nums(_setpoints(node)[-1].velocity),
+            [DRONE_MAX_HORIZONTAL, 0.0, 0.0],
+        )
+        bot.offboard_velocity(3.0, 4.0, -5.0, 2.0, Frame.LOCAL_NED)
+        vx, vy, vz = _nums(_setpoints(node)[-1].velocity)
+        self.assertAlmostEqual(math.hypot(vx, vy), DRONE_MAX_HORIZONTAL)
+        self.assertAlmostEqual(vz, -DRONE_MAX_VERTICAL)
+        self.assertAlmostEqual(_setpoints(node)[-1].yawspeed, DRONE_MAX_YAW)
+        self.assertLessEqual(abs(vz), DRONE_MAX_VERTICAL)
+        bot.offboard_velocity(3.0, 0.0, 0.0, 0.0, Frame.BODY_FRD)
+        self.assertEqual(
+            _nums(_setpoints(node)[-1].velocity),
+            [DRONE_MAX_HORIZONTAL, 0.0, 0.0],
+        )
+        clamps = self._records("clamp")
+        self.assertEqual(clamps[0]["requested"], [3.0, 0.0, 0.0, 0.0])
+        self.assertEqual(clamps[0]["applied"], [DRONE_MAX_HORIZONTAL, 0.0, 0.0, 0.0])
+        self.assertEqual(clamps[0]["reasons"], ["velocity_cap"])
+        self.assertEqual(clamps[0]["backend"], "px4-dds")
+        self.assertEqual(clamps[0]["frame"], "LOCAL_NED")
+        self.assertEqual(clamps[0]["flight_request"], "offboard_velocity")
+        applied = clamps[1]["applied"]
+        self.assertAlmostEqual(math.hypot(applied[0], applied[1]), DRONE_MAX_HORIZONTAL)
+        self.assertAlmostEqual(applied[2], -DRONE_MAX_VERTICAL)
+        self.assertAlmostEqual(applied[3], DRONE_MAX_YAW)
+        self.assertEqual(clamps[2]["frame"], "BODY_FRD")
+        self.assertEqual(clamps[2]["applied"], [DRONE_MAX_HORIZONTAL, 0.0, 0.0, 0.0])
+        for _ in range(5):
+            self.clock.advance(0.3)
+            self._feed(node)
+            gate.send_velocity(Velocity(3.0, 4.0, 0.0))
+        hvx, hvy, _hvz = _nums(_setpoints(node)[-1].velocity)
+        self.assertAlmostEqual(math.hypot(hvx, hvy), DRONE_MAX_HORIZONTAL, places=5)
+        for setpoint in _setpoints(node):
+            sx, sy, _sz = _nums(setpoint.velocity)
+            if math.isnan(sx) or math.isnan(sy):
+                continue
+            self.assertLessEqual(math.hypot(sx, sy), DRONE_MAX_HORIZONTAL + 1e-9)
+        self._assert_no_forbidden(node)
+
+    def test_fence_breach_is_rejected_with_hold(self) -> None:
+        gate, _tp, node, bot = self._open_gate()
+        self._feed(node)
+        self.assertTrue(gate.arm())
+        with self.assertLogs("ohho.safety", level="ERROR") as logs:
+            self.assertFalse(
+                gate.command("offboard_position", 11.0, 0.0, 1.0, 0.2, Frame.LOCAL_ENU)
+            )
+        self.assertEqual(gate.last_error, "geofence")
+        self.assertTrue(any("geofence" in line for line in logs.output))
+        self._feed(node, x=12.0, y=0.0, z=-1.0)
+        bot.offboard_velocity(0.4, 0.0, 0.0, 0.0, Frame.LOCAL_NED)
+        self.assertEqual(gate.last_error, "geofence")
+        bot.takeoff(DRONE_FENCE_ALT_M + 1.0)
+        self.assertEqual(gate.last_error, "geofence")
+        cmds = _commands(node)
+        self.assertGreaterEqual(len(cmds), 3)
+        for cmd in cmds:
+            self.assertEqual(cmd.command, VEHICLE_CMD_DO_SET_MODE)
+            self.assertEqual((cmd.param2, cmd.param3), (4.0, 3.0))
+        self.assertNotIn(VEHICLE_CMD_NAV_TAKEOFF, [c.command for c in cmds])
+        self.assertEqual(_setpoints(node), [])
+        self.assertIn(
+            "radius",
+            {rec.get("violation") for rec in self._records("reject")},
+        )
+        self.assertEqual(self._records("reject")[-1]["backend"], "px4-dds")
+        self.assertEqual(self._records("reject")[-1]["reason"], "geofence")
+        self._assert_no_forbidden(node)
+        self.assertFalse(gate.latched)
+
+    def test_unknown_action_is_refused(self) -> None:
+        gate, _tp, node, _bot = self._open_gate()
+        self._feed(node)
+        self.assertTrue(gate.arm())
+        self.assertFalse(gate.command("orbit"))
+        self.assertEqual(gate.last_error, "not_allowlisted")
+        self.assertFalse(gate.command("flip"))
+        self.assertEqual(gate.last_error, "denied")
+        self.assertFalse(gate.command("dance"))
+        reasons = {rec["reason"] for rec in self._records("reject")}
+        self.assertIn("not_allowlisted", reasons)
+        self.assertIn("denied", reasons)
+        self.assertFalse(gate.latched)
+        self.assertNotIn(
+            VEHICLE_CMD_COMPONENT_ARM_DISARM, [c.command for c in _commands(node)]
+        )
+        self._assert_no_forbidden(node)
+
+    def test_in_air_estop_lands_and_never_disarms(self) -> None:
+        gate, _tp, node, bot = self._open_gate()
+        self._feed(node, landed=False, z=-2.5)
+        self.assertTrue(gate.arm())
+        node.fire_timers()
+        self.assertGreater(len(_setpoints(node)), 0)
+        marked = len(_commands(node))
+        bot.disarm_flight()
+        self.assertEqual(gate.last_error, "not_on_ground")
+        self.assertFalse(
+            any(
+                c.command == VEHICLE_CMD_COMPONENT_ARM_DISARM
+                for c in _commands(node)[marked:]
+            )
+        )
+        paused = len(_setpoints(node))
+        before = len(_commands(node))
+        bot.emergency_stop()
+        estop_cmds = _commands(node)[before:]
+        self.assertEqual([c.command for c in estop_cmds], [VEHICLE_CMD_NAV_LAND])
+        self.assertEqual(estop_cmds[0].param2, 0.0)
+        node.fire_timers()
+        self.assertEqual(len(_setpoints(node)), paused)
+        self.assertTrue(gate.latched)
+        self.assertFalse(gate.armed)
+        rec = self._records("estop")[-1]
+        self.assertEqual(rec["flight_request"], ["land"])
+        self.assertEqual(rec["backend"], "px4-dds")
+        self.assertEqual(rec["estop_layer"], "ohho_land")
+        self.assertFalse(rec["inner_error"])
+        self.assertNotIn("disarm", rec["flight_request"])
+        self._assert_no_forbidden(node)
+
+    def test_unknown_estop_holds_then_lands(self) -> None:
+        gate, _tp, node, bot = self._open_gate()
+        self._feed(node, landed=None, z=-5.0)
+        self.assertTrue(gate.arm())
+        before = len(_commands(node))
+        bot.emergency_stop()
+        estop_cmds = _commands(node)[before:]
+        self.assertEqual(
+            [(c.command, c.param1, c.param2, c.param3) for c in estop_cmds],
+            [
+                (VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0),
+                (VEHICLE_CMD_NAV_LAND, 0.0, 0.0, 0.0),
+            ],
+        )
+        self.assertNotIn(
+            VEHICLE_CMD_COMPONENT_ARM_DISARM, [c.command for c in estop_cmds]
+        )
+        self.assertEqual(self._records("estop")[-1]["flight_request"], ["hold", "land"])
+        self.assertEqual(self._records("estop")[-1]["backend"], "px4-dds")
+        self._assert_no_forbidden(node)
+
+    def test_ground_estop_disarms_only_when_low(self) -> None:
+        gate, _tp, node, bot = self._open_gate()
+        self._feed(node, landed=True, z=-0.1)
+        self.assertTrue(gate.arm())
+        before = len(_commands(node))
+        bot.emergency_stop()
+        estop_cmds = _commands(node)[before:]
+        self.assertEqual(
+            [(c.command, c.param1, c.param2) for c in estop_cmds],
+            [(VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0, 0.0)],
+        )
+        self.assertEqual(self._records("estop")[-1]["flight_request"], ["disarm"])
+        self._assert_no_forbidden(node)
+
+        gate2, _tp2, node2, bot2 = self._open_gate()
+        self._feed(node2, landed=True, z=-4.0)
+        self.assertTrue(gate2.arm())
+        before = len(_commands(node2))
+        bot2.emergency_stop()
+        high = _commands(node2)[before:]
+        self.assertEqual([c.command for c in high], [VEHICLE_CMD_NAV_LAND])
+        self.assertNotIn(VEHICLE_CMD_COMPONENT_ARM_DISARM, [c.command for c in high])
+        self._assert_no_forbidden(node2)
 
 
 class TestPackaging(unittest.TestCase):

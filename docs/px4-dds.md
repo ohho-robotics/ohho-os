@@ -14,6 +14,7 @@ PX4 SITL or Pixhawk
                                       v
                                rclpy node
                                Px4DdsTransport
+                               SafetyGate
                                Robot
 ```
 
@@ -159,15 +160,31 @@ Its yaw rate is 0 because `vehicle_angular_velocity` is not subscribed.
 
 ## SafetyGate (OHH-288)
 
-D-04 is not on this branch. `Robot.connect` still wraps this transport in
-`SafetyGate`, and today's gate does not read `sim_target` and does not forward
-`command("arm")` / `command("land")` to `send_flight`. The land-versus-disarm
-decision above lives in the transport so an in-air `emergency_stop` already
-sends land.
+`Robot.connect` wraps this transport in `SafetyGate` because `protocol` is
+`px4-dds`, not `simulated`. The profile is the aerial one when the robot spec
+has `aerial` (`DRONE_PROFILE`: allowlist `hold`, `land`, `rtl`,
+`offboard_velocity`, `offboard_position`; 1.5 m/s horizontal, 1.0 m/s
+vertical, 0.8 rad/s yaw; cylinder geofence). `Robot` flight methods call
+`SafetyGate.command`, which calls `send_flight`. They do not publish past
+the gate.
 
-When OHH-288 merges, the gate should:
+`requires_hardware_arming` treats `sim_target` True as the loopback
+exception. A non-loopback host still needs the hardware phrase. The gate
+does not parse `px4+dds://`.
 
-- treat `sim_target` as the loopback exception inside `requires_hardware_arming`
-- forward flight actions to `send_flight`
-- keep this transport's rule: land in the air, disarm only on the ground, never
-  force-disarm, never flight termination
+`command` behaviour the gate applies before `send_flight`:
+
+| Request | Gate |
+|---|---|
+| `arm` / `arm_flight`, `takeoff` | Human at a TTY. Hardware also needs the arm phrase. `arm` needs a live setpoint stream. `takeoff` needs battery ≥ 0.3, `link_ok`, and an altitude inside the fence. |
+| `land`, `rtl`, `hold` | Allowlisted. Forwarded when the gate is armed and state is fresh. |
+| `offboard_velocity` | Clamped (horizontal magnitude 1.5 m/s, vertical 1.0 m/s, yaw 0.8 rad/s) and the clamp is audited. A pose already outside the fence is rejected and `hold` is sent. |
+| `offboard_position` | A point outside the cylinder is rejected and `hold` is sent. The point is not clipped through the fence. |
+| anything else (`flip`, `orbit`, …) | Refused. Denied names stay denied. |
+
+E-stop is the D-01 decision, sent as `send_flight` (`land`, `hold` then
+`land`, or `disarm`). In the air that is land. Unknown is hold, then land.
+Disarm only on the ground at or below 0.25 m. param2 **21196** and command
+**185** are not sent. `land`, `rtl`, `hold`, and `disarm` pause the offboard
+heartbeat so a later timer tick does not publish a setpoint over the mode
+command. `release_stop` clears the Ohho latch only.
