@@ -82,9 +82,11 @@ confirmation. A non-loopback `px4+dds://` host still needs confirmation. The
 gate reads `sim_target`; it does not parse the URI.
 
 Agents never get `arm` or `release_stop` as tools. The TTY check stops a
-headless agent or CI job. It does not stop code that runs in the same Python
-process and reaches into private attributes; this is a software guard, not a
-replacement for the robot's own e-stop or the remote.
+headless agent or CI job, except aerial arm and takeoff on a proven simulator
+when GitHub Actions sets `OHHO_CI_SIM_ARMING=1` (see `docs/drone-safety.md`).
+Hardware and `release_stop()` stay refused. It does not stop code that runs
+in the same Python process and reaches into private attributes; this is a
+software guard, not a replacement for the robot's own e-stop or the remote.
 
 ## Profiles
 

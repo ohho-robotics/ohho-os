@@ -27,7 +27,9 @@ nothing above it changes; it decides what actually reaches the motors:
   simulator, a loopback interface on a non-zero DDS domain, localhost-only
   ROS 2 CI, or a ``px4-dds`` transport that reports ``sim_target`` True)
   arming needs ``OHHO_ARM_HARDWARE=1``, an interactive TTY and the typed
-  confirmation phrase; CI and non-TTY callers always fail closed.
+  confirmation phrase. CI and non-TTY callers fail closed. Aerial arm and
+  takeoff have one GitHub Actions opt-in for a proven simulator
+  (``OHHO_CI_SIM_ARMING=1``). It never applies to hardware or ``release_stop()``.
 - **Audit.** Arm/disarm, e-stops, releases, clamps, refusals and watchdog trips
   are appended as JSON Lines to ``~/.ohho/safety/<UTC date>.jsonl``.
 
@@ -45,6 +47,7 @@ from __future__ import annotations
 
 import dataclasses
 import getpass
+import ipaddress
 import json
 import logging
 import math
@@ -58,7 +61,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Optional, Sequence, Union
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence, Union
+from urllib.parse import urlparse
 
 from . import capabilities as caps
 from .aerial import Frame
@@ -71,6 +75,8 @@ from .transport import Transport, BaseTransport
 log = logging.getLogger("ohho.safety")
 
 ARM_ENV = "OHHO_ARM_HARDWARE"
+CI_SIM_ARMING_ENV = "OHHO_CI_SIM_ARMING"
+CI_SITL_ENV = "OHHO_CI_SITL"
 CONFIG_ENV = "OHHO_SAFETY_CONFIG"
 AUDIT_DIR_ENV = "OHHO_SAFETY_DIR"
 CI_ENV_VARS = (
@@ -605,6 +611,147 @@ def _in_ci(env: Mapping[str, str]) -> bool:
         str(env.get(v, "")).strip().lower() not in ("", "0", "false", "no")
         for v in CI_ENV_VARS
     )
+
+
+class _CiSimArming(NamedTuple):
+    reason: str
+    backend: str = ""
+    host: str = ""
+    uri: str = ""
+    target: str = ""
+
+
+def _token_true(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
+def _exposes(obj: object, name: str) -> bool:
+    for cls in type(obj).__mro__:
+        if name in cls.__dict__:
+            return True
+    try:
+        return name in vars(obj)
+    except TypeError:
+        return False
+
+
+def _literal_loopback(host: object) -> bool:
+    """True for ``localhost``, ``127.0.0.0/8``, or the address ``::1``.
+
+    IPv4-mapped addresses such as ``::ffff:127.0.0.1`` are not ``::1`` and are
+    refused. Docker names are not loopback.
+    """
+    if not isinstance(host, str):
+        return False
+    if host == "localhost":
+        return True
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv4Address):
+        return bool(parsed.is_loopback)
+    return parsed == ipaddress.ip_address("::1")
+
+
+def _transport_backend_id(inner: object) -> str:
+    """Backend id used for aerial decisions.
+
+    An explicit string ``backend_id`` wins. ``protocol == "simulated"`` with
+    no explicit id is ``drone-sim``.
+    """
+    explicit = getattr(inner, "backend_id", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip().lower()
+    proto = str(getattr(inner, "protocol", "") or "").strip().lower()
+    if proto == "simulated":
+        return "drone-sim"
+    return proto or "unknown"
+
+
+def _sitl_loopback(
+    inner: object,
+    env: Mapping[str, str],
+    *,
+    backend: str,
+    scheme: str,
+    flag: str,
+) -> _CiSimArming:
+    if env.get(CI_SITL_ENV) != "1":
+        return _CiSimArming("sitl_opt_in", backend=backend)
+    uri = getattr(inner, "uri", None)
+    if not isinstance(uri, str) or not uri:
+        return _CiSimArming("uri", backend=backend)
+    parsed = urlparse(uri)
+    if parsed.scheme != scheme:
+        return _CiSimArming("scheme", backend=backend, uri=uri)
+    host = parsed.hostname
+    if not _literal_loopback(host):
+        shown = host if isinstance(host, str) else ""
+        return _CiSimArming("host", backend=backend, host=shown, uri=uri)
+    if not _exposes(inner, flag) or getattr(inner, flag) is not True:
+        return _CiSimArming("sim_flag", backend=backend, host=str(host), uri=uri)
+    return _CiSimArming("", backend=backend, host=str(host), uri=uri, target=str(host))
+
+
+def _ci_sim_arming_checked(
+    inner: object, env: Mapping[str, str], *, hardware: bool
+) -> _CiSimArming:
+    if not _token_true(env.get("CI", "")):
+        return _CiSimArming("not_github_actions")
+    if not _token_true(env.get("GITHUB_ACTIONS", "")):
+        return _CiSimArming("not_github_actions")
+    if env.get(CI_SIM_ARMING_ENV) != "1":
+        return _CiSimArming("opt_in")
+    if ARM_ENV in env:
+        return _CiSimArming("hardware_env")
+    if hardware is not False:
+        return _CiSimArming("hardware_gate")
+    if _exposes(inner, "requires_hardware_arming") and (
+        getattr(inner, "requires_hardware_arming") is not False
+    ):
+        return _CiSimArming("hardware_gate")
+    backend = _transport_backend_id(inner)
+    if backend == "drone-sim":
+        return _CiSimArming("", backend=backend, target=backend)
+    if backend == "px4-dds":
+        return _sitl_loopback(
+            inner, env, backend=backend, scheme="px4+dds", flag="sim_target"
+        )
+    if backend == "mavlink":
+        return _sitl_loopback(
+            inner,
+            env,
+            backend=backend,
+            scheme="mavlink+udp",
+            flag="simulation_target",
+        )
+    return _CiSimArming("not_sim_target", backend=backend)
+
+
+def _ci_sim_arming(
+    inner: object, env: Mapping[str, str], *, hardware: bool
+) -> _CiSimArming:
+    try:
+        return _ci_sim_arming_checked(inner, env, hardware=hardware)
+    except Exception:
+        return _CiSimArming("inspect_error")
+
+
+def ci_sim_arming_reason(
+    inner: object, env: Mapping[str, str], *, hardware: bool
+) -> str:
+    """Return ``''`` only when GitHub Actions may arm a proven simulator.
+
+    ``CI`` and ``GITHUB_ACTIONS`` must be ``true``, ``OHHO_CI_SIM_ARMING`` must
+    be exactly ``1``, and ``OHHO_ARM_HARDWARE`` must be absent. ``hardware``
+    must be false, and so must the transport's ``requires_hardware_arming``
+    when it exposes one. The target is ``drone-sim``, or a loopback
+    ``px4+dds`` / ``mavlink+udp`` link with its own sim flag and
+    ``OHHO_CI_SITL=1``. Anything else, including an inspection error, is a
+    short refusal reason. This does not arm a vehicle.
+    """
+    return _ci_sim_arming(inner, env, hardware=hardware).reason
 
 
 def _stdin_isatty() -> bool:
@@ -1363,13 +1510,7 @@ class SafetyGate(BaseTransport):
 
     # ── aerial (OHH-288) ──────────────────────────────────────────────────────
     def _backend_id(self) -> str:
-        explicit = getattr(self._inner, "backend_id", None)
-        if isinstance(explicit, str) and explicit.strip():
-            return explicit.strip().lower()
-        proto = str(getattr(self._inner, "protocol", "") or "").strip().lower()
-        if proto == "simulated":
-            return "drone-sim"
-        return proto or "unknown"
+        return _transport_backend_id(self._inner)
 
     def _flight_meta(self, request: Any, frame: Any) -> dict[str, Any]:
         if isinstance(frame, Frame):
@@ -1618,7 +1759,28 @@ class SafetyGate(BaseTransport):
         if not self._motion_allowed("command", action=canonical, **meta):
             return False
         human = self._human_tty_reason(canonical)
-        if human:
+        if human in {"ci", "no_tty"}:
+            decision = _ci_sim_arming(self._inner, self._env, hardware=self._hw)
+            if decision.reason == "":
+                if not self._audit(
+                    "ci_sim_arming",
+                    action=action,
+                    backend=decision.backend,
+                    host=decision.host,
+                ):
+                    return False
+                log.warning(
+                    "safety: CI sim-only arming exception used: %s %s on %s "
+                    "(backend=%s, uri=%s)",
+                    action,
+                    self.robot_id,
+                    decision.target,
+                    decision.backend,
+                    decision.uri,
+                )
+            else:
+                return self._aerial_reject(canonical, None, human)
+        elif human:
             return self._aerial_reject(canonical, None, human)
         if canonical == "arm":
             if not self._setpoint_alive():
@@ -1735,6 +1897,8 @@ __all__ = [
     "AUDIT_DIR_ENV",
     "AuditLog",
     "CI_ENV_VARS",
+    "CI_SIM_ARMING_ENV",
+    "CI_SITL_ENV",
     "CONFIG_ENV",
     "DRONE_ACTIONS",
     "DRONE_FENCE_ALT_M",
@@ -1756,6 +1920,7 @@ __all__ = [
     "SafetyGate",
     "SafetyProfile",
     "TAKEOFF_MIN_BATTERY",
+    "ci_sim_arming_reason",
     "clip_horizontal",
     "default_audit_dir",
     "drone_mcp_allowed",
