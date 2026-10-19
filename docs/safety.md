@@ -79,9 +79,11 @@ DDS link on a loopback interface with a non-zero DDS domain, e.g.
 robot's domain, so `dds://lo` (domain 0) still needs confirmation.
 
 Agents never get `arm` or `release_stop` as tools. The TTY check stops a
-headless agent or CI job. It does not stop code that runs in the same Python
-process and reaches into private attributes; this is a software guard, not a
-replacement for the robot's own e-stop or the remote.
+headless agent or CI job, except aerial arm and takeoff on a proven simulator
+when GitHub Actions sets `OHHO_CI_SIM_ARMING=1` (see `docs/drone-safety.md`).
+Hardware and `release_stop()` stay refused. It does not stop code that runs
+in the same Python process and reaches into private attributes; this is a
+software guard, not a replacement for the robot's own e-stop or the remote.
 
 ## Profiles
 
