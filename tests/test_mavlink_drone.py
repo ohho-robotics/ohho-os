@@ -14,6 +14,7 @@ import math
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,6 +103,9 @@ class _Plugins:
 
     def start(self) -> None:
         self._record("start")
+
+    def stop(self) -> None:
+        self._record("stop")
 
     def kill(self) -> None:
         raise AssertionError("kill")
@@ -568,6 +572,31 @@ class TestMavsdkDispatch(unittest.TestCase):
             [("set_takeoff_altitude", 2.5), ("takeoff", None)],
         )
 
+    def test_takeoff_stops_a_position_stream_before_the_command(self) -> None:
+        """Copter GUIDED takeoff is cancelled by a ground-hold position target.
+
+        Copter-4.7.2 ``set_pos_NED_m`` leaves ``ModeGuided::TakeOff``. MAVSDK
+        keeps sending the last ``set_position_ned`` until ``offboard.stop``.
+        ``stop`` also leaves Hold, so the following ``takeoff`` is not already
+        in Offboard and MAVSDK sets Copter GUIDED before ``MAV_CMD_NAV_TAKEOFF``.
+        The altitude stays the relative metres above home, not AMSL.
+        """
+        from ohho.adapters.mavlink_drone import map_offboard_position
+
+        plugins = _Plugins()
+        link = MavsdkLink(action=plugins, offboard=plugins)
+        link.send(map_offboard_position(0.0, 0.0, 0.0, 0.0, Frame.LOCAL_NED))
+        plugins.calls.clear()
+        link.send(MavlinkCommand(name="takeoff", alt_m=2.5))
+        self.assertEqual(
+            plugins.calls,
+            [
+                ("stop", None),
+                ("set_takeoff_altitude", 2.5),
+                ("takeoff", None),
+            ],
+        )
+
 
 class TestMavlinkTelemetry(unittest.TestCase):
     def test_custom_drone_matches_the_schema(self) -> None:
@@ -808,6 +837,86 @@ class TestMavsdk4SubscriptionCallbacks(unittest.TestCase):
         with self.assertRaises(TypeError):
             link._on_landed(_MavsdkLandedState.ON_GROUND, None, "extra")  # type: ignore[call-arg]
         self.assertEqual(link.read_sample()["landed_state"], "unknown")
+
+
+class TestTelemetryCallbackDoesNotDeadlock(unittest.TestCase):
+    """MAVSDK callbacks must return without the SafetyGate lock or a plugin call.
+
+    ``SafetyGate.command`` holds its lock across ``send_flight``. A blocking
+    plugin call waits until the MAVSDK callback thread has finished. If that
+    callback runs the transport subscriber inline, the subscriber takes the
+    same lock (and may call MAVSDK again) and the process never returns.
+    """
+
+    def test_callback_returns_while_the_gate_lock_is_held(self) -> None:
+        gate = threading.Lock()
+        seen = threading.Event()
+        errors: list[str] = []
+        callback_ids: list[int] = []
+        subscriber_ids: list[int] = []
+        link_box: dict[str, MavsdkLink] = {}
+        recorder = RecordingLink()
+
+        class Action:
+            def land(self) -> None:
+                done = threading.Event()
+
+                def mavsdk_thread() -> None:
+                    callback_ids.append(threading.get_ident())
+                    link_box["link"]._on_landed(_MavsdkLandedState.ON_GROUND)
+                    done.set()
+
+                threading.Thread(target=mavsdk_thread, daemon=True).start()
+                if not done.wait(1.0):
+                    raise TimeoutError("telemetry callback blocked")
+
+            def hold(self) -> None:
+                # A plugin call from the subscriber. It deadlocks if the
+                # subscriber is still the MAVSDK callback thread.
+                if not callback_ids:
+                    raise TimeoutError("hold ran before the telemetry callback")
+
+        def on_sample(sample: object) -> None:
+            subscriber_ids.append(threading.get_ident())
+            if not isinstance(sample, dict):
+                errors.append(type(sample).__name__)
+                seen.set()
+                return
+            if not gate.acquire(timeout=2.0):
+                errors.append("subscriber blocked on the gate lock")
+                seen.set()
+                return
+            try:
+                if sample.get("landed_state") != "on_ground":
+                    errors.append(repr(sample.get("landed_state")))
+                # RecordingLink takes its own lock, the way the gate records
+                # a command while it still holds the flight lock.
+                recorder.send(MavlinkCommand(name="hold"))
+                link_box["link"].send(MavlinkCommand(name="hold"))
+            except Exception as exc:
+                errors.append(repr(exc))
+            finally:
+                gate.release()
+                seen.set()
+
+        link = MavsdkLink(action=Action(), on_sample=on_sample)
+        link_box["link"] = link
+        self.addCleanup(link.close)
+        gate.acquire()
+        try:
+            link.send(MavlinkCommand(name="land"))
+            self.assertEqual(link.read_sample()["landed_state"], "on_ground")
+        finally:
+            gate.release()
+        self.assertTrue(seen.wait(2.0), "subscriber was not called")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(callback_ids), 1)
+        self.assertEqual(len(subscriber_ids), 1)
+        self.assertNotEqual(subscriber_ids[0], callback_ids[0])
+        self.assertNotEqual(subscriber_ids[0], threading.get_ident())
+        self.assertEqual([command.name for command in recorder.commands], ["hold"])
+        self.assertEqual(recorder.urls, [])
+        self.assertFalse(recorder.closed)
 
 
 if __name__ == "__main__":

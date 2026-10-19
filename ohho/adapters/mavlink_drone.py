@@ -683,6 +683,23 @@ class MavsdkLink:
         self._sdk: object | None = None
         self._sample = _blank_sample()
         self._lock = threading.Lock()
+        # MAVSDK delivers telemetry on the same thread that completes a
+        # blocking plugin call. The subscriber (SafetyGate) takes its own
+        # lock and may call back into MAVSDK. Publishing on that thread
+        # deadlocks. The callback only stores the sample; this thread
+        # notifies subscribers without holding ``_lock``.
+        self._generation = 0
+        self._published = 0
+        self._wake = threading.Event()
+        self._stop_publish = threading.Event()
+        self._publisher: threading.Thread | None = None
+        if on_sample is not None:
+            self._publisher = threading.Thread(
+                target=self._publish_loop,
+                name="ohho-mavlink-telemetry",
+                daemon=True,
+            )
+            self._publisher.start()
 
     def open(self, url: str) -> None:
         if self._action is not None or self._opener is not None:
@@ -694,6 +711,16 @@ class MavsdkLink:
         self._open_native(url)
 
     def close(self) -> None:
+        self._stop_publish.set()
+        self._wake.set()
+        publisher = self._publisher
+        self._publisher = None
+        if (
+            publisher is not None
+            and publisher.is_alive()
+            and publisher is not threading.current_thread()
+        ):
+            publisher.join(timeout=1.0)
         sdk = self._sdk
         self._sdk = None
         closer = getattr(sdk, "close", None) if sdk is not None else None
@@ -739,9 +766,31 @@ class MavsdkLink:
             raise AdapterUnavailable("MAVSDK action plugin is not open")
         method = _ACTION_METHODS[command.name]
         if command.name == "takeoff":
+            # Copter-4.7.2 refuses MAV_CMD_NAV_TAKEOFF unless the mode's
+            # has_user_takeoff is true. Stabilize's is false; GUIDED's is
+            # true. param7 is metres above home (current_loc.alt is already
+            # above home). MAVSDK 4.0.6 stores that relative altitude and,
+            # when the mode is not Offboard, sets Offboard — Copter GUIDED —
+            # before the command. A repeating SET_POSITION_TARGET at z=0
+            # leaves ModeGuided::TakeOff, the motors stay in ground idle, and
+            # DISARM_DELAY (default 10 s) disarms. Stop that repeat first.
+            # offboard.stop() also leaves Hold, so takeoff() is not already
+            # in Offboard and does switch to GUIDED.
+            self._stop_offboard()
             altitude = 0.0 if command.alt_m is None else command.alt_m
             _call_plugin(plugin, "set_takeoff_altitude", altitude)
         _call_plugin(plugin, method)
+
+    def _stop_offboard(self) -> None:
+        """Stop the setpoint repeat. Does nothing if offboard was not started."""
+        if not self._offboard_started:
+            return
+        plugin = self._offboard
+        if plugin is None:
+            self._offboard_started = False
+            return
+        _call_plugin(plugin, "stop")
+        self._offboard_started = False
 
     def _send_body_velocity(self, command: MavlinkCommand) -> None:
         plugin = self._offboard
@@ -831,9 +880,7 @@ class MavsdkLink:
         passthrough = _optional_passthrough(system)
         if passthrough is not None:
             self._raw_sender = _passthrough_sender(passthrough)
-        with self._lock:
-            self._sample["link_ok"] = True
-        self._publish()
+        self._update()
 
     def _bind_telemetry(self, telemetry: object) -> None:
         """Subscribe handlers that accept MAVSDK 4's ``callback(value, user_data)``."""
@@ -861,12 +908,32 @@ class MavsdkLink:
         with self._lock:
             self._sample.update(fields)
             self._sample["link_ok"] = True
-        self._publish()
+            self._generation += 1
+        self._wake.set()
 
-    def _publish(self) -> None:
-        callback = self._on_sample
-        if callback is not None:
-            callback(self.read_sample())
+    def _publish_loop(self) -> None:
+        """Deliver the latest sample off the MAVSDK callback thread."""
+        while not self._stop_publish.is_set():
+            self._wake.wait(timeout=0.2)
+            if self._stop_publish.is_set():
+                return
+            with self._lock:
+                generation = self._generation
+            if generation == self._published:
+                self._wake.clear()
+                with self._lock:
+                    generation = self._generation
+                if generation == self._published:
+                    continue
+            callback = self._on_sample
+            sample = self.read_sample()
+            self._published = generation
+            if callback is None:
+                continue
+            try:
+                callback(sample)
+            except Exception as exc:
+                log.warning("mavlink: telemetry subscriber failed: %r", exc)
 
     def _on_armed(self, armed: object, user_data: object = None) -> None:
         self._update(armed=bool(_mavsdk4_value(armed, user_data)))
