@@ -38,6 +38,13 @@
   `navigate_to, explore, look_around, where_is, objects_near, remember_note` and
   injects the memory summary into every goal. All stdlib — base stays dep-free.
 - **Current version:** `1.1.3` (see `ohho/__init__.py` `__version__`).
+- **OHH-294:** `ohho connect --read-only` on `px4+dds://` subscribes to
+  `/fmu/out` and creates no `/fmu/in` publisher, no `VehicleCommand`, and no
+  offboard heartbeat. `ohho doctor --robot px4-sitl|px4-x500 --transport
+  px4+dds://… [--json]` reports the XRCE agent, vehicle_status rate, the
+  `px4_msgs` release/1.17 pin, ROS distro, best-effort QoS, armed=false, GPS
+  fix, and battery. A missing agent or topic fails that check. A doctor log
+  against PX4 SITL is still a human TODO.
 
 ---
 

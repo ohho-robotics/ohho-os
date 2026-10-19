@@ -196,3 +196,54 @@ Disarm only on the ground at or below 0.25 m. param2 **21196** and command
 **185** are not sent. `land`, `rtl`, `hold`, and `disarm` pause the offboard
 heartbeat so a later timer tick does not publish a setpoint over the mode
 command. `release_stop` clears the Ohho latch only.
+
+## Read-only connect
+
+```text
+ohho connect px4-sitl --transport px4+dds://127.0.0.1:8888 --read-only
+ohho connect px4-x500 --transport px4+dds://HOST:8888 --read-only
+```
+
+Telemetry only. Connect subscribes to `/fmu/out/*` and does not create a
+publisher on any `/fmu/in/*` topic. It does not send `VehicleCommand`, does
+not start the offboard heartbeat, and does not arm. `--read-only` cannot be
+combined with `--arm`.
+
+A non-loopback host is still hardware for the safety gate
+(`requires_hardware_arming` stays true). Read-only connect does not require
+`OHHO_ARM_HARDWARE`, because it publishes nothing. A message-field mismatch
+still refuses connect before any subscription is created.
+
+`sensor_gps`, when that message is present, updates `gps_fix`. It has no
+`MESSAGE_VERSION` on release/1.17, so the topic stays `/fmu/out/sensor_gps`.
+The other subscriptions use the versioned names above (`vehicle_status_v1`,
+`battery_status_v1`). A missing fix type is not stored as `none`.
+
+## Doctor
+
+```text
+ohho doctor --robot px4-sitl --transport px4+dds://127.0.0.1:8888
+ohho doctor --robot px4-x500 --transport px4+dds://HOST:8888 --json
+```
+
+`ohho doctor` with no robot still prints the environment. With `--robot` and
+`--transport` it checks, in order:
+
+| Check | Pass |
+|---|---|
+| XRCE agent | A publisher on `/fmu/out/vehicle_status_v1`, or a UDP reply from the agent. No reply is not reachable. |
+| `/fmu/out/vehicle_status_v1` rate | At least 1 Hz in the sample window. |
+| `px4_msgs` | `OffboardControlMode` matches `release/1.17`. |
+| ROS 2 distro | `jazzy`, or `humble` as the alternative. Unset is a failure. |
+| QoS | The discovered publisher is best-effort. Not observed is not assumed. |
+| armed | `armed=false`. Unknown is not reported as false. |
+| GPS fix | A recognised fix, including an observed `none`. No sample is a failure. |
+| battery | `remaining` in 0..1. A missing or sentinel value is a failure. |
+
+`--json` prints that report. Exit 0 when every check passed, 1 when any
+failed, 2 for a bad robot or transport. Missing rclpy, `px4_msgs`, the agent,
+or the topic fails the check that needed it. The doctor does not create an
+`/fmu/in` publisher.
+
+A log of this doctor against PX4 SITL is still a human TODO. This package
+does not start SITL or Gazebo.

@@ -101,6 +101,31 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_lin=1.0,
         max_ang=2.0,
     ),
+    # Ohho caps from the drone plan, not PX4's MPC_XY_VEL_MAX. Climb lives on
+    # the aerial safety profile. Neither spec has an arm. With no URI,
+    # connect still falls back to the simulator; px4+dds:// is explicit.
+    "px4-sitl": RobotSpec(
+        id="px4-sitl",
+        name="PX4 SITL",
+        category="aerial",
+        capabilities=(caps.AERIAL,),
+        adapter="sim",
+        dof_base=0,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+    ),
+    "px4-x500": RobotSpec(
+        id="px4-x500",
+        name="PX4 X500",
+        category="aerial",
+        capabilities=(caps.AERIAL,),
+        adapter="px4-dds",
+        dof_base=0,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+    ),
 }
 
 _REGISTRY: dict[str, RobotSpec] = dict(_BUILTINS)
