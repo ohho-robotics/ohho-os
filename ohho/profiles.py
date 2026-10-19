@@ -199,6 +199,23 @@ def detect_profile() -> HardwareProfile:
     return BUILTIN_PROFILES["edge_cpu"]
 
 
+def emit_robot_descriptor(robot_id: str = "omnibot", *, kind: str = "real") -> str:
+    """JSON text of the RobotDescriptor v1 document for a built-in robot.
+
+    Caps come from the safety profile and stay at or below the OmniBot ceilings.
+    """
+    from .descriptor import emit_descriptor, robot_descriptor
+
+    return emit_descriptor(robot_descriptor(robot_id, kind=kind))
+
+
+def load_robot_descriptor(path):
+    """Load a RobotDescriptor v1 document. Caps above the ceilings are refused."""
+    from .descriptor import load_descriptor
+
+    return load_descriptor(path)
+
+
 def describe() -> dict:
     """Summary of the current machine's compute (for logs, W&B, CLI output)."""
     prof = detect_profile()
@@ -220,4 +237,6 @@ __all__ = [
     "list_profiles",
     "detect_profile",
     "describe",
+    "emit_robot_descriptor",
+    "load_robot_descriptor",
 ]

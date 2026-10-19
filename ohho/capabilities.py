@@ -37,3 +37,40 @@ ALL: frozenset[str] = frozenset(
 def is_known(capability: str) -> bool:
     """True if ``capability`` is part of the recognised vocabulary."""
     return capability in ALL
+
+
+def capabilities_from_descriptor(document: dict) -> tuple[str, ...]:
+    """Capabilities implied by an ohho.descriptor.v1 document.
+
+    A holonomic drive adds strafing. A non-empty ``arms`` list adds
+    manipulation. Camera kinds add rgb and depth. ``perception.scan`` is not
+    inferred: the descriptor has no lidar field, and this function does not
+    invent one.
+    """
+    if not isinstance(document, dict):
+        raise TypeError("descriptor must be an object")
+    found: list[str] = []
+    drive = document.get("drive")
+    if isinstance(drive, dict) and drive.get("kind") != "fixed-base":
+        found.append(BASE_DRIVE)
+        if drive.get("holonomic") is True:
+            found.append(BASE_HOLONOMIC)
+    arms = document.get("arms")
+    if isinstance(arms, list) and arms:
+        found.append(MANIPULATION)
+    saw_rgb = False
+    saw_depth = False
+    cameras = document.get("cameras")
+    if isinstance(cameras, list):
+        for camera in cameras:
+            if not isinstance(camera, dict):
+                continue
+            if camera.get("kind") == "rgb":
+                saw_rgb = True
+            elif camera.get("kind") == "depth":
+                saw_depth = True
+    if saw_rgb:
+        found.append(PERCEPTION_RGB)
+    if saw_depth:
+        found.append(PERCEPTION_DEPTH)
+    return tuple(found)
