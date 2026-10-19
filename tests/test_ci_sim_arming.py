@@ -1,6 +1,7 @@
 """Sim-only GitHub Actions arming exception (OHH-288).
 
-Fake transports and an injected env mapping. No ``os.environ`` mutation, no
+Fake transports and an injected env mapping. One case constructs the real
+``Px4DdsTransport`` and does not connect. No ``os.environ`` mutation, no
 sleeps, and no hardware.
 """
 
@@ -13,8 +14,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ohho.adapters.px4_dds import Px4DdsTransport
 from ohho.aerial import Frame
-from ohho.registry import RobotSpec
+from ohho.registry import RobotSpec, get_spec
 from ohho.safety import (
     ARM_ENV,
     CI_SIM_ARMING_ENV,
@@ -385,11 +387,14 @@ class TestCiSimRefuses(CiCase):
                 self.assert_refused(gate, link, "ci")
 
     def test_hardware_gate_denies_even_if_the_transport_says_sim(self) -> None:
+        # ``px4-dds`` with ``sim_target`` True is not a hardware gate (OHH-290).
+        # A sim flag on any other protocol still is, and the CI exception must
+        # not override that classification.
         link = Px4Link(
             "px4+dds://127.0.0.1:8888",
             sim_target=True,
             hardware=False,
-            protocol="px4-dds",
+            protocol="serial",
         )
         gate = self.make(link, _github(**{CI_SITL_ENV: "1"}), arm=False)
         self.assertTrue(gate.requires_hardware_arming)
@@ -638,6 +643,63 @@ class TestCiSimHelper(unittest.TestCase):
         # raises and the helper denies rather than trusting simulation_target.
         self.assertEqual(
             ci_sim_arming_reason(WrongFlag(), good, hardware=False), "inspect_error"
+        )
+
+
+class TestRealPx4DdsCiSim(unittest.TestCase):
+    """``Px4DdsTransport`` itself, wrapped in ``SafetyGate`` and not connected.
+
+    No ROS node, no agent, and no network. The constructor only parses the URI.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="ohho-ci-px4-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _prompt(self, prompt: str) -> str:
+        raise AssertionError(prompt)
+
+    def _gate(self, transport: Px4DdsTransport, env: dict[str, str]) -> SafetyGate:
+        return SafetyGate(
+            transport,
+            get_spec("sim"),
+            clock=FakeClock(),
+            environ=env,
+            isatty=lambda: False,
+            input_fn=self._prompt,
+            audit=AuditLog(self.tmp),
+            auto_tick=False,
+        )
+
+    def test_loopback_is_eligible_lan_and_missing_sitl_are_refused(self) -> None:
+        env = _github(**{CI_SITL_ENV: "1"})
+        self.assertNotIn(ARM_ENV, env)
+        loop = Px4DdsTransport(get_spec("sim"), "px4+dds://127.0.0.1:8888")
+        self.assertIs(loop.status().state, ConnectionState.IDLE)
+        self.assertTrue(loop.sim_target)
+        gate = self._gate(loop, env)
+        self.assertFalse(gate.requires_hardware_arming)
+        self.assertEqual(gate.protocol, "px4-dds")
+        self.assertEqual(
+            ci_sim_arming_reason(loop, env, hardware=gate.requires_hardware_arming),
+            "",
+        )
+
+        lan = Px4DdsTransport(get_spec("sim"), "px4+dds://192.168.1.10:8888")
+        self.assertIs(lan.status().state, ConnectionState.IDLE)
+        self.assertFalse(lan.sim_target)
+        lan_gate = self._gate(lan, env)
+        self.assertTrue(lan_gate.requires_hardware_arming)
+        self.assertEqual(
+            ci_sim_arming_reason(lan, env, hardware=lan_gate.requires_hardware_arming),
+            "hardware_gate",
+        )
+
+        no_sitl = _github()
+        self.assertNotIn(CI_SITL_ENV, no_sitl)
+        self.assertEqual(
+            ci_sim_arming_reason(loop, no_sitl, hardware=False),
+            "sitl_opt_in",
         )
 
 
