@@ -83,6 +83,28 @@ headless agent or CI job. It does not stop code that runs in the same Python
 process and reaches into private attributes; this is a software guard, not a
 replacement for the robot's own e-stop or the remote.
 
+## Class policies
+
+`SafetyGate` delegates the allowlist, clamping, the command-watchdog action,
+e-stop mapping, arming and the tilt latch to a `SafetyPolicy`
+(`ohho/safety_policy.py`). The policy is chosen from `spec.robot_class`:
+
+| Class | Policy | Name |
+|---|---|---|
+| `mobile_base` (`sim`) | `GroundPolicy` | `ground` |
+| `mobile_manipulator` (`omnibot`) | `GroundArmPolicy` | `ground+arm` |
+| `arm` | `ArmPolicy` | `arm` |
+| `quadruped` (`unitree-go2`) | `LeggedPolicy` | `legged` |
+
+The numbers in the table below are unchanged. A class with no built-in
+profile still gets the conservative caps. Aerial and humanoid policies are
+not in this release; those classes keep today's generic rules.
+
+A plugin's `safety_policy(spec)` may return `None` (the class default) or a
+stricter policy. Velocity, acceleration, joint, effort, timeout, tilt and
+euler caps, and the allowlist, may only get tighter. A policy that loosens a
+class cap is refused when the gate loads it. Discovery does not call the hook.
+
 ## Profiles
 
 | Robot | `max_vx` | `max_vy` | `max_wz` | accel x / y / yaw | Notes |
@@ -115,7 +137,8 @@ instead of running with a half-read config.
 
 Each event is one JSON object per line in `~/.ohho/safety/<UTC date>.jsonl`
 (override the directory with `OHHO_SAFETY_DIR`). Every record has `ts`
-(ISO 8601 UTC), `t` (epoch seconds), `event`, `robot` and `protocol`.
+(ISO 8601 UTC), `t` (epoch seconds), `event`, `robot` and `protocol`. Records
+written by the gate also include `policy` (the policy name).
 
 | `event` | When |
 |---|---|
@@ -132,7 +155,7 @@ Each event is one JSON object per line in `~/.ohho/safety/<UTC date>.jsonl`
 ## Tests and coverage
 
 ```bash
-python -m unittest tests.test_safety
+python -m unittest tests.test_safety tests.test_safety_policy
 python -m coverage run --branch --include=ohho/safety.py -m unittest tests.test_safety
 python -m coverage report -m --include=ohho/safety.py --fail-under=95
 ```

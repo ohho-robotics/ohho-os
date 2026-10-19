@@ -203,7 +203,8 @@ leave both a field and a property of the same name:
 - `example.json` still loads. Built-in `max_lin` / `max_ang` are unchanged.
 - Safety caps, watchdogs, arming and the e-stop path are unchanged.
 - Plugin discovery is C-02 (`ohho/plugins.py`, group `ohho.robots`).
-  Per-class `SafetyPolicy`, the robot-id resolver and the CI matrix are later
-  issues (C-05, C-06, C-08). They should follow this ADR rather than grow more
-  fields on the flat spec. `resolve_transport` and `SafetyGate` profile lookup
-  stay as they are until C-03 and C-05.
+  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
+  gate delegates to Ground, Arm and Legged policies, and a plugin may only
+  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
+  unchanged. The robot-id resolver and the CI matrix remain later issues
+  (C-06, C-08). `resolve_transport` stays as it is until C-03.
