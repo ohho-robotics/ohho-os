@@ -73,10 +73,13 @@ all of:
    `I am physically present, the area is clear, the remote is in my hand`
    (case and extra spaces are ignored).
 
-"Hardware" is every link except a simulator (`protocol == "simulated"`) and a
+"Hardware" is every link except a simulator (`protocol == "simulated"`), a
 DDS link on a loopback interface with a non-zero DDS domain, e.g.
-`dds://lo?domain=1` for a local Unitree simulator. DDS domain 0 is the real
-robot's domain, so `dds://lo` (domain 0) still needs confirmation.
+`dds://lo?domain=1` for a local Unitree simulator, localhost-only ROS 2 CI,
+and a `px4-dds` transport whose `sim_target` is true (`px4+dds://127.0.0.1:8888`).
+DDS domain 0 is the real robot's domain, so `dds://lo` (domain 0) still needs
+confirmation. A non-loopback `px4+dds://` host still needs confirmation. The
+gate reads `sim_target`; it does not parse the URI.
 
 Agents never get `arm` or `release_stop` as tools. The TTY check stops a
 headless agent or CI job, except aerial arm and takeoff on a proven simulator
