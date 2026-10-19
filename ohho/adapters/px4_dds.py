@@ -52,6 +52,10 @@ DEFAULT_AGENT_PORT = 8888
 OFFBOARD_PERIOD_S = 0.05  # 20 Hz, which is at least 10 Hz
 _STREAM_FRESH_S = 0.2
 DISARM_ALTITUDE_M = 0.25
+# vehicle_local_position older than this cannot supply the takeoff AMSL origin.
+# The sample's own timestamp is microseconds since PX4 boot, so freshness is
+# the host time since Ohho received it.
+TAKEOFF_REF_FRESH_S = 1.0
 _ARM_ENV = "OHHO_ARM_HARDWARE"
 _NS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -544,6 +548,47 @@ def altitude_m_of(local: Any) -> Optional[float]:
     return max(readings)
 
 
+def _origin_amsl_m(local: Any, *, now: float, received_at: Optional[float]) -> float:
+    """AMSL altitude of the local-position origin, or a refusal.
+
+    PX4 v1.17 ``VEHICLE_CMD_NAV_TAKEOFF`` param7 is metres AMSL
+    (``navigator_main.cpp`` copies it straight into the takeoff setpoint).
+    The origin Ohho already receives is ``vehicle_local_position.ref_alt``,
+    and only when ``xy_global`` and ``z_global`` are true. ``home_position``
+    is not subscribed, so it is not a fallback. A missing, stale, non-finite,
+    or invalid origin is refused. This never returns NaN for PX4 to replace
+    with ``MIS_TAKEOFF_ALT``.
+    """
+    if local is None:
+        raise Px4CommandRefused(
+            "takeoff refused: vehicle_local_position is missing, so the "
+            "AMSL origin (ref_alt) is unknown"
+        )
+    fresh = (
+        received_at is not None
+        and math.isfinite(received_at)
+        and math.isfinite(now)
+        and 0.0 <= (now - received_at) <= TAKEOFF_REF_FRESH_S
+    )
+    if not fresh:
+        raise Px4CommandRefused(
+            "takeoff refused: vehicle_local_position reference is stale"
+        )
+    if not bool(getattr(local, "xy_global", False)) or not bool(
+        getattr(local, "z_global", False)
+    ):
+        raise Px4CommandRefused(
+            "takeoff refused: vehicle_local_position global origin is not "
+            "valid (xy_global and z_global must both be true)"
+        )
+    ref = _finite(getattr(local, "ref_alt", None))
+    if ref is None:
+        raise Px4CommandRefused(
+            "takeoff refused: vehicle_local_position ref_alt is missing or not finite"
+        )
+    return ref
+
+
 @dataclass(frozen=True)
 class _Trajectory:
     position: tuple[float, float, float]
@@ -832,6 +877,7 @@ class Px4DdsTransport(BaseTransport):
         self._traj = _idle_trajectory()
         self._status_msg: Any = None
         self._local_msg: Any = None
+        self._local_rx_t: Optional[float] = None
         self._attitude_msg: Any = None
         self._battery_msg: Any = None
         self._land_msg: Any = None
@@ -947,6 +993,8 @@ class Px4DdsTransport(BaseTransport):
         ``OffboardControlMode`` and PX4 has reported pre-arm checks passing.
         ``disarm`` is refused unless the vehicle is on the ground and low.
         ``land`` is vehicle command 21 (NAV_LAND), never a zero setpoint.
+        ``takeoff`` is refused when the AMSL origin is missing, stale,
+        non-finite, or not globally valid.
         """
         if self.read_only:
             raise Px4CommandRefused(
@@ -1266,6 +1314,8 @@ class Px4DdsTransport(BaseTransport):
     def _store(self, attr: str, msg: Any) -> None:
         with self._lock:
             setattr(self, attr, msg)
+            if attr == "_local_msg":
+                self._local_rx_t = self._clock()
             snap = self._snapshot_locked()
         self._emit_telemetry(snap)
 
@@ -1342,10 +1392,20 @@ class Px4DdsTransport(BaseTransport):
         alt = finite_number("alt_m", fields["alt_m"])
         if alt <= 0.0:
             raise ValueError("alt_m must be positive up, in metres")
-        # param7 is the positive-up metres the caller asked for. PX4's MAVLink
-        # definition of NAV_TAKEOFF param7 is AMSL; SITL with no GPS origin is
-        # the case where that number matches a local climb.
-        self._publish_command(VEHICLE_CMD_NAV_TAKEOFF, param7=alt)
+        with self._lock:
+            # SafetyGate already checked this positive-up alt_m. param7 has
+            # to be AMSL: origin altitude plus that climb.
+            ref = _origin_amsl_m(
+                self._local_msg, now=self._clock(), received_at=self._local_rx_t
+            )
+        amsl = ref + alt
+        if not math.isfinite(amsl):
+            raise Px4CommandRefused("takeoff refused: AMSL altitude is not finite")
+        # v1.17 navigator: both param5 and param6 finite means that lat/lon,
+        # including 0,0. Either non-finite means the current global position.
+        self._publish_command(
+            VEHICLE_CMD_NAV_TAKEOFF, param5=_NAN, param6=_NAN, param7=amsl
+        )
 
     def _offboard_position(self, fields: Mapping[str, Any]) -> None:
         frame = require_frame(fields.get("frame"))
@@ -1603,6 +1663,7 @@ __all__ = [
     "ARMING_STATE_ARMED",
     "DEFAULT_AGENT_PORT",
     "DISARM_ALTITUDE_M",
+    "TAKEOFF_REF_FRESH_S",
     "FORCE_DISARM_PARAM2",
     "MICRO_XRCE_AGENT_VERSION",
     "OFFBOARD_PERIOD_S",

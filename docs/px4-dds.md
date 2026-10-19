@@ -124,7 +124,7 @@ quaternion has arrived.
 |---|---|
 | `arm` | Command 400, param1 1, param2 0. Needs a live offboard stream and pre-arm. |
 | `disarm` | Command 400, param1 0, param2 0. Only when on the ground and low. |
-| `takeoff` | `VEHICLE_CMD_NAV_TAKEOFF` (22). param7 is the positive-up metres requested. |
+| `takeoff` | `VEHICLE_CMD_NAV_TAKEOFF` (22). param7 is AMSL: fresh `vehicle_local_position.ref_alt` (both `xy_global` and `z_global` true) plus the positive-up metres requested. param5 and param6 are NaN, which v1.17 reads as the current lat/lon. A missing, stale, non-finite, or invalid origin is refused. |
 | `land` | `VEHICLE_CMD_NAV_LAND` (21). |
 | `rtl` | `VEHICLE_CMD_NAV_RETURN_TO_LAUNCH` (20). |
 | `hold` | `DO_SET_MODE` auto-loiter (main mode 4, sub mode 3). |

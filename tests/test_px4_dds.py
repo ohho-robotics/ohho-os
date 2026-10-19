@@ -19,6 +19,7 @@ from ohho.adapters.px4_dds import (
     FORCE_DISARM_PARAM2,
     PINNED_OFFBOARD_FIELDS,
     PX4_VERSION,
+    TAKEOFF_REF_FRESH_S,
     VEHICLE_CMD_COMPONENT_ARM_DISARM,
     VEHICLE_CMD_DO_FLIGHTTERMINATION,
     VEHICLE_CMD_DO_SET_MODE,
@@ -57,6 +58,7 @@ from ohho.schema import Velocity
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WALL = 1_760_000_000.0
+_ORIGIN_AMSL = 488.0
 
 
 def setUpModule() -> None:
@@ -244,6 +246,31 @@ def _setpoints(node: FakeNode) -> list:
 
 def _modes(node: FakeNode) -> list:
     return list(node.publisher("/fmu/in/offboard_control_mode").published)
+
+
+def _inject_origin(
+    node: FakeNode,
+    ref_alt: float = _ORIGIN_AMSL,
+    *,
+    topic: str = "/fmu/out/vehicle_local_position_v1",
+    xy_global: bool = True,
+    z_global: bool = True,
+    include_ref: bool = True,
+) -> None:
+    fields: dict[str, object] = {
+        "xy_valid": True,
+        "z_valid": True,
+        "xy_global": xy_global,
+        "z_global": z_global,
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "dist_bottom_valid": False,
+        "dist_bottom": 0.0,
+    }
+    if include_ref:
+        fields["ref_alt"] = ref_alt
+    node.inject(topic, SimpleNamespace(**fields))
 
 
 def _prearm(
@@ -762,18 +789,102 @@ class TestEstopAndCommands(unittest.TestCase):
 
     def test_takeoff_rtl_and_hold(self):
         tp, node = _open()
+        _inject_origin(node)
         tp.send_flight("takeoff", alt_m=2.5)
         tp.send_flight("rtl")
         tp.send_flight("hold")
         cmds = _commands(node)
         self.assertEqual(cmds[0].command, VEHICLE_CMD_NAV_TAKEOFF)
-        self.assertEqual(cmds[0].param7, 2.5)
+        self.assertEqual(cmds[0].param7, _ORIGIN_AMSL + 2.5)
+        self.assertTrue(math.isnan(cmds[0].param5))
+        self.assertTrue(math.isnan(cmds[0].param6))
         self.assertEqual(cmds[1].command, VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
         self.assertEqual(
             (cmds[2].command, cmds[2].param2, cmds[2].param3), (176, 4.0, 3.0)
         )
         with self.assertRaises(ValueError):
             tp.send_flight("takeoff", alt_m=-1)
+
+    def test_takeoff_param7_is_origin_amsl_plus_requested_alt(self):
+        tp, node = _open()
+        _inject_origin(node, 488.0)
+        tp.send_flight("takeoff", alt_m=2.5)
+        cmd = _commands(node)[-1]
+        self.assertEqual(cmd.command, VEHICLE_CMD_NAV_TAKEOFF)
+        self.assertEqual(cmd.param7, 490.5)
+        self.assertEqual((cmd.param1, cmd.param2, cmd.param3, cmd.param4), (0.0,) * 4)
+        self.assertTrue(math.isnan(cmd.param5))
+        self.assertTrue(math.isnan(cmd.param6))
+        _inject_origin(node, 0.0)
+        tp.send_flight("takeoff", alt_m=2.5)
+        self.assertEqual(_commands(node)[-1].param7, 2.5)
+        _inject_origin(node, -10.0)
+        tp.send_flight("takeoff", alt_m=2.5)
+        self.assertEqual(_commands(node)[-1].param7, -7.5)
+
+    def test_takeoff_refuses_a_missing_invalid_or_non_finite_origin(self):
+        tp, node = _open()
+        with self.assertRaises(Px4CommandRefused) as missing:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("missing", str(missing.exception))
+        _inject_origin(node, xy_global=False)
+        with self.assertRaises(Px4CommandRefused) as xy:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("not valid", str(xy.exception))
+        _inject_origin(node, z_global=False)
+        with self.assertRaises(Px4CommandRefused) as zed:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("not valid", str(zed.exception))
+        _inject_origin(node, float("nan"))
+        with self.assertRaises(Px4CommandRefused) as nan:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("not finite", str(nan.exception))
+        _inject_origin(node, float("inf"))
+        with self.assertRaises(Px4CommandRefused) as infinite:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("not finite", str(infinite.exception))
+        _inject_origin(node, include_ref=False)
+        with self.assertRaises(Px4CommandRefused) as absent:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("missing", str(absent.exception))
+        _inject_origin(node, 1e308)
+        with self.assertRaises(Px4CommandRefused) as overflow:
+            tp.send_flight("takeoff", alt_m=1e308)
+        self.assertIn("not finite", str(overflow.exception))
+        self.assertEqual(_commands(node), [])
+
+    def test_takeoff_refuses_a_stale_origin(self):
+        clock = _Clock()
+        tp, node = _open(clock=clock)
+        _inject_origin(node)
+        clock.advance(TAKEOFF_REF_FRESH_S)
+        tp.send_flight("takeoff", alt_m=2.5)
+        self.assertEqual(_commands(node)[-1].param7, _ORIGIN_AMSL + 2.5)
+        clock.advance(1e-6)
+        with self.assertRaises(Px4CommandRefused) as stale:
+            tp.send_flight("takeoff", alt_m=2.5)
+        self.assertIn("stale", str(stale.exception))
+        self.assertEqual(len(_commands(node)), 1)
+        _inject_origin(node, 500.0)
+        tp.send_flight("takeoff", alt_m=2.0)
+        self.assertEqual(_commands(node)[-1].param7, 502.0)
+
+    def test_namespaced_takeoff_reads_and_publishes_namespaced_topics(self):
+        tp, node = _open("px4+dds://127.0.0.1:8888?ns=uav1")
+        self.assertIn("/uav1/fmu/out/vehicle_local_position_v1", tp.subscription_topics)
+        self.assertNotIn("/fmu/out/vehicle_local_position_v1", tp.subscription_topics)
+        self.assertIn("/uav1/fmu/in/vehicle_command", node.publishers)
+        self.assertNotIn("/fmu/in/vehicle_command", node.publishers)
+        _inject_origin(
+            node, topic="/uav1/fmu/out/vehicle_local_position_v1", ref_alt=488.0
+        )
+        tp.send_flight("takeoff", alt_m=2.5)
+        cmds = _commands(node, "uav1")
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0].command, VEHICLE_CMD_NAV_TAKEOFF)
+        self.assertEqual(cmds[0].param7, 490.5)
+        self.assertTrue(math.isnan(cmds[0].param5))
+        self.assertTrue(math.isnan(cmds[0].param6))
 
     def test_enu_position_is_converted_to_ned(self):
         tp, node = _open()
@@ -1016,6 +1127,7 @@ class TestRobotDispatch(unittest.TestCase):
         bot = Robot(spec, tp, NativeRuntime())
         try:
             bot.arm_flight()
+            _inject_origin(node)
             bot.takeoff(2.5)
         finally:
             bot.disconnect()
@@ -1023,7 +1135,9 @@ class TestRobotDispatch(unittest.TestCase):
         self.assertEqual(cmds[0].command, 400)
         self.assertEqual(cmds[0].param1, 1.0)
         self.assertEqual(cmds[1].command, 22)
-        self.assertEqual(cmds[1].param7, 2.5)
+        self.assertEqual(cmds[1].param7, _ORIGIN_AMSL + 2.5)
+        self.assertTrue(math.isnan(cmds[1].param5))
+        self.assertTrue(math.isnan(cmds[1].param6))
 
     def test_ground_robot_arm_flight_does_not_publish(self):
         tp, node = _open()
@@ -1121,6 +1235,9 @@ class TestPx4AerialSafetyGate(unittest.TestCase):
             SimpleNamespace(
                 xy_valid=True,
                 z_valid=True,
+                xy_global=True,
+                z_global=True,
+                ref_alt=_ORIGIN_AMSL,
                 v_xy_valid=False,
                 v_z_valid=False,
                 x=x,
@@ -1230,12 +1347,15 @@ class TestPx4AerialSafetyGate(unittest.TestCase):
             [
                 (VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0, 0.0, 0.0),
                 (VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0, 0.0, 0.0, 0.0),
-                (VEHICLE_CMD_NAV_TAKEOFF, 0.0, 0.0, 0.0, 2.5),
+                (VEHICLE_CMD_NAV_TAKEOFF, 0.0, 0.0, 0.0, _ORIGIN_AMSL + 2.5),
                 (VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0, 3.0, 0.0),
                 (VEHICLE_CMD_NAV_RETURN_TO_LAUNCH, 0.0, 0.0, 0.0, 0.0),
                 (VEHICLE_CMD_NAV_LAND, 0.0, 0.0, 0.0, 0.0),
             ],
         )
+        takeoff = next(c for c in cmds if c.command == VEHICLE_CMD_NAV_TAKEOFF)
+        self.assertTrue(math.isnan(takeoff.param5))
+        self.assertTrue(math.isnan(takeoff.param6))
         self.assertEqual(_nums(_setpoints(node)[-1].velocity), [0.2, 0.0, 0.0])
         names = [rec["flight_request"] for rec in self._records("flight")]
         self.assertEqual(
