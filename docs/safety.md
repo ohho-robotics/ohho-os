@@ -116,6 +116,38 @@ not accept that command (`sent: false`); the gate is left with zero velocity.
 `ohho mcp connect` records `ohho mcp serve` with no `--allow-hardware` and
 no `--arm`.
 
+### Aircraft tools (OHH-293)
+
+The same server registers `drone_connect`, `drone_telemetry`,
+`drone_velocity`, `drone_hold`, and `drone_land`. It does not register
+`drone_arm`, `drone_takeoff`, `drone_rtl`, or `release_stop`. A future tool
+with one of those names, or a name that changes the geofence, fails when the
+tool list is built. `drone_mcp_allowed` is that check for `hold`, `land`,
+and `offboard_velocity`.
+
+`drone_connect` does not call `Robot.arm()` or `Robot.arm_flight()`.
+`OHHO_ARM_HARDWARE=1` in the server environment does not arm: stdin is not
+an interactive terminal. `drone_velocity` on hardware returns `not_armed`
+and does not send the setpoint until a human has armed the gate from their
+own terminal.
+
+Caps are applied before the backend. Horizontal speed is 1.5 m/s, vertical
+speed 1.0 m/s, yaw rate 0.8 rad/s. The altitude ceiling is 3 m on `sim://`
+and the gate's geofence ceiling on hardware. A setpoint that is already
+outside that cylinder, or that the clamped velocity would leave within the
+command window, is an error. The tool requests hold and does not clip the
+position onto the fence.
+
+`drone_land` is always attempted, including when `--allow-hardware` was not
+passed. `emergency_stop` is always allowed and latches. On a gated aircraft
+it uses the drone e-stop map (land in the air, hold then land when the
+landed state is unknown, disarm only on the ground at or below 0.25 m). On
+`drone-sim` the simulator freezes horizontal motion and descends. Neither
+path is a force-disarm.
+
+Every drone tool result includes `"backend": "sim"` or `"backend": "hardware"`.
+Details and the tool table are in [mcp.md](mcp.md).
+
 ## Profiles
 
 | Robot | `max_vx` | `max_vy` | `max_wz` | accel x / y / yaw | Notes |
