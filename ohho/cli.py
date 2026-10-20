@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from typing import Optional
@@ -56,12 +57,31 @@ def _cmd_doctor(args) -> int:
 
 
 def _cmd_list(args) -> int:
-    if getattr(args, "plugins", False):
+    plugins_flag = getattr(args, "plugins", False)
+    json_flag = getattr(args, "json", False)
+    ci_sim_flag = getattr(args, "ci_sim", False)
+    if plugins_flag and (json_flag or ci_sim_flag):
+        print(
+            "error: --plugins cannot be combined with --json or --ci-sim",
+            file=sys.stderr,
+        )
+        return 2
+    if plugins_flag:
         from .plugins import format_plugin_report
 
         # Register clean plugins first so ``ohho list`` and ``--plugins`` agree.
         list_specs()
         print(format_plugin_report())
+        return 0
+    if json_flag or ci_sim_flag:
+        if not (json_flag and ci_sim_flag):
+            print("error: pass both --json and --ci-sim", file=sys.stderr)
+            return 2
+        from .plugins import ci_sim_matrix_rows
+
+        # One line, no trailing spaces, so the workflow can put it in
+        # ``GITHUB_OUTPUT`` and ``fromJson`` it as the matrix.
+        print(json.dumps(ci_sim_matrix_rows(), separators=(",", ":")))
         return 0
     for s in list_specs():
         caps = ", ".join(s.capabilities) or "—"
@@ -530,6 +550,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--plugins",
         action="store_true",
         help="show each robot plugin, its specs, and any load error",
+    )
+    listed.add_argument(
+        "--json",
+        action="store_true",
+        help="print one JSON line (only together with --ci-sim)",
+    )
+    listed.add_argument(
+        "--ci-sim",
+        action="store_true",
+        help="with --json, list specs that opt into the sim CI matrix",
     )
     listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)

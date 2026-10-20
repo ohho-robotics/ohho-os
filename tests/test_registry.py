@@ -91,6 +91,7 @@ class TestRobotSpecV2(unittest.TestCase):
         self.assertEqual(spec.robot_class, RobotClass.MOBILE_MANIPULATOR)
         self.assertEqual(robot_class_for_category(spec.category), spec.robot_class)
         self.assertEqual(spec.source, "builtin")
+        self.assertEqual(spec.ci_sim, CiSim(enabled=True, scenario="drive_square"))
         self.assertEqual((spec.max_lin, spec.max_ang), (0.2, 1.0))
         self.assertEqual(spec.joint_groups["arm"], spec.joint_names)
         self.assertEqual(
@@ -106,6 +107,7 @@ class TestRobotSpecV2(unittest.TestCase):
         self.assertEqual(spec.robot_class, RobotClass.QUADRUPED)
         self.assertEqual(robot_class_for_category(spec.category), spec.robot_class)
         self.assertEqual(spec.source, "builtin")
+        self.assertEqual(spec.ci_sim, CiSim(enabled=False, scenario=""))
         self.assertEqual((spec.max_lin, spec.max_ang), (1.5, 2.0))
         self.assertEqual(spec.joint_groups, {})
         self.assertEqual(
@@ -119,6 +121,7 @@ class TestRobotSpecV2(unittest.TestCase):
         self.assertEqual(spec.robot_class, RobotClass.MOBILE_BASE)
         self.assertEqual(robot_class_for_category(spec.category), spec.robot_class)
         self.assertEqual(spec.source, "builtin")
+        self.assertEqual(spec.ci_sim, CiSim(enabled=True, scenario="drive_square"))
         self.assertEqual((spec.max_lin, spec.max_ang), (1.0, 2.0))
         self.assertEqual(spec.capabilities, GENERIC_CAPABILITIES)
         self.assertEqual(
