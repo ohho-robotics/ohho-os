@@ -142,7 +142,8 @@ class TestBoosterSpec(unittest.TestCase):
         self.assertTrue(spec.assets.urdf.endswith("T2_31dof.urdf"))
         self.assertTrue(spec.assets.mjcf.endswith("T2_31dof.xml"))
         self.assertEqual(spec.sim_backend, "humanoid-mujoco")
-        self.assertFalse(spec.ci_sim.enabled)
+        self.assertTrue(spec.ci_sim.enabled)
+        self.assertEqual(spec.ci_sim.scenario, "humanoid_walk")
 
     def test_limits_are_not_looser_than_the_humanoid_defaults(self):
         generic = default_limits(RobotClass.HUMANOID, 0.5, 1.0)
@@ -215,6 +216,17 @@ class TestBoosterDiscovery(unittest.TestCase):
             self.assertNotIn("error:", report)
             info_schemes = report
             self.assertNotIn("booster://", info_schemes)
+            code, text = _stdout(["list", "--json", "--ci-sim"])
+            self.assertEqual(code, 0)
+            rows = {row["robot"]: row for row in json.loads(text)}
+            self.assertIn("booster-t2", rows)
+            self.assertEqual(rows["booster-t2"]["robot_class"], "humanoid")
+            self.assertEqual(rows["booster-t2"]["plugin"], "booster")
+            self.assertEqual(rows["booster-t2"]["scenario"], "humanoid_walk")
+            self.assertIn("/", rows["booster-t2"]["asset_repository"])
+            self.assertEqual(len(rows["booster-t2"]["asset_commit"]), 40)
+            self.assertIn("omnibot", rows)
+            self.assertIn("sim", rows)
 
         with _discovered(without_plugin):
             self.assertNotIn("booster-t2", {spec.id for spec in list_specs()})
@@ -372,6 +384,30 @@ class TestAssetPin(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     assets_mod.fetch_policy(folder / "other", url=blob.as_uri())
                 self.assertIn("sha256", str(caught.exception))
+
+    def test_checkout_keeps_the_mjcf_and_stores_the_checkpoint(self):
+        from ohho_booster import assets as assets_mod
+
+        pin = self.manifest
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mjcf = root / str(pin["paths"]["mjcf"])
+            mjcf.parent.mkdir(parents=True)
+            mjcf.write_text("<mujoco/>", encoding="utf-8")
+            checkpoint = root / "policies" / "walk.pt"
+            with (
+                patch.object(assets_mod, "fetch_assets") as archive,
+                patch.object(assets_mod, "fetch_policy", return_value=checkpoint),
+            ):
+                found_mjcf, found_policy = assets_mod.materialise_checkout(root)
+            archive.assert_not_called()
+            self.assertEqual(found_mjcf, mjcf)
+            self.assertEqual(found_policy, checkpoint)
+            self.assertEqual(assets_mod.matrix_checkout(root), root)
+            self.assertEqual(
+                assets_mod.description_repository(pin),
+                str(pin["upstream"]).removeprefix("https://github.com/").strip("/"),
+            )
 
     def test_network_fetch_matches_pinned_joint_names(self):
         """Compare upstream T2_JOINT_NAMES with the copy in the plugin.

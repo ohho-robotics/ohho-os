@@ -18,6 +18,7 @@ from ohho.plugins import (
     ci_sim_matrix_rows,
     format_matrix_runtime,
     loaded_plugins,
+    materialise_ci_assets,
 )
 from ohho.registry import RobotSpec, register
 from ohho.robot_spec import CiSim
@@ -190,7 +191,10 @@ class TestCiSimList(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(text.endswith("\n\n"))
         rows = json.loads(text)
-        self.assertEqual([row["robot"] for row in rows], ["omnibot", "sim"])
+        self.assertEqual(
+            [row["robot"] for row in rows if row["plugin"] == "builtin"],
+            ["omnibot", "sim"],
+        )
         by_id = {row["robot"]: row for row in rows}
         self.assertEqual(
             by_id["sim"],
@@ -281,14 +285,18 @@ class TestCiSimList(unittest.TestCase):
             self.assertNotIn("{", plain)
             self.assertNotIn("asset_commit", plain)
 
-        self.assertNotIn(_ROBOT, _WORKFLOW.read_text(encoding="utf-8"))
-        self.assertEqual(
-            [
-                row["robot"]
-                for row in json.loads(_stdout(["list", "--json", "--ci-sim"])[1])
-            ],
-            ["omnibot", "sim"],
-        )
+        workflow = _WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn(_ROBOT, workflow)
+        ids = [
+            row["robot"]
+            for row in json.loads(_stdout(["list", "--json", "--ci-sim"])[1])
+        ]
+        self.assertIn("omnibot", ids)
+        self.assertIn("sim", ids)
+        self.assertNotIn(_ROBOT, ids)
+        self.assertNotIn(_PARKED, ids)
+        self.assertNotIn("matrix-blank-scenario", ids)
+        self.assertNotIn("unitree-go2", ids)
 
     def test_bad_asset_source_is_a_load_error_and_not_a_row(self):
         def reader():
@@ -321,6 +329,51 @@ class TestCiSimList(unittest.TestCase):
         self.assertEqual(pin.repository, _REPO)
 
 
+class TestMaterialiseAssets(unittest.TestCase):
+    def test_hook_receives_the_cache_directory(self):
+        seen: list[Path] = []
+
+        class Plugin:
+            name = "matrix-assets"
+
+            def specs(self):
+                return []
+
+            def transports(self):
+                return {}
+
+            def sim_backends(self):
+                return {}
+
+            def safety_policy(self, spec):
+                del spec
+                return None
+
+            def descriptor(self, spec):
+                del spec
+                return None
+
+            def doctor(self, spec, uri=None, read_only=True):
+                del spec, uri, read_only
+                return None
+
+            def materialise_assets(self, dest):
+                seen.append(Path(dest))
+
+        def reader():
+            return [_builtin_entry(), _MemEP("matrix-assets", Plugin)]
+
+        dest = Path("matrix-cache")
+        with _discovered(reader):
+            materialise_ci_assets("matrix-assets", dest)
+            materialise_ci_assets("builtin", dest)
+        self.assertEqual(seen, [dest])
+
+    def test_missing_plugin_is_a_no_op(self):
+        materialise_ci_assets("matrix-absent", Path("unused"))
+        materialise_ci_assets("", Path("unused"))
+
+
 class TestWorkflow(unittest.TestCase):
     def test_workflow_records_runtime_and_does_not_arm_hardware(self):
         text = _WORKFLOW.read_text(encoding="utf-8")
@@ -346,6 +399,13 @@ class TestWorkflow(unittest.TestCase):
         self.assertIn("ArduPilot SITL", text)
         self.assertIn("Isaac", text)
         self.assertNotIn("OHHO_ARM_HARDWARE", text)
+        self.assertNotIn("booster-t2", text)
+        self.assertIn("plugins/*/pyproject.toml", text)
+        self.assertIn("materialise_ci_assets", text)
+        self.assertIn("actions/upload-artifact@v4", text)
+        self.assertIn("if: failure()", text)
+        self.assertIn("conformance-logs/", text)
+        self.assertIn("if-no-files-found: ignore", text)
         self.assertIn(
             ".sim-assets/", (_ROOT / ".gitignore").read_text(encoding="utf-8")
         )

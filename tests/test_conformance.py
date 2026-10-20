@@ -45,24 +45,23 @@ from ohho.testing.conformance.vendors import (
 
 class TestClassRegistry(unittest.TestCase):
     def test_unregistered_classes_are_not_a_pass(self):
-        for robot_class in (
-            RobotClass.QUADRUPED,
-            RobotClass.AERIAL,
-            RobotClass.HUMANOID,
-        ):
+        for robot_class in (RobotClass.QUADRUPED, RobotClass.AERIAL):
             scenario = CLASS_SCENARIOS[robot_class]
             self.assertIsNone(scenario.sim_backend)
             self.assertIn("not registered", scenario.reason)
             self.assertTrue(scenario.name)
 
     def test_registered_classes_name_a_sim_backend(self):
-        for robot_class in (
-            RobotClass.MOBILE_BASE,
-            RobotClass.MOBILE_MANIPULATOR,
-            RobotClass.ARM,
-        ):
+        expected = {
+            RobotClass.MOBILE_BASE: ("kinematic", "drive_square"),
+            RobotClass.MOBILE_MANIPULATOR: ("kinematic", "drive_square"),
+            RobotClass.ARM: ("kinematic", "arm_home"),
+            RobotClass.HUMANOID: ("humanoid-mujoco", "humanoid_walk"),
+        }
+        for robot_class, (backend, name) in expected.items():
             scenario = CLASS_SCENARIOS[robot_class]
-            self.assertEqual(scenario.sim_backend, "kinematic")
+            self.assertEqual(scenario.sim_backend, backend)
+            self.assertEqual(scenario.name, name)
             self.assertEqual(scenario.reason, "")
 
 
@@ -111,7 +110,15 @@ class TestScenarios(unittest.TestCase):
         self.assertEqual(get_spec("omnibot").robot_class, RobotClass.MOBILE_MANIPULATOR)
 
     def test_classes_without_a_robot_are_skipped(self):
-        results = {result.robot_class: result for result in run_all()}
+        from ohho.registry import list_specs
+
+        # The humanoid class has its own scenario test. Hide those specs so
+        # this check still covers a registered class with no robot.
+        specs = [
+            spec for spec in list_specs() if spec.robot_class != RobotClass.HUMANOID
+        ]
+        with patch("ohho.testing.conformance.runner.list_specs", return_value=specs):
+            results = {result.robot_class: result for result in run_all()}
         for robot_class in ("arm", "aerial", "humanoid"):
             self.assertEqual(results[robot_class].status, "skipped", robot_class)
             self.assertNotEqual(results[robot_class].status, "pass")

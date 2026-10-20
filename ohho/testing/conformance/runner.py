@@ -6,7 +6,7 @@ transport whose protocol is not ``simulated``. It does not call
 
 Classes with no sim backend on this branch are registered here with
 ``sim_backend=None``. Running one reports skipped and a reason. That is not
-a pass.
+a pass. The humanoid class runs ``humanoid_walk`` on ``humanoid-mujoco``.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from ohho.registry import RobotSpec, UnknownRobot, get_spec, list_specs
 from ohho.robot_spec import RobotClass
@@ -73,7 +73,9 @@ CLASS_SCENARIOS: dict[RobotClass, ClassScenario] = {
     RobotClass.ARM: ClassScenario(RobotClass.ARM, "arm_home", "kinematic", ""),
     RobotClass.QUADRUPED: _missing(RobotClass.QUADRUPED, "quadruped_walk"),
     RobotClass.AERIAL: _missing(RobotClass.AERIAL, "aerial_square"),
-    RobotClass.HUMANOID: _missing(RobotClass.HUMANOID, "humanoid_walk"),
+    RobotClass.HUMANOID: ClassScenario(
+        RobotClass.HUMANOID, "humanoid_walk", "humanoid-mujoco", ""
+    ),
 }
 
 
@@ -465,6 +467,302 @@ def _estop_torque(spec: RobotSpec, scenario: ClassScenario) -> Check:
         _close_gate(gate, directory)
 
 
+_HUMANOID_BACKEND = "humanoid-mujoco"
+_WALK_SPEED = 0.3
+_YAW_RATE = 0.5
+_WALK_DISTANCE_M = 1.0
+_TURN_RAD = math.pi / 2
+_TURN_TOLERANCE_RAD = 0.2
+_STAND_S = 30.0
+_PREPARE_S = 1.0
+_CHUNK_S = 0.2
+_STOP_SETTLE_S = 2.0
+_STOP_WINDOW_S = 0.5
+_STOP_SPEED_M_S = 0.08
+_MIN_HEIGHT_M = 0.7
+_PUSH_FORCE = (0.0, 10000.0, 2000.0)
+_PUSH_S = 1.0
+_PUSH_WAIT_S = 4.0
+_COMMAND_DT_S = 0.2
+
+
+def _humanoid_views():
+    from ohho.humanoid import HumanoidMode, fall_state_of, is_upright, mode_of
+
+    return HumanoidMode, fall_state_of, is_upright, mode_of
+
+
+def _wrap_angle(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _height_m(transport: Transport) -> float | None:
+    position = getattr(transport, "base_position", None)
+    if position is None:
+        return None
+    return float(position[2])
+
+
+def _damping(transport: Transport) -> bool:
+    mode_enum, _fall_state_of, _is_upright, mode_of = _humanoid_views()
+    if mode_of(transport.read()) is mode_enum.DAMPING:
+        return True
+    gains = getattr(transport, "effective_kp", None)
+    if not callable(gains):
+        return False
+    values = tuple(gains())
+    return bool(values) and all(value == 0.0 for value in values)
+
+
+def _command_window(gate: Any, clock: _Clock, transport: Transport) -> str | None:
+    if gate.latched:
+        return f"latched before the command ({gate.latch_reason})"
+    _fresh(transport)
+    if gate.latched:
+        return f"state latched the gate ({gate.latch_reason})"
+    clock.t += _COMMAND_DT_S
+    return None
+
+
+def _guard_step(transport: Transport, duration: float, gate: Any) -> str | None:
+    """Step while the humanoid stays upright and the gate stays clear."""
+    _mode_enum, fall_state_of, is_upright, _mode_of = _humanoid_views()
+    elapsed = 0.0
+    while elapsed < duration - 1e-12:
+        step = min(_CHUNK_S, duration - elapsed)
+        transport.step(step)
+        elapsed += step
+        if gate.latched:
+            return f"latched during motion ({gate.latch_reason})"
+        sample = transport.read()
+        if not is_upright(sample):
+            return f"left upright ({fall_state_of(sample).value})"
+        if _damping(transport):
+            return "damped while upright"
+        height = _height_m(transport)
+        if height is not None and height < _MIN_HEIGHT_M:
+            return f"base height fell to {height:.3f} m"
+    return None
+
+
+def _fail(name: str, reason: str) -> list[Check]:
+    return [Check(name, "fail", reason)]
+
+
+def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
+    """Prepare, walk 1 m, turn 90 degrees, stop, e-stop, then a push.
+
+    The body commands go through ``SafetyGate``. Sim arming does not read
+    ``OHHO_ARM_HARDWARE``. An upright e-stop holds prepare. A push that
+    leaves the robot fallen latches and damps.
+    """
+    mode_enum, fall_state_of, is_upright, mode_of = _humanoid_views()
+    gate, clock, directory = _with_gate(transport, spec)
+    try:
+        gate.connect()
+        if gate.requires_hardware_arming:
+            return _fail("humanoid_walk", "sim backend required hardware arming")
+        telemetry = _check_telemetry(transport)
+        if telemetry.status != "pass":
+            return [telemetry]
+        clock.t = 0.0
+        problem = _command_window(gate, clock, transport)
+        if problem is not None:
+            return _fail("prepare", problem)
+        if not gate.arm():
+            return _fail("prepare", "sim gate did not arm")
+        if not gate.command("prepare"):
+            return _fail("prepare", "prepare was refused")
+        problem = _guard_step(transport, _PREPARE_S, gate)
+        if problem is not None:
+            return _fail("prepare", problem)
+        if mode_of(transport.read()) is not mode_enum.PREPARE:
+            return _fail("prepare", f"mode is {mode_of(transport.read()).value}")
+        if _damping(transport):
+            return _fail("prepare", "damped while upright")
+
+        problem = _command_window(gate, clock, transport)
+        if problem is not None:
+            return _fail("walk_1m", problem)
+        if not gate.command("walk_mode"):
+            return _fail("walk_1m", "walk_mode was refused")
+        gate.send_velocity(Velocity())
+        problem = _guard_step(transport, _STAND_S, gate)
+        if problem is not None:
+            return _fail("walk_1m", problem)
+        speed = min(_WALK_SPEED, spec.max_lin, gate.profile.max_vx)
+        yaw = min(_YAW_RATE, spec.max_ang, gate.profile.max_wz)
+        if speed <= 0 or yaw <= 0:
+            return _fail("walk_1m", "no walk speed inside the safety cap")
+        problem = _command_window(gate, clock, transport)
+        if problem is not None:
+            return _fail("walk_1m", problem)
+        gate.send_velocity(Velocity(linear_x=speed))
+        sent = getattr(transport, "command", None)
+        if sent is not None and abs(float(sent.linear_x)) < 1e-3:
+            return _fail("walk_1m", "walk command was clamped to zero")
+        origin = _pose(transport)
+        walked = 0.0
+        elapsed = 0.0
+        while walked < _WALK_DISTANCE_M and elapsed < 20.0:
+            problem = _guard_step(transport, _CHUNK_S, gate)
+            elapsed += _CHUNK_S
+            if problem is not None:
+                return _fail("walk_1m", problem)
+            position = _pose(transport)
+            walked = math.hypot(position[0] - origin[0], position[1] - origin[1])
+        if walked < _WALK_DISTANCE_M:
+            return _fail("walk_1m", f"walked {walked:.3f} m")
+
+        _yaw_start = _pose(transport)[2]
+        problem = _command_window(gate, clock, transport)
+        if problem is not None:
+            return _fail("turn_90", problem)
+        gate.send_velocity(Velocity(angular_z=yaw))
+        sent = getattr(transport, "command", None)
+        if sent is not None and abs(float(sent.angular_z)) < 1e-3:
+            return _fail("turn_90", "yaw command was clamped to zero")
+        turned = 0.0
+        elapsed = 0.0
+        while abs(turned) < _TURN_RAD and elapsed < 15.0:
+            problem = _guard_step(transport, _CHUNK_S, gate)
+            elapsed += _CHUNK_S
+            if problem is not None:
+                return _fail("turn_90", problem)
+            turned = _wrap_angle(_pose(transport)[2] - _yaw_start)
+        if abs(turned) < _TURN_RAD - _TURN_TOLERANCE_RAD:
+            return _fail("turn_90", f"turned {turned:.3f} rad")
+
+        gate.send_velocity(Velocity())
+        problem = _guard_step(transport, _STOP_SETTLE_S, gate)
+        if problem is not None:
+            return _fail("stop", problem)
+        settled = _pose(transport)
+        problem = _guard_step(transport, _STOP_WINDOW_S, gate)
+        if problem is not None:
+            return _fail("stop", problem)
+        stopped = _pose(transport)
+        stop_speed = (
+            math.hypot(stopped[0] - settled[0], stopped[1] - settled[1])
+            / _STOP_WINDOW_S
+        )
+        if stop_speed >= _STOP_SPEED_M_S:
+            return _fail("stop", f"speed after stop was {stop_speed:.3f} m/s")
+
+        problem = _command_window(gate, clock, transport)
+        if problem is not None:
+            return _fail("estop_holds_prepare", problem)
+        gate.send_velocity(Velocity(linear_x=speed))
+        problem = _guard_step(transport, 0.4, gate)
+        if problem is not None:
+            return _fail("estop_holds_prepare", problem)
+        gate.emergency_stop()
+        if not gate.latched:
+            return _fail("estop_holds_prepare", "e-stop did not latch")
+        if mode_of(transport.read()) is not mode_enum.PREPARE:
+            return _fail(
+                "estop_holds_prepare",
+                f"mode is {mode_of(transport.read()).value}",
+            )
+        if not is_upright(transport.read()):
+            return _fail(
+                "estop_holds_prepare",
+                f"fall state is {fall_state_of(transport.read()).value}",
+            )
+        if _damping(transport):
+            return _fail("estop_holds_prepare", "damped while upright")
+        if not gate.release_stop():
+            return _fail("push_damp", "could not release the upright e-stop")
+        problem = _command_window(gate, clock, transport)
+        if problem is not None:
+            return _fail("push_damp", problem)
+        if not gate.arm():
+            return _fail("push_damp", "sim gate did not re-arm")
+        inject = getattr(transport, "inject_push", None)
+        if not callable(inject):
+            return _fail("push_damp", "sim backend has no inject_push")
+        inject(_PUSH_FORCE, _PUSH_S)
+        elapsed = 0.0
+        while elapsed < _PUSH_WAIT_S:
+            transport.step(_CHUNK_S)
+            elapsed += _CHUNK_S
+            sample = transport.read()
+            fallen = fall_state_of(sample).value == "fallen"
+            if (
+                gate.latched
+                and gate.latch_reason == "fall"
+                and fallen
+                and _damping(transport)
+            ):
+                return [
+                    telemetry,
+                    Check("prepare", "pass"),
+                    Check("walk_1m", "pass"),
+                    Check("turn_90", "pass"),
+                    Check("stop", "pass"),
+                    Check("estop_holds_prepare", "pass"),
+                    Check("push_damp", "pass"),
+                ]
+        sample = transport.read()
+        return _fail(
+            "push_damp",
+            "push did not latch and damp "
+            f"(latched={gate.latched}, reason={gate.latch_reason}, "
+            f"mode={mode_of(sample).value}, fall={fall_state_of(sample).value})",
+        )
+    except (AssertionError, RuntimeError, ValueError, OSError) as exc:
+        text = str(exc)
+        if "not installed" in text.lower():
+            return [Check("scenario", "skipped", text)]
+        return _fail("humanoid_walk", f"{type(exc).__name__}: {text}")
+    finally:
+        _close_gate(gate, directory)
+
+
+def _humanoid_scenario_checks(spec: RobotSpec, scenario: ClassScenario) -> list[Check]:
+    backend = _backend_name(spec, scenario)
+    if backend == _HUMANOID_BACKEND and importlib.util.find_spec("mujoco") is None:
+        return [
+            Check(
+                "scenario",
+                "skipped",
+                "mujoco is not installed; pip install 'ohho-os[humanoid-sim]'",
+            )
+        ]
+    try:
+        from ohho.plugins import _call_prepare_sim
+
+        _call_prepare_sim(spec)
+        transport = open_sim_backend(spec, backend)
+    except Exception as exc:
+        text = str(exc)
+        if "not installed" in text.lower():
+            return [Check("scenario", "skipped", text)]
+        return [Check("sim_backend", "fail", f"{type(exc).__name__}: {exc}")]
+    protocol = str(getattr(transport, "protocol", "") or "")
+    if protocol != _SIM_PROTOCOL:
+        try:
+            transport.disconnect()
+        except Exception:
+            pass
+        return [
+            Check(
+                "sim_backend",
+                "fail",
+                f"sim backend {backend!r} returned protocol {protocol!r}",
+            )
+        ]
+    try:
+        checks = [Check("sim_backend", "pass", backend)]
+        checks.extend(run_humanoid_walk(transport, spec))
+        return checks
+    finally:
+        try:
+            transport.disconnect()
+        except Exception:
+            pass
+
+
 def open_sim_backend(spec: RobotSpec, backend: str) -> Transport:
     """Build ``backend`` from a plugin sim factory. Never a hardware scheme.
 
@@ -503,6 +801,8 @@ def _backend_name(spec: RobotSpec, scenario: ClassScenario) -> str:
 def _scenario_checks(spec: RobotSpec, scenario: ClassScenario) -> list[Check]:
     if scenario.sim_backend is None:
         return [Check("scenario", "skipped", scenario.reason)]
+    if scenario.name == "humanoid_walk":
+        return _humanoid_scenario_checks(spec, scenario)
     backend = _backend_name(spec, scenario)
     try:
         transport = _open_connected(spec, scenario)

@@ -10,7 +10,9 @@ read-only hook R-06 will dispatch. Discovery does not call those two either.
 ``asset_source`` is optional. When a plugin defines it, discovery stores the
 pinned repository and commit and does not download meshes. The sim matrix
 caches that pin (OHH-316). A plugin with no method, or one that returns
-``None``, has nothing to fetch.
+``None``, has nothing to fetch. ``materialise_assets(dest)`` is also optional.
+The matrix calls it after the checkout so a plugin can put extra pinned files
+into that directory before the cache is saved. Discovery does not call it.
 
 Built-ins use this path. ``pyproject.toml`` registers
 ``ohho.robots.builtin:plugin``. A source checkout that has not been reinstalled
@@ -30,9 +32,11 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.metadata
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -701,6 +705,29 @@ def plugin_sim_backend(
     return factory(spec, address, runtime)
 
 
+def materialise_ci_assets(
+    plugin_name: str | None = None, dest: Path | None = None
+) -> None:
+    """Ask one plugin to fill a sim-matrix asset directory.
+
+    ``plugin_name`` defaults to ``MATRIX_PLUGIN``. ``dest`` defaults to
+    ``.sim-assets/<plugin>``. A plugin with no ``materialise_assets`` is
+    left as the checkout wrote it. This does not choose a robot id.
+    """
+    name = (
+        plugin_name if plugin_name is not None else os.environ.get("MATRIX_PLUGIN", "")
+    )
+    if not name:
+        return
+    root = dest if dest is not None else Path(".sim-assets") / name
+    plugin = plugin_named(name)
+    if plugin is None:
+        return
+    hook = getattr(plugin, "materialise_assets", None)
+    if callable(hook):
+        hook(root)
+
+
 def _call_prepare_sim(spec: RobotSpec) -> None:
     """Let the plugin that owns ``spec`` fetch or bind a sim config.
 
@@ -732,6 +759,7 @@ __all__ = [
     "format_matrix_runtime",
     "format_plugin_report",
     "loaded_plugins",
+    "materialise_ci_assets",
     "plugin_named",
     "plugin_sim_backend",
     "plugin_transport",

@@ -230,8 +230,11 @@ A new plugin runs it like this:
    stale command zeros velocity and that e-stop latches.
 4. An `arm` moves to home, clamps a joint command to the safety profile, and
    disables torque on e-stop in sim.
-5. `quadruped`, `aerial` and `humanoid` stay in the kit registry with no sim
-   backend. The report is skipped, with the reason, and is not a pass.
+5. `humanoid` runs `humanoid_walk` on `humanoid-mujoco`: prepare, walk 1 m,
+   turn 90 degrees, stop, e-stop while walking (hold prepare, do not damp
+   while upright), then an injected push that latches the fall and damps.
+   `quadruped` and `aerial` stay in the kit registry with no sim backend.
+   That report is skipped, with the reason, and is not a pass.
 
 Every run also checks the telemetry schema, that MCP payloads carry `backend`
 and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that
