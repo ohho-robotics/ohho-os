@@ -2,6 +2,7 @@
   "name": "booster_assets",
   "upstream": "https://github.com/BoosterRobotics/booster_assets",
   "commit": "12a97516f57469078707afb587a5f84c1cb110d1",
+  "sha256": "33b75599cf26816beca1e7f2f71dd3b862ceeb0962a248c1027c84b1406e3a13",
   "licence": "BSD-3-Clause",
   "copyright": "Copyright (c) 2025, BoosterRobotics",
   "paths": {
@@ -9,5 +10,15 @@
     "mjcf": "robots/T2/T2_31dof/T2_31dof.xml",
     "meshes": "robots/T2/T2_31dof/meshes",
     "joint_names_module": "src/booster_assets/motions.py"
+  },
+  "policies": {
+    "walk": {
+      "name": "t2_walk.pt",
+      "upstream": "https://github.com/BoosterRobotics/booster_deploy",
+      "commit": "7bb1462e2ac742eba5c01659b815e2e99fbe617f",
+      "path": "tasks/locomotion/robots/t2/models/t2_walk.pt",
+      "sha256": "acdeefbd6fff460e756f2329a7dc459504750e52c296af618b5292cd1b433aa7",
+      "licence": "Apache-2.0"
+    }
   }
 }

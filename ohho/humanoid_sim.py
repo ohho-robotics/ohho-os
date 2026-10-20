@@ -14,9 +14,9 @@ not interpret them.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Union
+from typing import Protocol, Union
 
 from .humanoid import FallState
 
@@ -39,6 +39,31 @@ _VECTOR_TERMS = frozenset({"base_ang_vel", "projected_gravity", "command"})
 _JOINT_TERMS = frozenset({"q", "dq", "last_action"})
 
 Number = Union[float, Sequence[float]]
+_HISTORY_INIT = frozenset({"zeros", "repeat"})
+
+
+class ObservationExtra(Protocol):
+    """Plugin state appended after the named observation terms.
+
+    ``reset`` runs when locomotion starts. ``extend`` returns the extra
+    values for one frame. The runner does not interpret them.
+    """
+
+    def reset(self) -> None:
+        """Drop state so the next frame is a fresh start."""
+
+    def extend(
+        self,
+        *,
+        yaw: float,
+        command: tuple[float, float, float],
+        dt: float,
+    ) -> tuple[float, ...]:
+        """Extra observation values for this policy step.
+
+        ``yaw`` is the base yaw in radians. ``command`` is ``(vx, vy, yaw
+        rate)``. ``dt`` is the policy period in seconds.
+        """
 
 
 @dataclass(frozen=True)
@@ -67,8 +92,16 @@ class PolicyLayout:
     ``joint_names`` is the order of ``q``, ``dq`` and the action vector. It may
     differ from the PD joint order. ``action_scale`` maps the network output
     onto a joint-position offset: ``q_target = default_q + action * scale``.
-    ``q_relative`` subtracts ``default_q`` from the position term. ``rate_hz``
-    is how often the network runs; the default is 50. An empty ``checkpoint``
+    A single number applies to every policy joint. A sequence has one scale
+    per policy joint. ``q_relative`` subtracts ``default_q`` from the position
+    term. ``rate_hz`` is how often the network runs; the default is 50.
+
+    ``history_length`` stacks that many frames, oldest first, before the
+    network call. ``history_init`` ``zeros`` fills every frame but the latest
+    with zeros on the first call. ``repeat`` copies the first frame. Length 1
+    leaves the observation as one frame. ``clip_observation`` and
+    ``clip_action`` limit each element when set. ``extra_factory`` builds the
+    object whose values are appended to each frame. An empty ``checkpoint``
     means no policy is loaded.
     """
 
@@ -76,10 +109,15 @@ class PolicyLayout:
     terms: tuple[ObservationTerm, ...] = field(
         default_factory=default_observation_terms
     )
-    action_scale: float = 1.0
+    action_scale: Number = 1.0
     rate_hz: float = DEFAULT_POLICY_RATE_HZ
     checkpoint: str = ""
     q_relative: bool = False
+    history_length: int = 1
+    history_init: str = "zeros"
+    clip_observation: float | None = None
+    clip_action: float | None = None
+    extra_factory: Callable[[], ObservationExtra] | None = None
 
     def __post_init__(self) -> None:
         names = _names(self.joint_names, "policy joint_names")
@@ -87,13 +125,29 @@ class PolicyLayout:
         if not self.terms:
             raise ValueError("policy observation terms must not be empty")
         object.__setattr__(self, "terms", tuple(self.terms))
-        _finite("action_scale", self.action_scale)
+        object.__setattr__(
+            self, "action_scale", _action_scale(self.action_scale, len(names))
+        )
         if self.rate_hz <= 0 or not math.isfinite(self.rate_hz):
             raise ValueError("policy rate_hz must be a finite number > 0")
         if not isinstance(self.checkpoint, str):
             raise TypeError("checkpoint must be a string")
         if not isinstance(self.q_relative, bool):
             raise TypeError("q_relative must be a bool")
+        if isinstance(self.history_length, bool) or not isinstance(
+            self.history_length, int
+        ):
+            raise TypeError("history_length must be an int")
+        if self.history_length < 1:
+            raise ValueError("history_length must be >= 1")
+        if self.history_init not in _HISTORY_INIT:
+            raise ValueError("history_init must be 'zeros' or 'repeat'")
+        object.__setattr__(
+            self, "clip_observation", _optional_clip(self.clip_observation)
+        )
+        object.__setattr__(self, "clip_action", _optional_clip(self.clip_action))
+        if self.extra_factory is not None and not callable(self.extra_factory):
+            raise TypeError("extra_factory must be callable or None")
 
 
 @dataclass(frozen=True)
@@ -103,7 +157,9 @@ class HumanoidSimConfig:
     ``joint_names`` is the PD order. ``kp``, ``kd`` and ``default_q`` follow
     that order. A single number is applied to every joint. ``default_q`` is
     the pose ``prepare`` holds. ``policy`` is optional: ``prepare``, ``damp``
-    and ``custom`` run with it left as ``None``.
+    and ``custom`` run with it left as ``None``. ``timestep`` replaces the
+    MJCF timestep when set. ``base_pos`` is the floating-base ``(x, y, z)``
+    written on connect, with the joints placed at ``default_q``.
     """
 
     mjcf: str
@@ -113,6 +169,8 @@ class HumanoidSimConfig:
     default_q: Number = 0.0
     policy: PolicyLayout | None = None
     base_body: str = ""
+    timestep: float | None = None
+    base_pos: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mjcf, str) or not self.mjcf.strip():
@@ -130,6 +188,12 @@ class HumanoidSimConfig:
             raise TypeError("policy must be a PolicyLayout or None")
         if not isinstance(self.base_body, str):
             raise TypeError("base_body must be a string")
+        if self.timestep is not None:
+            step = _finite("timestep", self.timestep)
+            if step <= 0:
+                raise ValueError("timestep must be > 0")
+            object.__setattr__(self, "timestep", step)
+        object.__setattr__(self, "base_pos", _optional_vec3(self.base_pos))
 
 
 _BOUND: dict[str, HumanoidSimConfig] = {}
@@ -296,6 +360,54 @@ def observation_size(n_joints: int, terms: Sequence[ObservationTerm]) -> int:
     return total
 
 
+def clip_vector(values: Sequence[float], limit: float | None) -> tuple[float, ...]:
+    """Copy ``values``. When ``limit`` is set, each element is kept inside it."""
+    if limit is not None and (limit < 0 or not math.isfinite(limit)):
+        raise ValueError("clip limit must be >= 0")
+    clipped: list[float] = []
+    for item in values:
+        number = float(item)
+        if limit is not None:
+            number = max(-limit, min(limit, number))
+        clipped.append(number)
+    return tuple(clipped)
+
+
+def append_observation_frame(
+    history: tuple[tuple[float, ...], ...] | None,
+    frame: Sequence[float],
+    *,
+    length: int,
+    init: str,
+) -> tuple[tuple[float, ...], ...]:
+    """Push one observation frame. The oldest frame is first.
+
+    ``history`` is ``None`` on the first call. ``zeros`` starts with empty
+    frames and puts ``frame`` last. ``repeat`` copies ``frame`` into every
+    slot. Later calls drop the oldest frame.
+    """
+    if isinstance(length, bool) or not isinstance(length, int) or length < 1:
+        raise ValueError("history length must be an int >= 1")
+    if init not in _HISTORY_INIT:
+        raise ValueError("history init must be 'zeros' or 'repeat'")
+    current = tuple(float(item) for item in frame)
+    if history is None:
+        if init == "repeat" or length == 1:
+            return tuple(current for _ in range(length))
+        zero = tuple(0.0 for _ in current)
+        return tuple(zero for _ in range(length - 1)) + (current,)
+    if len(history) != length or any(len(item) != len(current) for item in history):
+        raise ValueError("observation history does not match this frame")
+    if length == 1:
+        return (current,)
+    return history[1:] + (current,)
+
+
+def flatten_history(history: Sequence[Sequence[float]]) -> tuple[float, ...]:
+    """One vector, oldest frame first."""
+    return tuple(float(value) for frame in history for value in frame)
+
+
 def _asset_mjcf(spec: object) -> str:
     assets = getattr(spec, "assets", None)
     raw = getattr(assets, "mjcf", "") if assets is not None else ""
@@ -346,6 +458,37 @@ def _broadcast(value: Number, n: int, where: str) -> tuple[float, ...]:
     return tuple(_finite(where, item) for item in value)
 
 
+def _action_scale(value: Number, n: int) -> float | tuple[float, ...]:
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return _finite("action_scale", value)
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError("action_scale must be a number or a sequence of numbers")
+    if n == 0:
+        raise ValueError("per-joint action_scale needs policy joint_names")
+    if len(value) != n:
+        raise ValueError(f"action_scale must have {n} values, got {len(value)}")
+    return tuple(_finite("action_scale", item) for item in value)
+
+
+def _optional_clip(value: float | None) -> float | None:
+    if value is None:
+        return None
+    limit = _finite("clip", value)
+    if limit < 0:
+        raise ValueError("clip limit must be >= 0")
+    return limit
+
+
+def _optional_vec3(
+    value: Sequence[float] | None,
+) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        raise TypeError("base_pos must be x, y, z")
+    return _vec3(value, "base_pos")
+
+
 def _finite(where: str, value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{where} must be a real number")
@@ -372,14 +515,18 @@ __all__ = [
     "OBS_TERM_NAMES",
     "UPRIGHT_TILT_RAD",
     "HumanoidSimConfig",
+    "ObservationExtra",
     "ObservationTerm",
     "PolicyLayout",
+    "append_observation_frame",
     "bind_sim_config",
     "bound_sim_config",
     "build_observation",
     "clear_sim_config",
+    "clip_vector",
     "default_observation_terms",
     "fall_state_from_tilt",
+    "flatten_history",
     "observation_size",
     "policy_stride",
     "projected_gravity",
