@@ -209,7 +209,7 @@ class TestPluginDiscovery(unittest.TestCase):
                     "ros2",
                 },
             )
-            self.assertEqual(info.sim_backends, ("kinematic",))
+            self.assertEqual(info.sim_backends, ("kinematic", "humanoid-mujoco"))
 
     def test_external_plugin_is_listed_and_core_does_not_import_it(self):
         mod = "ohho_c02_external_plugin"
@@ -610,6 +610,9 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
                 type(backends["kinematic"](specs["sim"], "", None)).__name__
                 == "SimTransport"
             )
+            humanoid = backends["humanoid-mujoco"](specs["sim"], "", None)
+            assert type(humanoid).__name__ == "HumanoidMujocoTransport"
+            assert humanoid.protocol == "simulated"
             assert bot.safety_policy(specs["omnibot"]) is None
             assert bot.descriptor(specs["omnibot"]) is None
             assert bot.doctor(specs["omnibot"], "sim://", True) is None
@@ -620,6 +623,9 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
                 "unitree_sdk2py",
                 "rclpy",
                 "pymavlink",
+                "mujoco",
+                "onnxruntime",
+                "torch",
             }
             leaked = sorted(forbidden & set(sys.modules))
             if leaked:
