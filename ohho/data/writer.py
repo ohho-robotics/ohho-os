@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .recorder import Episode
 
@@ -44,6 +44,7 @@ def write_dataset(
     repo_id: str,
     fps: float,
     tasks: List[str],
+    robot_type: Optional[str] = None,
 ) -> str:
     """Write episodes to ``root`` in LeRobot v2.1 format. Returns the root path."""
     r = Path(root).expanduser()
@@ -54,7 +55,7 @@ def write_dataset(
 
     _write_tasks(meta_dir, tasks)
     _write_episodes(meta_dir, episodes)
-    _write_info(meta_dir, episodes, repo_id, fps, tasks)
+    _write_info(meta_dir, episodes, repo_id, fps, tasks, robot_type or "omnibot")
     _write_stats(meta_dir, episodes)
     _write_episode_stats(meta_dir, episodes)
 
@@ -111,13 +112,14 @@ def _write_info(
     repo_id: str,
     fps: float,
     tasks: List[str],
+    robot_type: str,
 ) -> None:
     total_frames = sum(ep.length for ep in episodes)
     state_dim = episodes[0].state_dim if episodes else 0
     action_dim = episodes[0].action_dim if episodes else 0
     info = {
         "codebase_version": CODEBASE_VERSION,
-        "robot_type": "omnibot",
+        "robot_type": robot_type,
         "repo_id": repo_id,
         "fps": fps,
         "total_episodes": len(episodes),

@@ -30,7 +30,11 @@ import math
 import os
 import threading
 import time
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Optional
+
+from .config import RobotProfile, load_robot_profile, resolve_robot_id
 
 
 class SimServeUnavailable(RuntimeError):
@@ -108,17 +112,35 @@ class SimServe:
     def __init__(
         self,
         backend: str = "sim",
-        robot: str = "omnibot",
+        robot: str | None = None,
         host: str = "0.0.0.0",
         port: int = 8765,
         rosbridge: str = "ws://localhost:9090",
         rate_hz: float = 20.0,
+        *,
+        home: Path | str | None = None,
+        cwd: Path | str | None = None,
+        environ: Mapping[str, str] | None = None,
+        config_path: Path | str | None = None,
     ) -> None:
         if backend not in ("sim", "ros2"):
             raise ValueError(f"unsupported backend '{backend}' (choose: sim, ros2)")
 
+        explicit = isinstance(robot, str) and bool(robot.strip())
+        self.resolved = resolve_robot_id(
+            robot if explicit else None,
+            home=home,
+            environ=environ,
+            config_path=config_path,
+        )
+        if explicit and home is None and cwd is None and config_path is None:
+            self.profile = RobotProfile(self.resolved.robot_id)
+        else:
+            self.profile = load_robot_profile(
+                self.resolved.robot_id, home=home, cwd=cwd
+            )
         self.backend = backend
-        self.robot_id = robot
+        self.robot_id = self.resolved.robot_id
         self.host = host
         self.port = port
         self.rosbridge_url = rosbridge
@@ -169,8 +191,18 @@ class SimServe:
         if self.backend == "sim":
             from .robot import Robot
 
+            extra: dict[str, Any] = {}
+            if self.profile.sim_backend:
+                extra["sim_backend"] = self.profile.sim_backend
+            if self.profile.asset_path:
+                extra["asset_path"] = self.profile.asset_path
+            if self.profile.safety_overrides:
+                extra["safety_overrides"] = dict(self.profile.safety_overrides)
             self._bot = Robot.connect(
-                self.robot_id, transport="sim://", runtime="native"
+                self.robot_id,
+                transport="sim://",
+                runtime="native",
+                **extra,
             )
         elif self.backend == "ros2":
             self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
@@ -495,18 +527,23 @@ class SimServe:
 
 def serve_sim(
     backend: str = "sim",
-    robot: str = "omnibot",
+    robot: str | None = None,
     host: str = "0.0.0.0",
     port: int = 8765,
     rosbridge: str = "ws://localhost:9090",
     rate_hz: float = 20.0,
     stop_event: Optional[threading.Event] = None,
+    *,
+    home: Path | str | None = None,
+    cwd: Path | str | None = None,
+    environ: Mapping[str, str] | None = None,
+    config_path: Path | str | None = None,
 ) -> None:
     """Serve a robot simulation or rosbridge gateway over WebSocket.
 
     Parameters:
         backend: "sim" or "ros2".
-        robot: robot spec id (e.g. "omnibot").
+        robot: robot spec id. Omit it to use the shared resolver.
         host: WebSocket server host.
         port: WebSocket server port.
         rosbridge: rosbridge WebSocket URL (for "ros2" backend).
@@ -520,5 +557,9 @@ def serve_sim(
         port=port,
         rosbridge=rosbridge,
         rate_hz=rate_hz,
+        home=home,
+        cwd=cwd,
+        environ=environ,
+        config_path=config_path,
     )
     server.run(stop_event=stop_event)

@@ -5,16 +5,27 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from . import __version__
 from . import capabilities as caps
 from .adapters import available_adapters
 from .agent import Agent
+from .config import (
+    ConfigError,
+    RobotProfile,
+    default_home,
+    format_resolved,
+    load_robot_profile,
+    resolve_robot_id,
+)
 from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
+
+_ROBOT_HELP = "robot id (omit to use OHHO_ROBOT, ~/.ohho/config.toml, or sim)"
 
 
 def _cmd_version(args) -> int:
@@ -22,10 +33,111 @@ def _cmd_version(args) -> int:
     return 0
 
 
+def _explicit_robot(args) -> Optional[str]:
+    if not hasattr(args, "robot"):
+        return None
+    value = args.robot
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _normalize_robot_args(args) -> None:
+    """Keep ``ohho agent ROBOT GOAL`` working when the robot positional is optional.
+
+    One positional on ``agent`` is the goal. One positional on ``market run`` is
+    the skill. One positional on ``memory where`` is the label.
+    """
+    command = getattr(args, "command", None)
+    robot = _explicit_robot(args)
+    if command == "agent" and getattr(args, "goal", None) is None and robot:
+        args.goal = robot
+        args.robot = None
+    elif (
+        command == "market"
+        and getattr(args, "action", None) == "run"
+        and getattr(args, "skill_name", None) is None
+        and robot
+    ):
+        args.skill_name = robot
+        args.robot = None
+    elif (
+        command == "memory"
+        and getattr(args, "action", None) == "where"
+        and getattr(args, "label", None) is None
+        and robot
+    ):
+        args.label = robot
+        args.robot = None
+
+
+def _wants_profile(args) -> bool:
+    command = getattr(args, "command", None)
+    action = getattr(args, "action", None)
+    if command in {
+        "doctor",
+        "config",
+        "connect",
+        "sim",
+        "drive",
+        "agent",
+        "sim-serve",
+        "sim-loop",
+        "selftest",
+        "look",
+    }:
+        return True
+    if command == "market" and action == "run":
+        return True
+    if command == "nav" and action in {"goto", "explore", "map"}:
+        return True
+    if command == "memory" and action in {"show", "where", "near", "clear"}:
+        return True
+    return False
+
+
+def _bind_robot(args) -> None:
+    """Resolve the robot once for this invocation and attach it to ``args``."""
+    _normalize_robot_args(args)
+    flag = _explicit_robot(args)
+    home = default_home()
+    resolved = resolve_robot_id(flag, home=home)
+    args.resolved_robot = resolved
+    if hasattr(args, "robot") and flag is None:
+        args.robot = resolved.robot_id
+    if _wants_profile(args):
+        args.robot_profile = load_robot_profile(
+            resolved.robot_id, home=home, cwd=Path.cwd()
+        )
+    else:
+        args.robot_profile = RobotProfile(resolved.robot_id)
+
+
+def _connect_kwargs(args, transport: Optional[str], *, use_profile_transport: bool):
+    """Transport plus profile fields. Empty profiles add no keyword arguments."""
+    profile = getattr(args, "robot_profile", None)
+    extra: dict = {}
+    if isinstance(profile, RobotProfile):
+        if use_profile_transport and transport is None and profile.transport:
+            transport = profile.transport
+        if profile.sim_backend:
+            extra["sim_backend"] = profile.sim_backend
+        if profile.asset_path:
+            extra["asset_path"] = profile.asset_path
+        if profile.safety_overrides:
+            extra["safety_overrides"] = dict(profile.safety_overrides)
+    return transport, extra
+
+
 def _cmd_doctor(args) -> int:
     import importlib.util
 
     from .brains import harness_available
+
+    resolved = getattr(args, "resolved_robot", None)
+    if resolved is None:
+        resolved = resolve_robot_id(_explicit_robot(args), home=default_home())
 
     def have(mod: str) -> bool:
         return importlib.util.find_spec(mod) is not None
@@ -37,6 +149,10 @@ def _cmd_doctor(args) -> int:
     print(f"  adapters    : {', '.join(available_adapters())}  (others via extras)")
     print(f"  device      : {resolve_device('auto')}")
     print(f"  robots      : {', '.join(s.id for s in list_specs())}")
+    print(f"  robot       : {resolved.robot_id} ({resolved.source})")
+    profile = getattr(args, "robot_profile", None)
+    if isinstance(profile, RobotProfile) and profile.source:
+        print(f"  profile     : {profile.source}")
     brain = (
         "harness — full perceive→reason→act→reflect"
         if harness_available()
@@ -71,12 +187,14 @@ def _cmd_list(args) -> int:
 
 
 def _connect(args) -> Robot:
+    transport, extra = _connect_kwargs(args, args.transport, use_profile_transport=True)
     bot = Robot.connect(
         args.robot,
-        transport=args.transport,
+        transport=transport,
         runtime=args.runtime,
         safety_config=args.safety_config,
         estop_damp=args.estop_damp,
+        **extra,
     )
     if bot.gated:
         if args.arm:
@@ -118,8 +236,9 @@ def _cmd_connect(args) -> int:
 
 
 def _cmd_sim(args) -> int:
+    transport, extra = _connect_kwargs(args, "sim://", use_profile_transport=False)
     try:
-        bot = Robot.connect(args.robot, transport="sim://", runtime="native")
+        bot = Robot.connect(args.robot, transport=transport, runtime="native", **extra)
     except UnknownRobot as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -186,6 +305,9 @@ def _cmd_drive(args) -> int:
 
 
 def _cmd_agent(args) -> int:
+    if not getattr(args, "goal", None):
+        print('usage: ohho agent [ROBOT] "goal"', file=sys.stderr)
+        return 2
     try:
         bot = _connect(args)
     except UnknownRobot as e:
@@ -231,6 +353,7 @@ def _cmd_sim_serve(args) -> int:
             port=args.port,
             rosbridge=args.rosbridge,
             rate_hz=args.rate,
+            home=default_home(),
         )
     except SimServeUnavailable as e:
         print(f"error: {e}", file=sys.stderr)
@@ -253,6 +376,7 @@ def _cmd_sim_loop(args) -> int:
             device=args.device,
             output_dir=args.output_dir,
             mock=args.mock,
+            home=str(default_home()),
         )
         return 0
     except Exception as e:
@@ -277,6 +401,9 @@ def _cmd_market(args) -> int:
             )
         return 0
     if args.action == "run":
+        if not getattr(args, "skill_name", None):
+            print("usage: ohho market run [ROBOT] SKILL", file=sys.stderr)
+            return 1
         try:
             bot = _connect(args)
         except Exception as e:
@@ -409,6 +536,12 @@ def _cmd_look(args) -> int:
 def _cmd_memory(args) -> int:
     from .memory import SpatialMemory, default_memory_path
 
+    if not getattr(args, "action", None):
+        print("usage: ohho memory [show|where|near|clear]")
+        return 1
+    if args.action == "where" and not getattr(args, "label", None):
+        print("usage: ohho memory where [ROBOT] LABEL", file=sys.stderr)
+        return 1
     memory = SpatialMemory(path=default_memory_path(args.robot))
     if args.action == "show":
         print(memory.describe())
@@ -494,10 +627,24 @@ def _cmd_selftest(args) -> int:
     return 0
 
 
+def _cmd_config(args) -> int:
+    if getattr(args, "action", None) != "show":
+        print("usage: ohho config show")
+        return 1
+    resolved = getattr(args, "resolved_robot", None)
+    if resolved is None:
+        resolved = resolve_robot_id(_explicit_robot(args), home=default_home())
+    profile = getattr(args, "robot_profile", None)
+    if profile is None:
+        profile = load_robot_profile(resolved.robot_id, home=default_home())
+    print(format_resolved(resolved, profile))
+    return 0
+
+
 def _add_robot_args(
     sp: argparse.ArgumentParser, transport_default: Optional[str] = None
 ) -> None:
-    sp.add_argument("robot", help="robot id (see `ohho list`)")
+    sp.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     sp.add_argument(
         "--transport", default=transport_default, help="transport URI, e.g. sim://"
     )
@@ -526,9 +673,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command")
 
-    sub.add_parser(
+    doctor = sub.add_parser(
         "doctor", help="show environment, runtimes, adapters and robots"
-    ).set_defaults(func=_cmd_doctor)
+    )
+    doctor.add_argument("--robot", default=None, help=_ROBOT_HELP)
+    doctor.set_defaults(func=_cmd_doctor)
     listed = sub.add_parser("list", help="list registered robots")
     listed.add_argument(
         "--plugins",
@@ -538,12 +687,21 @@ def build_parser() -> argparse.ArgumentParser:
     listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
 
+    cfg = sub.add_parser("config", help="show the resolved robot id")
+    cfg_sub = cfg.add_subparsers(dest="action")
+    cfg_show = cfg_sub.add_parser(
+        "show", help="print the resolved robot and where it came from"
+    )
+    cfg_show.add_argument("--robot", default=None, help=_ROBOT_HELP)
+    cfg_show.set_defaults(action="show")
+    cfg.set_defaults(func=_cmd_config)
+
     c = sub.add_parser("connect", help="connect and print status + telemetry")
     _add_robot_args(c)
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")
-    s.add_argument("--robot", default="omnibot")
+    s.add_argument("--robot", default=None, help=_ROBOT_HELP)
     s.add_argument("--seconds", type=float, default=8.0)
     s.set_defaults(func=_cmd_sim)
 
@@ -557,7 +715,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("agent", help="hand a natural-language goal to the agent")
     _add_robot_args(a)
-    a.add_argument("goal", help='the goal, e.g. "explore the room"')
+    a.add_argument(
+        "goal",
+        nargs="?",
+        default=None,
+        help='the goal, e.g. "explore the room"',
+    )
     a.set_defaults(func=_cmd_agent)
 
     sv = sub.add_parser("serve", help="serve a trained policy over REST")
@@ -577,7 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["sim", "ros2", "isaac", "mujoco"],
         help="simulation backend (sim, ros2, isaac, mujoco)",
     )
-    ss.add_argument("--robot", default="omnibot", help="robot spec id for sim backend")
+    ss.add_argument("--robot", default=None, help=_ROBOT_HELP)
     ss.add_argument(
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
@@ -598,7 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
         "sim-loop",
         help="run nightly CPU sim loop (record -> validate -> train ACT -> serve -> drive sim)",
     )
-    sl.add_argument("--robot", default="omnibot", help="robot spec ID to simulate")
+    sl.add_argument("--robot", default=None, help=_ROBOT_HELP)
     sl.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )
@@ -640,7 +803,12 @@ def build_parser() -> argparse.ArgumentParser:
     mk_sub.add_parser("list", help="list registered skills").set_defaults(action="list")
     mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
     _add_robot_args(mk_run)
-    mk_run.add_argument("skill_name", help="skill name (see 'ohho market list')")
+    mk_run.add_argument(
+        "skill_name",
+        nargs="?",
+        default=None,
+        help="skill name (see 'ohho market list')",
+    )
     mk_run.set_defaults(action="run")
     mk.set_defaults(func=_cmd_market)
 
@@ -672,20 +840,20 @@ def build_parser() -> argparse.ArgumentParser:
     me = sub.add_parser("memory", help="query the robot's spatio-temporal memory")
     me_sub = me.add_subparsers(dest="action")
     me_show = me_sub.add_parser("show", help="summarize everything remembered")
-    me_show.add_argument("robot")
+    me_show.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     me_show.set_defaults(action="show")
     me_where = me_sub.add_parser("where", help="recall an object's last position")
-    me_where.add_argument("robot")
-    me_where.add_argument("label")
+    me_where.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
+    me_where.add_argument("label", nargs="?", default=None)
     me_where.set_defaults(action="where")
     me_near = me_sub.add_parser("near", help="remembered objects near a point")
-    me_near.add_argument("robot")
+    me_near.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     me_near.add_argument("--x", type=float, required=True)
     me_near.add_argument("--y", type=float, required=True)
     me_near.add_argument("--radius", type=float, default=1.5)
     me_near.set_defaults(action="near")
     me_clear = me_sub.add_parser("clear", help="forget everything")
-    me_clear.add_argument("robot")
+    me_clear.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     me_clear.set_defaults(action="clear")
     me.set_defaults(func=_cmd_memory)
 
@@ -702,7 +870,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
-        "--robot", default="omnibot", help="robot to self-test (default: omnibot)"
+        "--robot",
+        default=None,
+        help=_ROBOT_HELP,
     )
     st.add_argument(
         "--sim",
@@ -749,7 +919,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not getattr(args, "command", None):
             parser.print_help()
             return 0
+        _bind_robot(args)
         return args.func(args)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except BrokenPipeError:
         # stdout was closed early (e.g. piped into `head`) — exit quietly.
         import os
