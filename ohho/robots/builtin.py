@@ -111,7 +111,10 @@ class BuiltinPlugin:
         }
 
     def safety_policy(self, spec: RobotSpec) -> None:
-        """``None`` keeps the class default. ``SafetyGate`` does not read this."""
+        """``None`` keeps the class default (ground, arm or legged).
+
+        ``SafetyGate`` calls this when the robot connects. Discovery does not.
+        """
         del spec
         return None
 
