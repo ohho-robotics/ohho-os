@@ -62,6 +62,7 @@ from ..drone.telemetry import (
     DroneVelocity,
     coerce_landed_state,
     gps_fix_from_mav,
+    landed_state_from_mav,
     positive_up_m,
 )
 from ..registry import RobotSpec
@@ -592,6 +593,113 @@ def _as_float(value: object, default: float = 0.0) -> float:
     return number
 
 
+# HEARTBEAT.base_mode. Standard MAVLink, not a Copter-specific status.
+_MAV_MODE_FLAG_SAFETY_ARMED = 128
+_KNOWN_LANDED = frozenset({"on_ground", "in_air", "takeoff", "landing"})
+
+
+def _field_float(fields: Mapping[str, object], key: str) -> float | None:
+    """A finite number that is actually present. Missing is not zero."""
+    if key not in fields:
+        return None
+    value = fields[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _field_int(fields: Mapping[str, object], key: str) -> int | None:
+    """An integer field. Bools are not numbers. Integral floats are accepted."""
+    if key not in fields:
+        return None
+    value = fields[key]
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        sign = text[1:] if text.startswith("-") else text
+        if sign.isdigit():
+            return int(text)
+    return None
+
+
+def _mavlink_state_fields(
+    message_name: object, fields: Mapping[str, object]
+) -> dict[str, object]:
+    """Fields a real MAVLink message contributes to the vehicle sample.
+
+    An unknown message, or a known message with no usable field, contributes
+    nothing. Missing numbers are left alone; they are not stored as zero.
+    """
+    if not isinstance(message_name, str):
+        return {}
+    name = message_name.strip().upper()
+    if name == "LOCAL_POSITION_NED":
+        x = _field_float(fields, "x")
+        y = _field_float(fields, "y")
+        z = _field_float(fields, "z")
+        if x is None or y is None or z is None:
+            return {}
+        updates: dict[str, object] = {"x": x, "y": y, "z": z}
+        for key in ("vx", "vy", "vz"):
+            speed = _field_float(fields, key)
+            if speed is not None:
+                updates[key] = speed
+        return updates
+    if name == "ATTITUDE":
+        roll = _field_float(fields, "roll")
+        pitch = _field_float(fields, "pitch")
+        yaw = _field_float(fields, "yaw")
+        if roll is None or pitch is None or yaw is None:
+            return {}
+        updates = {"roll": roll, "pitch": pitch, "yaw": yaw}
+        rate = _field_float(fields, "yawspeed")
+        if rate is not None:
+            updates["yaw_rate"] = rate
+        return updates
+    if name == "EXTENDED_SYS_STATE":
+        raw = _field_int(fields, "landed_state")
+        if raw is None:
+            return {}
+        landed = landed_state_from_mav(raw).value
+        if landed not in _KNOWN_LANDED:
+            return {}
+        return {"landed_state": landed}
+    if name == "HEARTBEAT":
+        base_mode = _field_int(fields, "base_mode")
+        if base_mode is None:
+            return {}
+        armed = bool(base_mode & _MAV_MODE_FLAG_SAFETY_ARMED)
+        return {"armed": armed}
+    if name == "GPS_RAW_INT":
+        fix = _field_int(fields, "fix_type")
+        if fix is None:
+            return {}
+        return {"gps_fix": gps_fix_from_mav(fix).value}
+    if name == "SYS_STATUS":
+        updates = {}
+        remaining = _field_int(fields, "battery_remaining")
+        if remaining is not None and 0 <= remaining <= 100:
+            updates["battery"] = remaining / 100.0
+        voltage = _field_int(fields, "voltage_battery")
+        if voltage is not None and 0 < voltage < 65535:
+            updates["voltage_v"] = voltage / 1000.0
+        current = _field_int(fields, "current_battery")
+        if current is not None and current >= 0:
+            updates["current_a"] = current / 100.0
+        return updates
+    return {}
+
+
 def _mode_name(value: object) -> str:
     if value is None:
         return "unknown"
@@ -647,6 +755,12 @@ class RecordingLink:
             if isinstance(flags, list):
                 copied["failsafe"] = list(flags)
             return copied
+
+    def apply_telemetry(self, fields: Mapping[str, object]) -> None:
+        """Merge one real vehicle sample. Does not notify subscribers."""
+        with self._lock:
+            self.sample.update(fields)
+            self.sample["link_ok"] = True
 
 
 def _call_plugin(plugin: object, method: str, *args: object) -> None:
@@ -903,6 +1017,17 @@ class MavsdkLink:
                 fn(handler)
             except Exception as exc:
                 log.warning("mavlink: %s failed: %r", name, exc)
+
+    def apply_telemetry(self, fields: Mapping[str, object]) -> None:
+        """Merge one real vehicle sample. Does not notify subscribers.
+
+        ``emit_ingested_telemetry`` is what publishes it. Waking the
+        publisher here would also emit a heartbeat, often still carrying
+        the last pose, and refresh SafetyGate without a new position.
+        """
+        with self._lock:
+            self._sample.update(dict(fields))
+            self._sample["link_ok"] = True
 
     def _update(self, **fields: object) -> None:
         with self._lock:
@@ -1172,6 +1297,7 @@ class MavlinkDroneTransport(BaseTransport):
         self._state = ConnectionState.IDLE
         self._connected_since: float | None = None
         self._latched = False
+        self._ingested_pending = False
         self._lock = threading.Lock()
 
     @property
@@ -1290,6 +1416,49 @@ class MavlinkDroneTransport(BaseTransport):
     def release_stop(self) -> None:
         """Clear the local latch. Does not arm and does not resume offboard."""
         self._latched = False
+
+    def ingest_mavlink(self, message_name: object, fields: Mapping[str, object]) -> bool:
+        """Store one real MAVLink message on the link sample.
+
+        Returns True only when the message carried a usable field. This does
+        not notify SafetyGate subscribers and does not refresh a previous
+        sample. Call :meth:`emit_ingested_telemetry` to publish it.
+        """
+        if not isinstance(fields, Mapping):
+            return False
+        updates = _mavlink_state_fields(message_name, fields)
+        if not updates:
+            return False
+        with self._lock:
+            if self._state != ConnectionState.CONNECTED:
+                return False
+            link = self._link
+        if link is None:
+            return False
+        apply = getattr(link, "apply_telemetry", None)
+        if not callable(apply):
+            return False
+        updates["timestamp"] = time.time()
+        apply(updates)
+        with self._lock:
+            self._ingested_pending = True
+        return True
+
+    def emit_ingested_telemetry(self) -> bool:
+        """Emit the sample from the newest ingested message, once.
+
+        Subscribers, including a SafetyGate wrapped around this transport,
+        receive that sample through ``on_telemetry``. A second call with no
+        new ingested message does not emit again.
+        """
+        with self._lock:
+            if not self._ingested_pending:
+                return False
+            if self._state != ConnectionState.CONNECTED:
+                return False
+            self._ingested_pending = False
+        self._emit_telemetry(self._snapshot())
+        return True
 
     def _on_link_sample(self, _sample: Mapping[str, object]) -> None:
         if self._state == ConnectionState.CONNECTED:

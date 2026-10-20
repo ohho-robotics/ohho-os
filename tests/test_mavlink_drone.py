@@ -919,5 +919,171 @@ class TestTelemetryCallbackDoesNotDeadlock(unittest.TestCase):
         self.assertFalse(recorder.closed)
 
 
+class _ArmClock:
+    def __init__(self) -> None:
+        self.t = 0.0
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+class TestIngestedTelemetryFeedsTheGate(unittest.TestCase):
+    """A real MAVLink message can arm the gate. Repeating it cannot.
+
+    RecordingLink stands in for MAVSDK. Nothing opens a socket.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="ohho-mavlink-feed-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.clock = _ArmClock()
+        self.link = RecordingLink()
+        self.transport = MavlinkDroneTransport(
+            get_spec("px4-sitl"), _SITL, link=self.link
+        )
+        self.gate = SafetyGate(
+            self.transport,
+            get_spec("px4-sitl"),
+            clock=self.clock,
+            audit=AuditLog(self.tmp),
+            auto_tick=False,
+            environ={
+                "CI": "true",
+                "GITHUB_ACTIONS": "true",
+                "OHHO_CI_SIM_ARMING": "1",
+                "OHHO_CI_SITL": "1",
+            },
+            isatty=lambda: False,
+            input_fn=lambda _prompt: "",
+        )
+        self.gate.connect()
+        self.assertFalse(self.gate.requires_hardware_arming)
+
+    def _refuse_reason(self) -> str:
+        with self.assertLogs("ohho.safety", level="WARNING") as logged:
+            self.assertFalse(self.gate.arm())
+        reasons = [line for line in logged.output if "arm_refused" in line]
+        self.assertTrue(reasons, logged.output)
+        return reasons[-1]
+
+    def test_only_a_new_message_makes_the_gate_armable(self) -> None:
+        # The connect-time sample is already older than the gate's window.
+        self.clock.advance(0.5)
+        self.assertFalse(self.transport.emit_ingested_telemetry())
+        self.assertIn("no_fresh_state", self._refuse_reason())
+        self.assertFalse(
+            self.transport.ingest_mavlink(
+                "LOCAL_POSITION_NED", {"x": True, "y": 1.0, "z": 0.0}
+            )
+        )
+        self.assertFalse(self.transport.ingest_mavlink("NO_SUCH", {"x": 1.0}))
+        self.assertFalse(
+            self.transport.ingest_mavlink(
+                "EXTENDED_SYS_STATE", {"landed_state": 0}
+            )
+        )
+        self.assertTrue(
+            self.transport.ingest_mavlink(
+                "LOCAL_POSITION_NED",
+                {"x": 1.5, "y": -2.5, "z": 0.25, "vx": 0.1, "vy": 0.0, "vz": 0.0},
+            )
+        )
+        self.assertTrue(
+            self.transport.ingest_mavlink(
+                "ATTITUDE", {"roll": 0.01, "pitch": -0.02, "yaw": 0.3, "yawspeed": 0.0}
+            )
+        )
+        self.assertTrue(
+            self.transport.ingest_mavlink("EXTENDED_SYS_STATE", {"landed_state": 1})
+        )
+        self.assertTrue(self.transport.ingest_mavlink("GPS_RAW_INT", {"fix_type": 3}))
+        self.assertTrue(
+            self.transport.ingest_mavlink(
+                "SYS_STATUS",
+                {
+                    "battery_remaining": 80,
+                    "voltage_battery": 12600,
+                    "current_battery": 150,
+                },
+            )
+        )
+        pose = self.transport.read().custom["drone"]["pose"]
+        self.assertEqual(pose["x"], 1.5)
+        self.assertEqual(pose["y"], -2.5)
+        self.assertEqual(pose["z"], 0.25)
+        seen: list[object] = []
+        self.transport.on_telemetry(seen.append)
+        self.assertTrue(self.transport.emit_ingested_telemetry())
+        self.assertEqual(len(seen), 1)
+        drone = seen[0].custom["drone"]  # type: ignore[attr-defined]
+        self.assertEqual(drone["landed_state"], "on_ground")
+        self.assertEqual(drone["gps_fix"], "3d")
+        self.assertAlmostEqual(drone["battery"], 0.8)
+        self.assertAlmostEqual(seen[0].battery, 0.8)  # type: ignore[attr-defined]
+        self.assertAlmostEqual(drone["voltage_v"], 12.6)
+        self.assertAlmostEqual(drone["current_a"], 1.5)
+        self.assertAlmostEqual(drone["pose"]["roll"], 0.01)
+        # The same sample must not be emitted again to refresh the gate.
+        self.assertFalse(self.transport.emit_ingested_telemetry())
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(self.gate.arm())
+        self.assertTrue(self.gate.armed)
+        self.gate.disarm()
+        self.assertFalse(self.gate.armed)
+        self.clock.advance(0.5)
+        self.assertFalse(self.transport.emit_ingested_telemetry())
+        self.assertIn("no_fresh_state", self._refuse_reason())
+        self.assertTrue(self.transport.ingest_mavlink("HEARTBEAT", {"base_mode": 0}))
+        self.assertFalse(self.link.read_sample()["armed"])
+        self.assertTrue(self.transport.emit_ingested_telemetry())
+        self.assertTrue(self.gate.arm())
+
+
+class TestMavsdkIngestDoesNotPublishEarly(unittest.TestCase):
+    """MavsdkLink stores an ingested message without waking its publisher.
+
+    The publisher stays the path for MAVSDK plugin callbacks. A raw
+    heartbeat must not emit the current pose until emit_ingested_telemetry.
+    """
+
+    def test_heartbeat_stays_unpublished_until_emit(self) -> None:
+        published: list[object] = []
+        arrived = threading.Event()
+
+        def on_sample(sample: object) -> None:
+            published.append(sample)
+            arrived.set()
+
+        link = MavsdkLink(action=object(), on_sample=on_sample)
+        self.addCleanup(link.close)
+        transport = MavlinkDroneTransport(get_spec("px4-sitl"), _SITL, link=link)
+        transport.connect()
+        self.assertTrue(
+            transport.ingest_mavlink(
+                "LOCAL_POSITION_NED", {"x": 4.0, "y": 5.0, "z": -0.5}
+            )
+        )
+        self.assertTrue(transport.ingest_mavlink("HEARTBEAT", {"base_mode": 0}))
+        self.assertEqual(link._generation, 0)
+        self.assertFalse(link._wake.is_set())
+        self.assertEqual(link.read_sample()["x"], 4.0)
+        self.assertFalse(link.read_sample()["armed"])
+        self.assertFalse(arrived.wait(0.05))
+        self.assertEqual(published, [])
+        seen: list[object] = []
+        transport.on_telemetry(seen.append)
+        self.assertTrue(transport.emit_ingested_telemetry())
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].custom["drone"]["pose"]["x"], 4.0)  # type: ignore[attr-defined]
+        self.assertFalse(transport.emit_ingested_telemetry())
+        link._on_armed(False)
+        self.assertTrue(arrived.wait(1.0))
+        self.assertEqual(len(published), 1)
+        self.assertFalse(published[0]["armed"])  # type: ignore[index]
+
+
 if __name__ == "__main__":
     unittest.main()
