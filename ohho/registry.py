@@ -1,6 +1,7 @@
 """Robot registry and the ``RobotSpec`` capability manifest.
 
-Built-in robots are defined here as data; users add their own with
+Built-in robots are defined here as data and registered by the ``ohho.robots``
+built-in plugin (see :mod:`ohho.plugins`). Users add their own with
 ``register(...)`` or by loading a manifest file (``load_manifest``). A spec says
 what a robot *is* — its class, capabilities, degrees of freedom, limits and
 which adapter speaks its native protocol — not how it does any of it.
@@ -290,7 +291,36 @@ _BUILTINS: dict[str, RobotSpec] = {
     ),
 }
 
+# Filled by plugin discovery on first lookup. Not seeded from ``_BUILTINS``:
+# those specs enter through the ``ohho.robots`` entry point (or the source
+# fallback in ``ohho.plugins``) so a failed plugin cannot hide behind a second copy.
 _REGISTRY: dict[str, RobotSpec] = {}
+_plugins_loaded = False
+_plugins_loading = False
+
+
+def builtin_specs() -> list[RobotSpec]:
+    """Built-in specs, without consulting entry points.
+
+    :class:`ohho.robots.builtin.BuiltinPlugin` returns these. Live lookups go
+    through :func:`list_specs`.
+    """
+    return list(_BUILTINS.values())
+
+
+def _ensure_plugins() -> None:
+    """Register specs from ``ohho.robots`` once. Re-entrant while loading."""
+    global _plugins_loaded, _plugins_loading
+    if _plugins_loaded or _plugins_loading:
+        return
+    _plugins_loading = True
+    try:
+        from .plugins import register_loaded_specs
+
+        register_loaded_specs()
+    finally:
+        _plugins_loading = False
+    _plugins_loaded = True
 
 
 def register(spec: RobotSpec) -> RobotSpec:
@@ -298,18 +328,17 @@ def register(spec: RobotSpec) -> RobotSpec:
 
     Capability names must be in the vocabulary. Parameter objects are checked
     against their schemas. The parameters describe the robot; they do not
-    change safety caps.
+    change safety caps. Plugin specs are loaded first so a later ``register``
+    replaces one id without hiding the others.
     """
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
+    _ensure_plugins()
     _REGISTRY[spec.id] = spec
     return spec
 
 
-for _builtin_spec in _BUILTINS.values():
-    register(_builtin_spec)
-
-
 def get_spec(robot_id: str) -> RobotSpec:
+    _ensure_plugins()
     try:
         return _REGISTRY[robot_id]
     except KeyError:
@@ -320,6 +349,7 @@ def get_spec(robot_id: str) -> RobotSpec:
 
 
 def list_specs() -> list[RobotSpec]:
+    _ensure_plugins()
     return [_REGISTRY[k] for k in sorted(_REGISTRY)]
 
 
