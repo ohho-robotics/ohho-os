@@ -21,8 +21,9 @@ upright. The ``custom["humanoid"]`` block is built in
 
 Low-level :func:`move_joints` is refused unless the mode is ``CUSTOM``, the
 link is simulated, and :func:`policy_allows_low_level_joints` is true. That
-policy hook is false until the class policy lands. On a gated link the call
-still enters the gate, and the gate refuses ``move_joints``.
+hook stays false on an ungated link. A gated link asks
+:class:`ohho.humanoid_policy.HumanoidPolicy`, which allows the command only
+in ``CUSTOM`` on a sim target and applies joint limits.
 """
 
 from __future__ import annotations
@@ -215,8 +216,9 @@ def mode_of(telemetry: Optional[Telemetry]) -> HumanoidMode:
 def policy_allows_low_level_joints() -> bool:
     """Whether the class policy allows low-level joint targets.
 
-    Always false here. The humanoid policy that can return true is a later
-    change. Callers still have to be in ``CUSTOM`` on a simulated link.
+    Always false. An ungated link therefore refuses low-level joints. The
+    gate's humanoid policy is what allows them, and only in ``CUSTOM`` on a
+    sim target. Callers still have to be in ``CUSTOM`` on a simulated link.
     """
     return False
 
@@ -263,6 +265,23 @@ def get_up(robot: _R) -> _R:
 def lie_down(robot: _R) -> _R:
     """Run the lie-down recovery. No-op without ``humanoid.posture``."""
     return _posture(robot, "lie_down")
+
+
+_POSTURE_ACTIONS = frozenset(
+    {"prepare", "walk_mode", "damp", "custom", "get_up", "lie_down"}
+)
+
+
+def apply_posture(robot: _R, action: str) -> _R:
+    """Send one posture action. No-op without ``humanoid.posture``.
+
+    ``action`` is the transport name: ``prepare``, ``walk_mode``, ``damp``,
+    ``custom``, ``get_up`` or ``lie_down``. Callers that have already checked
+    the spec's declared modes use this so sim-serve and ``Robot`` share one path.
+    """
+    if action not in _POSTURE_ACTIONS:
+        raise ValueError(f"unknown posture action {action!r}")
+    return _posture(robot, action)
 
 
 def look(robot: _R, pitch: object, yaw: object) -> _R:
@@ -439,6 +458,7 @@ __all__ = [
     "ACTION_NAMES",
     "FallState",
     "HumanoidMode",
+    "apply_posture",
     "damp",
     "fall_state_of",
     "get_up",
