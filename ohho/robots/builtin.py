@@ -118,6 +118,10 @@ class BuiltinPlugin:
         del spec, uri, read_only
         return None
 
+    def asset_source(self) -> None:
+        """No pinned meshes. The sim matrix skips the asset fetch."""
+        return None
+
 
 def plugin() -> BuiltinPlugin:
     """Entry-point target: ``ohho.robots.builtin:plugin``."""

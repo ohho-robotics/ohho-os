@@ -51,7 +51,8 @@ plugins, extract safety policies, or edit the open drone branches.
 6. **Sims, CI and the console are parameterised by robot.** One CI matrix over
    registered robots, one scenario per robot class, one console sim page driven
    by the descriptor. `RobotSpec.ci_sim` is the opt-in (`enabled` plus a
-   scenario name). The matrix workflow is C-08.
+   scenario name). The matrix workflow is C-08 / OHH-316:
+   `.github/workflows/sim-matrix.yml`, fed by `ohho list --json --ci-sim`.
 
 ## Where plugins live
 
@@ -241,5 +242,5 @@ allowlist also names `feetech` (R-01) and `ardupilot` (R-03).
   Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
   gate delegates to Ground, Arm and Legged policies, and a plugin may only
   tighten class caps. Caps, watchdogs, arming and the e-stop latch are
-  unchanged. The robot-id resolver and the CI matrix remain later issues
-  (C-06, C-08).
+  unchanged. The robot-id resolver remains C-06. The CI matrix is
+  `.github/workflows/sim-matrix.yml` (C-08 / OHH-316).

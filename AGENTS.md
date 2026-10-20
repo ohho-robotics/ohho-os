@@ -51,6 +51,7 @@
 | Robot plugins (`ohho.robots`) | ✅ **OHH-310** — `RobotPlugin` in `ohho/plugins.py`. Built-ins (sim, omnibot, unitree-go2) load through the `ohho.robots` entry point; a source checkout without a reinstall falls back to `ohho.robots.builtin`. `ohho list --plugins` shows each plugin, its specs and any load error. **OHH-313** reads `safety_policy(spec)` when the gate loads (discovery still does not call it). |
 | Transport + sim registries | ✅ **OHH-311** — `resolve_transport` asks `RobotPlugin.transports()` first, then the existing scheme dict (entries unchanged). `sim://` and auto use `RobotSpec.sim_backend` when set (`kinematic` is the built-in backend); an empty name keeps today's simulator. Unknown schemes list each plugin's schemes. `dds://` stays Unitree. |
 | Conformance kit | ✅ **OHH-315** — `python -m ohho.testing.conformance --robot <id>` runs the class scenario on the plugin sim backend only. Quadruped, aerial and humanoid skip with a reason until a sim backend is registered. Vendor-name allowlist: `ohho/testing/conformance/vendor_allowlist.txt`. |
+| Sim CI matrix | ✅ **OHH-316** — `ohho list --json --ci-sim` emits one row per spec with `ci_sim.enabled` (robot id, class, plugin, scenario). `.github/workflows/sim-matrix.yml` runs the class conformance scenario once per row on CPU, sim backends only, and writes that row's runtime to the job summary. Optional plugin `asset_source()` pins `owner/name` plus a commit; the workflow caches it with `actions/cache` and does not vendor meshes. `sim` and the mobile manipulator opt in. The quadruped stays out until its class has a sim backend. |
 | Runtime port + **native** backend | ✅ working (threaded scheduler, pub/sub, timers, params) |
 | **ROS 2** runtime backend | ✅ **M4 complete** — `Ros2Runtime` (rclpy node: timers, pub/sub via topics, params via node params) + `Ros2Transport` (bridges /cmd_vel, /odom, /arm/joint_states). `get_runtime("auto")` prefers ros2 when rclpy present. `ros2://` scheme registered. Fully testable with `FakeRos2Node` (no ROS 2 needed). |
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
@@ -191,7 +192,7 @@ sdk/
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list(--plugins)/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── cli.py            # argparse: doctor/list(--plugins, --json --ci-sim)/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
 │   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
 │   ├── robots/
 │   │   ├── __init__.py   # package for the built-in plugin and example manifests
@@ -327,6 +328,8 @@ ruff check        --exclude robot_ws/src/omnibot_firmware .
   `pip install -e .`, runs `python -m unittest discover -s tests`, then
   `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu, macOS,
   and Windows for Python 3.10, 3.11, 3.12, and 3.13.
+- `.github/workflows/sim-matrix.yml` (OHH-316) is additive. It does not replace
+  `ci.yml`. Rows come from `ohho list --json --ci-sim`.
 - There is no PyPI publish workflow here (that is OHH-20).
 - Editable-install artifacts (`ohho_os.egg-info`, `__pycache__`) are gitignored.
 - The notes that used to live in this section described OmniBotPro's ROS
