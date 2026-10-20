@@ -42,13 +42,45 @@ def _explicit_robot(args) -> Optional[str]:
     return text or None
 
 
+def _normalize_connect_args(args) -> None:
+    """``ohho connect --robot ID --read-only scheme://address``.
+
+    ``--robot`` wins. A positional that contains ``://`` is the transport URI,
+    including when it was parsed into the robot slot because ``--robot`` was set.
+    ``ohho connect ROBOT`` is unchanged.
+    """
+    flag = getattr(args, "robot_flag", None)
+    if isinstance(flag, str):
+        flag = flag.strip() or None
+    else:
+        flag = None
+    positional = args.robot if isinstance(getattr(args, "robot", None), str) else None
+    if isinstance(positional, str):
+        positional = positional.strip() or None
+    uri = getattr(args, "uri", None)
+    if isinstance(uri, str):
+        uri = uri.strip() or None
+    args.uri = uri
+    if flag:
+        if positional and uri is None and "://" in positional:
+            args.uri = positional
+        args.robot = flag
+        return
+    if positional and uri is None and "://" in positional:
+        args.uri = positional
+        args.robot = None
+
+
 def _normalize_robot_args(args) -> None:
     """Keep ``ohho agent ROBOT GOAL`` working when the robot positional is optional.
 
     One positional on ``agent`` is the goal. One positional on ``market run`` is
     the skill. One positional on ``memory where`` is the label.
+    ``ohho connect --robot ID URI`` keeps the id and uses the URI as transport.
     """
     command = getattr(args, "command", None)
+    if command == "connect":
+        _normalize_connect_args(args)
     robot = _explicit_robot(args)
     if command == "agent" and getattr(args, "goal", None) is None and robot:
         args.goal = robot
@@ -168,7 +200,10 @@ def _cmd_doctor(args) -> int:
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
-    return 0
+    uri = None
+    if isinstance(profile, RobotProfile) and profile.transport:
+        uri = profile.transport
+    return _print_plugin_doctor(resolved.robot_id, uri)
 
 
 def _cmd_list(args) -> int:
@@ -185,8 +220,92 @@ def _cmd_list(args) -> int:
     return 0
 
 
+def _print_plugin_doctor(robot_id: str, uri: Optional[str]) -> int:
+    """Print the plugin doctor hook for ``robot_id``. ``0`` when it has none."""
+    from .plugins import plugin_doctor
+
+    report = plugin_doctor(robot_id, uri, read_only=True)
+    if report is None:
+        return 0
+    status = "ok" if report.ok else "FAIL"
+    print(f"  plugin doctor: {status} — {report.summary}")
+    for line in report.details:
+        print(f"    {line}")
+    return 0 if report.ok else 1
+
+
+def _format_telemetry(sample) -> list[str]:
+    """Lines for one telemetry sample, including a humanoid block when present."""
+    lines: list[str] = []
+    if sample and getattr(sample, "odom", None):
+        odom = sample.odom
+        lines.append(f"  odom   : x={odom.x:.3f} y={odom.y:.3f} theta={odom.theta:.3f}")
+    battery = getattr(sample, "battery", None) if sample is not None else None
+    if battery is not None:
+        lines.append(f"  battery: {battery * 100:.0f}%")
+    custom = getattr(sample, "custom", None) if sample is not None else None
+    block = custom.get("humanoid") if isinstance(custom, dict) else None
+    if not isinstance(block, dict):
+        return lines
+    lines.append(f"  mode   : {block.get('mode')}")
+    lines.append(f"  fall   : {block.get('fall_state')}")
+    joints = block.get("joints")
+    if isinstance(joints, dict):
+        for name, body in joints.items():
+            positions = body.get("q") if isinstance(body, dict) else None
+            lines.append(f"  joints.{name}: {positions}")
+    else:
+        lines.append("  joints : —")
+    pack = block.get("battery")
+    if isinstance(pack, dict):
+        lines.append(
+            f"  battery  : fraction={pack.get('fraction')} voltage={pack.get('voltage')}"
+        )
+    return lines
+
+
+def _print_telemetry(sample) -> None:
+    for line in _format_telemetry(sample):
+        print(line)
+
+
+def _stdio_is_tty() -> bool:
+    """True when both streams are interactive. A closed stream is not."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _stream_telemetry(bot: Robot, *, follow: bool) -> int:
+    """Print telemetry. A TTY read-only session keeps printing until Ctrl-C."""
+    print("read-only: publishing nothing")
+    transport = getattr(bot, "transport", None)
+    subscribe = getattr(transport, "on_telemetry", None)
+    unsubscribe = subscribe(_print_telemetry) if callable(subscribe) else None
+    try:
+        if follow:
+            _print_telemetry(bot.telemetry())
+            while True:
+                time.sleep(0.2)
+        else:
+            time.sleep(0.3)
+            _print_telemetry(bot.telemetry())
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if callable(unsubscribe):
+            unsubscribe()
+    return 0
+
+
 def _connect(args) -> Robot:
     transport, extra = _connect_kwargs(args, args.transport, use_profile_transport=True)
+    uri = getattr(args, "uri", None)
+    if isinstance(uri, str) and uri.strip():
+        transport = uri.strip()
+    if getattr(args, "read_only", False):
+        extra["read_only"] = True
     bot = Robot.connect(
         args.robot,
         transport=transport,
@@ -221,14 +340,10 @@ def _cmd_connect(args) -> int:
         print(f"connected: {bot!r}")
         s = bot.status()
         print(f"  status : {s.state.value} — {s.label}")
+        if getattr(args, "read_only", False):
+            return _stream_telemetry(bot, follow=_stdio_is_tty())
         time.sleep(0.3)
-        t = bot.telemetry()
-        if t and t.odom:
-            print(
-                f"  odom   : x={t.odom.x:.3f} y={t.odom.y:.3f} theta={t.odom.theta:.3f}"
-            )
-        if t and t.battery is not None:
-            print(f"  battery: {t.battery * 100:.0f}%")
+        _print_telemetry(bot.telemetry())
     finally:
         bot.disconnect()
     return 0
@@ -694,6 +809,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("connect", help="connect and print status + telemetry")
     _add_robot_args(c)
+    c.add_argument("--robot", default=None, dest="robot_flag", help=_ROBOT_HELP)
+    c.add_argument(
+        "--read-only",
+        action="store_true",
+        dest="read_only",
+        help="subscribe to telemetry and publish nothing",
+    )
+    c.add_argument(
+        "uri",
+        nargs="?",
+        default=None,
+        help="transport URI (scheme://address); with --robot this is the link",
+    )
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")

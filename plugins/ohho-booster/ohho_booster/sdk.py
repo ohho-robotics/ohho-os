@@ -19,9 +19,12 @@ from typing import Any
 
 from .messages import (
     TOPIC_FALL_DOWN,
+    TOPIC_JOINT_CTRL,
+    TOPIC_LOCO_API,
     TOPIC_LOW_STATE,
     TOPIC_ODOMETER,
     TOPIC_ROBOT_STATES,
+    CommandRefused,
     UnknownRobotModel,
     is_supported_model,
     vendor_mode_name,
@@ -36,6 +39,24 @@ _MODE_ACTIONS = {
     "kWalking": "kWalking",
     "kCustom": "kCustom",
 }
+
+# RPCs that change robot state. Read-only mode must not call any of these,
+# and must not publish on the joint-control topic.
+STATE_CHANGING_RPCS = frozenset(
+    {
+        "ChangeMode",
+        "Move",
+        "RotateHead",
+        "GetUp",
+        "LieDown",
+        "MoveHandEndEffector",
+        "MoveDualHandEndEffector",
+        "ControlGripper",
+        "ControlDexterousHand",
+        "ResetOdometry",
+    }
+)
+READ_ONLY_TOPICS = frozenset({TOPIC_JOINT_CTRL, TOPIC_LOCO_API})
 
 
 class SdkUnavailable(RuntimeError):
@@ -86,18 +107,53 @@ def parse_address(address: str) -> tuple[str, int]:
     return host, domain
 
 
-def open_session(address: str, sdk: Any | None = None) -> SdkSession:
-    """Build a session. The SDK is imported only when ``sdk`` is omitted."""
+def open_session(
+    address: str, sdk: Any | None = None, *, read_only: bool = False
+) -> SdkSession:
+    """Build a session. The SDK is imported only when ``sdk`` is omitted.
+
+    ``read_only=True`` still connects and subscribes. State-changing RPCs and
+    joint-control publishes raise :class:`CommandRefused` before the client
+    is called.
+    """
     host, domain = parse_address(address)
     if not host:
         raise ValueError("booster address is empty")
     module = _load_sdk() if sdk is None else sdk
-    return SdkSession(host, domain, module)
+    return SdkSession(host, domain, module, read_only=read_only)
 
 
 def _ok(what: str, result: object) -> None:
     if isinstance(result, int) and not isinstance(result, bool) and result != 0:
         raise CommandFailed(what, result)
+
+
+def _read_robot_info(client: Any, sdk: Any) -> Any:
+    """Robot info object from ``GetRobotInfo``.
+
+    A client that returns the object is used as-is. A client that fills a
+    response argument is used when that type exists and the no-argument call
+    does not return an object. This keeps a one-call mock working.
+    """
+    response_type = getattr(sdk, "GetRobotInfoResponse", None)
+    if response_type is None:
+        info = client.GetRobotInfo()
+        if isinstance(info, int) and not isinstance(info, bool):
+            _ok("GetRobotInfo", info)
+            raise CommandFailed("GetRobotInfo", info)
+        return info
+    try:
+        info = client.GetRobotInfo()
+    except TypeError:
+        info = None
+    else:
+        if info is not None and not isinstance(info, (bool, int)):
+            return info
+        if isinstance(info, int) and not isinstance(info, bool):
+            _ok("GetRobotInfo", info)
+    filled = response_type()
+    _ok("GetRobotInfo", client.GetRobotInfo(filled))
+    return filled
 
 
 def _millis(seconds: float) -> int:
@@ -128,15 +184,19 @@ def _posture(sdk: Any, pose: Sequence[float]) -> Any:
 class SdkSession:
     """One link. ``connect`` reads the model before any subscription or command."""
 
-    def __init__(self, host: str, domain: int, sdk: Any) -> None:
+    def __init__(
+        self, host: str, domain: int, sdk: Any, *, read_only: bool = False
+    ) -> None:
         self.host = host
         self.domain = domain
+        self.read_only = bool(read_only)
         self._sdk = sdk
         self._client: Any = None
         self._subs: list[Any] = []
         self._publisher: Any = None
         self._vendor_mode = "kUnknown"
         self._handler: Callable[[str, object], None] | None = None
+        self._info: Any = None
 
     def connect(self) -> str:
         """Initialise the client and return the reported model.
@@ -149,7 +209,8 @@ class SdkSession:
         client = sdk.B1LocoClient()
         client.Init()
         self._client = client
-        info = client.GetRobotInfo()
+        info = _read_robot_info(client, sdk)
+        self._info = info
         model = getattr(info, "model", None)
         if not is_supported_model(model):
             self.close()
@@ -170,6 +231,22 @@ class SdkSession:
     def mode(self) -> str:
         return self._vendor_mode
 
+    def robot_info(self) -> tuple[str, str]:
+        """Reported model and firmware version. Empty version if absent."""
+        info = self._info
+        if info is None:
+            raise RuntimeError("session is not connected")
+        model = getattr(info, "model", "")
+        version = getattr(info, "version", None)
+        if version is None:
+            version = getattr(info, "firmware_version", None)
+        if version is None:
+            version = getattr(info, "firmware", None)
+        return (
+            "" if model is None else str(model),
+            "" if version is None else str(version),
+        )
+
     def subscribe(self, callback: Callable[[str, object], None]) -> None:
         """Subscribe to the four state topics. Does not publish."""
         self._handler = callback
@@ -188,30 +265,31 @@ class SdkSession:
         self._subs = subs
 
     def change_mode(self, vendor_mode: str) -> None:
+        client = self._writable("ChangeMode")
         if vendor_mode not in _MODE_ACTIONS:
             raise ValueError(f"mode {vendor_mode} is not used")
-        client = self._require_client()
         mode = getattr(self._sdk.RobotMode, vendor_mode)
         _ok("ChangeMode", client.ChangeMode(mode))
         self._vendor_mode = vendor_mode
 
     def move(self, vx: float, vy: float, vyaw: float) -> None:
-        _ok("Move", self._require_client().Move(float(vx), float(vy), float(vyaw)))
+        client = self._writable("Move")
+        _ok("Move", client.Move(float(vx), float(vy), float(vyaw)))
 
     def rotate_head(self, pitch: float, yaw: float) -> None:
-        _ok(
-            "RotateHead",
-            self._require_client().RotateHead(float(pitch), float(yaw)),
-        )
+        client = self._writable("RotateHead")
+        _ok("RotateHead", client.RotateHead(float(pitch), float(yaw)))
 
     def get_up(self) -> None:
-        _ok("GetUp", self._require_client().GetUp())
+        client = self._writable("GetUp")
+        _ok("GetUp", client.GetUp())
 
     def lie_down(self) -> None:
-        _ok("LieDown", self._require_client().LieDown())
+        client = self._writable("LieDown")
+        _ok("LieDown", client.LieDown())
 
     def move_hand(self, side: str, pose: Sequence[float], duration_s: float) -> None:
-        client = self._require_client()
+        client = self._writable("MoveHandEndEffector")
         _ok(
             "MoveHandEndEffector",
             client.MoveHandEndEffector(
@@ -225,7 +303,7 @@ class SdkSession:
         right: Sequence[float],
         duration_s: float,
     ) -> None:
-        client = self._require_client()
+        client = self._writable("MoveDualHandEndEffector")
         _ok(
             "MoveDualHandEndEffector",
             client.MoveDualHandEndEffector(
@@ -236,6 +314,7 @@ class SdkSession:
         )
 
     def control_gripper(self, side: str, command: object) -> None:
+        client = self._writable("ControlGripper")
         sdk = self._sdk
         position, force, speed = _gripper_setpoint(command)
         param = sdk.GripperMotionParameter()
@@ -244,12 +323,13 @@ class SdkSession:
         param.speed = speed
         _ok(
             "ControlGripper",
-            self._require_client().ControlGripper(
+            client.ControlGripper(
                 param, sdk.GripperControlMode.kPosition, _hand(sdk, side)
             ),
         )
 
     def control_hand(self, side: str, fingers: Sequence[float]) -> None:
+        client = self._writable("ControlDexterousHand")
         sdk = self._sdk
         params = [
             sdk.DexterousFingerParameter(index, int(round(angle)), 500, 500)
@@ -257,18 +337,20 @@ class SdkSession:
         ]
         _ok(
             "ControlDexterousHand",
-            self._require_client().ControlDexterousHand(
+            client.ControlDexterousHand(
                 params, _hand(sdk, side), sdk.BoosterHandType.kInspireHand
             ),
         )
 
     def reset_odometry(self) -> None:
-        _ok("ResetOdometry", self._require_client().ResetOdometry())
+        client = self._writable("ResetOdometry")
+        _ok("ResetOdometry", client.ResetOdometry())
 
     def publish_joints(
         self, cmd_type: str, motors: Sequence[Mapping[str, float]]
     ) -> None:
         """Publish one ``LowCmd`` on ``rt/joint_ctrl``. The caller gates this."""
+        self._writable("publish_joints")
         sdk = self._sdk
         if self._publisher is None:
             publisher = sdk.B1LowCmdPublisher()
@@ -297,6 +379,12 @@ class SdkSession:
         if self._client is None:
             raise RuntimeError("session is not connected")
         return self._client
+
+    def _writable(self, rpc: str) -> Any:
+        """Return the client, or refuse before any state-changing call."""
+        if self.read_only:
+            raise CommandRefused(rpc, "read_only")
+        return self._require_client()
 
     def _read_mode(self) -> None:
         client = self._require_client()

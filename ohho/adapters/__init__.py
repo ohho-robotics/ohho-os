@@ -69,13 +69,19 @@ def _split_ports(address: str) -> tuple[str, str]:
 
 
 def _plugins_first(
-    uri: Optional[str], spec: Optional[RobotSpec], runtime: object
+    uri: Optional[str],
+    spec: Optional[RobotSpec],
+    runtime: object,
+    *,
+    read_only: bool = False,
 ) -> Optional[Transport]:
     """Plugin transport, or the spec's sim backend. ``None`` uses the dict below.
 
     ``sim://`` and auto stay on the returns in :func:`resolve_transport` unless
     the spec declares ``sim_backend``. That keeps an undeclared ``sim://`` on
     today's simulator, including any later id-based sim branch in this function.
+    ``read_only`` is forwarded only when set, so existing factories keep the
+    three-argument call.
     """
     from ..plugins import plugin_sim_backend, plugin_transport
 
@@ -85,6 +91,8 @@ def _plugins_first(
     scheme = scheme.lower()
     if scheme in ("sim", "simulated"):
         return plugin_sim_backend(spec, address, runtime)
+    if read_only:
+        return plugin_transport(scheme, spec, address, runtime, read_only=True)
     return plugin_transport(scheme, spec, address, runtime)
 
 
@@ -92,6 +100,8 @@ def resolve_transport(
     uri: Optional[str] = None,
     spec: Optional[RobotSpec] = None,
     runtime=None,
+    *,
+    read_only: bool = False,
 ) -> Transport:
     """Pick a transport for a robot.
 
@@ -108,8 +118,10 @@ def resolve_transport(
     - a scheme a plugin registered → that plugin's factory, asked before this dict.
     - any other scheme → a factory registered by a loaded plugin, or
       ``AdapterUnavailable``.
+    - ``read_only=True`` asks a plugin factory that accepts the flag to
+      subscribe without publishing.
     """
-    routed = _plugins_first(uri, spec, runtime)
+    routed = _plugins_first(uri, spec, runtime, read_only=read_only)
     if routed is not None:
         return routed
     if uri is None:
@@ -137,11 +149,17 @@ def resolve_transport(
         # ``_plugins_first`` already asked stored factories. A miss asks the
         # plugin instance again, so a scheme visible only through ``transports()``
         # still resolves. Built-in schemes stay in ``_HARDWARE``.
-        from ..plugins import describe_plugin_schemes, transport_factory
+        from ..plugins import (
+            describe_plugin_schemes,
+            invoke_transport_factory,
+            transport_factory,
+        )
 
         factory = transport_factory(scheme)
         if factory is not None:
-            return factory(spec, address, runtime)
+            return invoke_transport_factory(
+                factory, spec, address, runtime, read_only=read_only
+            )
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
             f"dds, ros2, or a scheme registered by a loaded plugin — or omit "

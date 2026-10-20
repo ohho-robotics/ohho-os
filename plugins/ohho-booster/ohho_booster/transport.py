@@ -9,6 +9,10 @@ The vendor SDK is not imported here. A session is passed in; the factory in
 :mod:`ohho_booster.factory` is what imports it. Dances, kicks, zero-torque
 drag, trajectory record and replay, custom trained trajectories, and AI/LUI
 clients are refused and are not forwarded to the session.
+
+``read_only=True`` subscribes and builds telemetry. Velocity, mode changes,
+joint commands and every other state-changing call return or raise before
+the session is asked to publish.
 """
 
 from __future__ import annotations
@@ -93,11 +97,19 @@ class BoosterTransport(BaseTransport):
 
     protocol = "booster"
 
-    def __init__(self, spec: object, address: str, session: Any) -> None:
+    def __init__(
+        self,
+        spec: object,
+        address: str,
+        session: Any,
+        *,
+        read_only: bool = False,
+    ) -> None:
         super().__init__()
         self.spec = spec
         self.address = address
         self.host = address.partition("?")[0]
+        self.read_only = bool(read_only)
         self._session = session
         self._lock = threading.Lock()
         self._state = ConnectionState.IDLE
@@ -151,7 +163,12 @@ class BoosterTransport(BaseTransport):
             return self._latest
 
     def send_velocity(self, vel: Velocity) -> None:
-        """Send ``Move`` only in ``WALK``. Other modes drop the command."""
+        """Send ``Move`` only in ``WALK``. Other modes drop the command.
+
+        Read-only mode drops every velocity, including a zero command.
+        """
+        if self.read_only:
+            return
         with self._lock:
             walking = self._generic() is HumanoidMode.WALK
             connected = self._state is ConnectionState.CONNECTED
@@ -167,6 +184,12 @@ class BoosterTransport(BaseTransport):
 
     def send_humanoid(self, action: str, *args: object, **fields: object) -> None:
         """Map one generic action onto the session, or refuse it."""
+        if self.read_only:
+            if isinstance(action, str) and action.strip():
+                label = action.strip()
+            else:
+                label = repr(action)
+            raise CommandRefused(label, "read_only")
         if not isinstance(action, str) or not action.strip():
             raise CommandRefused(repr(action), "invalid_action")
         name = action.strip().lower()

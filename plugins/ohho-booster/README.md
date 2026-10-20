@@ -17,6 +17,14 @@ The plugin does not import `booster_robotics_sdk_python` at import time.
 runs. `booster+ros2://` is registered and refuses to connect: the ROS 2
 distro on the robot is an open question, so that path is not implemented.
 
+`ohho connect --robot booster-t2 --read-only booster://<ip>` subscribes to
+mode, fall state, joints and battery and publishes nothing. Read-only is
+enforced in the session: state-changing RPCs and joint commands are refused
+before they are sent. `ohho doctor --robot booster-t2` runs this plugin's
+doctor hook (SDK installed, robot reachable, model, firmware 1.7.2 or later,
+network interface) through the shared robot-id resolver. Those checks are
+mock-tested and do not command the robot.
+
 ```bash
 pip install -e "plugins/ohho-booster[booster]"
 ```

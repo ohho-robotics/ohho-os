@@ -42,6 +42,7 @@ class Robot:
         sim_backend: Optional[str] = None,
         asset_path: Optional[str] = None,
         safety_overrides: Optional[Mapping[str, Any]] = None,
+        read_only: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -59,6 +60,10 @@ class Robot:
         :class:`~ohho.config.RobotProfile`. They are omitted by existing callers.
         Overrides may only tighten caps; a looser profile is refused at load,
         before this method runs. The gate's own rules are unchanged.
+
+        ``read_only=True`` asks the transport to subscribe and publish nothing.
+        A factory that does not accept the flag is unchanged. The gate still
+        wraps every non-simulated transport.
         """
         spec = get_spec(robot_id)
         if sim_backend or asset_path:
@@ -66,7 +71,7 @@ class Robot:
                 spec, sim_backend=sim_backend, asset_path=asset_path
             )
         rt = get_runtime(runtime)
-        tp = resolve_transport(transport, spec, rt)
+        tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
             cfg = resolve_config(safety_config)
             if safety_overrides:
