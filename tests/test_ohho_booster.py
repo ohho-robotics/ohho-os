@@ -21,7 +21,8 @@ from unittest.mock import patch
 
 from ohho.cli import main
 from ohho.humanoid import HumanoidMode
-from ohho.plugins import BUILTIN_ENTRY_VALUE, ENTRY_GROUP
+from ohho.humanoid_policy import HumanoidPolicy
+from ohho.plugins import BUILTIN_ENTRY_VALUE, ENTRY_GROUP, loaded_plugins
 from ohho.registry import list_specs
 from ohho.robot_spec import HumanoidLimits, RobotClass, default_limits
 from ohho.safety import PROFILES, profile_for
@@ -31,6 +32,14 @@ _PLUGIN = _REPO / "plugins" / "ohho-booster"
 _OHHO = _REPO / "ohho"
 _SDK_MODULES = {"booster_robotics_sdk_python", "booster_robotics_sdk"}
 _VENDOR = re.compile(r"booster|\bt2\b", re.IGNORECASE)
+
+
+def _imported_roots(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [alias.name.split(".")[0] for alias in node.names]
+    if isinstance(node, ast.ImportFrom) and node.module:
+        return [node.module.split(".")[0]]
+    return []
 
 
 def _ensure_plugin_path() -> None:
@@ -157,9 +166,18 @@ class TestBoosterSpec(unittest.TestCase):
         self.assertLessEqual(speed, generic.max_vx)
         self.assertNotIn("booster-t2", PROFILES)
         profile = profile_for("booster-t2", self.spec)
-        self.assertLessEqual(profile.max_vx, 0.3)
-        self.assertLessEqual(profile.max_vy, 0.3)
-        self.assertLessEqual(profile.max_wz, 1.0)
+        self.assertLessEqual(profile.max_vx, generic.max_vx)
+        self.assertLessEqual(profile.max_vy, generic.max_vy)
+        self.assertLessEqual(profile.max_wz, generic.max_wz)
+        # The class profile is the sim ceiling. Hardware caps apply on a
+        # non-sim link, which is what booster:// is.
+        policy = HumanoidPolicy.for_spec(self.spec)
+        self.assertTrue(policy.arming("booster://", {}))
+        active = policy.active_caps()
+        self.assertLessEqual(active.max_vx_forward, 0.3)
+        self.assertLessEqual(active.max_vx_back, 0.2)
+        self.assertLessEqual(active.max_vy, 0.2)
+        self.assertLessEqual(active.max_wz, 0.5)
 
     def test_mode_map_is_plain_data_and_omits_soccer(self):
         self.assertEqual(
@@ -208,6 +226,9 @@ class TestBoosterDiscovery(unittest.TestCase):
             self.assertNotIn("error:", report)
             info_schemes = report
             self.assertNotIn("booster://", info_schemes)
+            info = next(item for item in loaded_plugins() if item.name == "booster")
+            self.assertIsNone(info.error)
+            self.assertEqual(set(info.schemes), {"booster", "booster+ros2"})
 
         with _discovered(without_plugin):
             self.assertNotIn("booster-t2", {spec.id for spec in list_specs()})
@@ -215,10 +236,12 @@ class TestBoosterDiscovery(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertNotIn("booster-t2", listed)
 
-    def test_plugin_declares_no_transport(self):
+    def test_plugin_registers_transport_schemes(self):
         bot = self.factory()
         spec = bot.specs()[0]
-        self.assertEqual(bot.transports(), {})
+        schemes = bot.transports()
+        self.assertEqual(set(schemes), {"booster", "booster+ros2"})
+        self.assertTrue(all(callable(factory) for factory in schemes.values()))
         self.assertEqual(bot.sim_backends(), {})
         self.assertIsNone(bot.safety_policy(spec))
         self.assertIsNone(bot.descriptor(spec))
@@ -228,29 +251,43 @@ class TestBoosterDiscovery(unittest.TestCase):
 class TestNoSdkImport(unittest.TestCase):
     def test_source_has_no_sdk_import(self):
         root = _PLUGIN / "ohho_booster"
+        found_load = False
         for path in root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
+            allowed: set[int] = set()
+            if path.name == "sdk.py":
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.FunctionDef) and node.name == "_load_sdk":
+                        for child in ast.walk(node):
+                            allowed.add(id(child))
             for node in ast.walk(tree):
-                modules: list[str] = []
-                if isinstance(node, ast.Import):
-                    modules = [alias.name.split(".")[0] for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    modules = [node.module.split(".")[0]]
-                overlap = _SDK_MODULES.intersection(modules)
+                if id(node) in allowed:
+                    if _SDK_MODULES.intersection(_imported_roots(node)):
+                        found_load = True
+                    continue
+                overlap = _SDK_MODULES.intersection(_imported_roots(node))
                 self.assertFalse(overlap, f"{path} imports {sorted(overlap)}")
+        self.assertTrue(found_load, "_load_sdk must import the vendor SDK")
+        sdk_text = (root / "sdk.py").read_text(encoding="utf-8")
+        self.assertEqual(sdk_text.count("import booster_robotics_sdk_python"), 1)
+        self.assertNotIn("importlib", sdk_text)
 
     def test_import_does_not_load_the_sdk(self):
         script = (
             "import sys\n"
             f"sys.path.insert(0, {str(_PLUGIN)!r})\n"
+            "before = {n for n in sys.modules if n.startswith('booster_robotics_sdk')}\n"
             "import ohho_booster\n"
             "from ohho_booster import plugin\n"
+            "import ohho_booster.factory\n"
+            "import ohho_booster.sdk\n"
+            "import ohho_booster.transport\n"
             "bot = plugin()\n"
             "spec = bot.specs()[0]\n"
             "assert spec.id == 'booster-t2'\n"
-            "assert bot.transports() == {}\n"
-            "assert 'booster_robotics_sdk_python' not in sys.modules\n"
-            "assert 'booster_robotics_sdk' not in sys.modules\n"
+            "assert set(bot.transports()) == {'booster', 'booster+ros2'}\n"
+            "after = {n for n in sys.modules if n.startswith('booster_robotics_sdk')}\n"
+            "assert after == before\n"
         )
         env = os.environ.copy()
         env.pop("OHHO_ARM_HARDWARE", None)

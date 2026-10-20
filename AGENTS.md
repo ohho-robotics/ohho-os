@@ -49,7 +49,7 @@
 | Capability model + registry | ✅ working (OmniBot, Unitree Go2, generic sim) |
 | RobotSpec v2 | ✅ **OHH-309** — additive `robot_class`, joint groups, per-class limits, assets, `ci_sim`, `source`, `capability_params`. Safety caps unchanged. ADR `docs/architecture/robot-plugins.md` is proposed, awaiting Varun's review. |
 | Robot plugins (`ohho.robots`) | ✅ **OHH-310** — `RobotPlugin` in `ohho/plugins.py`. Built-ins (sim, omnibot, unitree-go2) load through the `ohho.robots` entry point; a source checkout without a reinstall falls back to `ohho.robots.builtin`. `ohho list --plugins` shows each plugin, its specs and any load error. `resolve_transport` and SafetyGate profile lookup are unchanged. **OHH-313** reads `safety_policy(spec)` when the gate loads (discovery still does not call it). |
-| Humanoid plugin package | ✅ **OHH-330** — `plugins/ohho-booster` is a separate distribution. Installing it registers `booster-t2` (`robot_class: humanoid`, 31 joints). No vendor SDK import at load. Description files are fetched at a pinned commit and are not vendored. No `booster://` transport in this package. |
+| Humanoid plugin package | ✅ **OHH-330** — `plugins/ohho-booster` is a separate distribution. Installing it registers `booster-t2` (`robot_class: humanoid`, 31 joints). No vendor SDK import at load. Description files are fetched at a pinned commit and are not vendored. **OHH-332** adds `booster://` (SDK imported only inside the transport factory, mock-tested) and a `booster+ros2://` stub that refuses to connect. |
 | Runtime port + **native** backend | ✅ working (threaded scheduler, pub/sub, timers, params) |
 | **ROS 2** runtime backend | ✅ **M4 complete** — `Ros2Runtime` (rclpy node: timers, pub/sub via topics, params via node params) + `Ros2Transport` (bridges /cmd_vel, /odom, /arm/joint_states). `get_runtime("auto")` prefers ros2 when rclpy present. `ros2://` scheme registered. Fully testable with `FakeRos2Node` (no ROS 2 needed). |
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
@@ -202,7 +202,7 @@ sdk/
 │       ├── builtin.py    # built-in plugin (sim, omnibot, unitree-go2); vendor SDKs stay lazy
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── plugins/
-│   └── ohho-booster/     # separate distribution: humanoid spec, mode map, pinned assets (OHH-330)
+│   └── ohho-booster/     # separate distribution: humanoid spec, mode map, pinned assets (OHH-330); booster:// transport (OHH-332)
 ├── docs/
 │   ├── architecture/
 │   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)

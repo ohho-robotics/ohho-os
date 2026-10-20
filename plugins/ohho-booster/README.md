@@ -11,8 +11,15 @@ ohho list
 
 Uninstalling the package removes `booster-t2` from `ohho list`.
 
-The plugin does not import `booster_robotics_sdk_python`. There is no
-`booster://` transport in this package.
+The plugin does not import `booster_robotics_sdk_python` at import time.
+`booster://<ip>` is the optional extra `booster_robotics_sdk_python==1.6.3`
+(Linux x86_64/aarch64). That SDK is imported only when the transport factory
+runs. `booster+ros2://` is registered and refuses to connect: the ROS 2
+distro on the robot is an open question, so that path is not implemented.
+
+```bash
+pip install -e "plugins/ohho-booster[booster]"
+```
 
 Description files come from
 [booster_assets](https://github.com/BoosterRobotics/booster_assets) at the

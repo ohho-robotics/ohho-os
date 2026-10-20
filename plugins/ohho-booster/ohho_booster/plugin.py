@@ -1,8 +1,8 @@
 """RobotPlugin for the Booster T2 spec.
 
-Importing this module does not import a vendor SDK. There is no transport
-here; the hardware scheme arrives in a later change. ``transports()`` is
-empty so discovery cannot collide with another plugin's schemes.
+Importing this module does not import a vendor SDK. ``transports()`` registers
+``booster://`` and ``booster+ros2://``. The SDK is imported only when the
+``booster://`` factory runs.
 """
 
 from __future__ import annotations
@@ -23,13 +23,18 @@ class BoosterPlugin:
         return [booster_t2_spec()]
 
     def transports(self) -> dict[str, Any]:
-        return {}
+        from .factory import booster_transport, ros2_transport
+
+        return {"booster": booster_transport, "booster+ros2": ros2_transport}
 
     def sim_backends(self) -> dict[str, Any]:
         return {}
 
     def safety_policy(self, spec: RobotSpec) -> None:
-        """``None`` keeps the class default. ``SafetyGate`` does not read this."""
+        """``None`` keeps the class default.
+
+        ``SafetyGate`` loads this and refuses a policy that loosens class caps.
+        """
         del spec
         return None
 
