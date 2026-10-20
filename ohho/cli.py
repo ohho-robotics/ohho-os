@@ -518,6 +518,77 @@ def _add_robot_args(
     )
 
 
+def _cmd_train(args) -> int:
+    from .train import TrainUnavailable, finetune
+
+    try:
+        if args.smoke:
+            from .train.recipes import smoke_finetune
+
+            result = smoke_finetune(
+                args.dataset,
+                args.output,
+                args.policy,
+                steps=args.steps,
+            )
+            print(result["status"])
+            if result["checkpoint"]:
+                print(result["checkpoint"])
+            return 0
+        extra: dict = {}
+        if args.policy == "act":
+            extra["train_steps"] = args.steps
+        path = finetune(
+            args.dataset,
+            args.policy,
+            device=args.device,
+            output_dir=args.output,
+            mock=args.mock,
+            **extra,
+        )
+    except TrainUnavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(path)
+    return 0
+
+
+def _cmd_vla(args) -> int:
+    action = getattr(args, "vla_action", None)
+    try:
+        if action == "collect":
+            from .data.upper_body import record_upper_body_episodes
+
+            path = record_upper_body_episodes(
+                args.robot,
+                args.output,
+                episodes=args.episodes,
+                steps=args.steps,
+                task=args.task,
+            )
+            print(path)
+            return 0
+        if action == "eval":
+            from .humanoid_vla import evaluate_upper_body
+
+            evaluate_upper_body(
+                args.robot,
+                args.checkpoint,
+                args.output,
+                episodes=args.episodes,
+                steps=args.steps,
+            )
+            return 0
+    except (OSError, ValueError, FileNotFoundError, RuntimeError, ImportError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print("usage: ohho vla collect|eval ...", file=sys.stderr)
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -742,6 +813,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow exit code 0 when all checks are skipped in hardware mode",
     )
     st.set_defaults(func=_cmd_selftest)
+
+    tr = sub.add_parser("train", help="fine-tune a policy on a recorded dataset")
+    tr.add_argument("--dataset", required=True, help="dataset root")
+    tr.add_argument(
+        "--policy",
+        default="act",
+        choices=("smolvla", "act", "diffusion", "openvla"),
+    )
+    tr.add_argument("--output", default="./checkpoints", help="checkpoint directory")
+    tr.add_argument("--steps", type=int, default=2, help="ACT steps for --smoke")
+    tr.add_argument(
+        "--smoke",
+        action="store_true",
+        help="a few CPU ACT steps, or a dry-run recipe for other policies",
+    )
+    tr.add_argument(
+        "--mock",
+        action="store_true",
+        help="write a dummy checkpoint without training",
+    )
+    tr.add_argument("--device", default="cpu")
+    tr.set_defaults(func=_cmd_train)
+
+    vla = sub.add_parser("vla", help="collect or evaluate an upper-body policy")
+    vla_sub = vla.add_subparsers(dest="vla_action")
+    collect = vla_sub.add_parser("collect", help="record scripted upper-body episodes")
+    collect.add_argument("robot")
+    collect.add_argument("--episodes", type=int, default=2)
+    collect.add_argument("--steps", type=int, default=8)
+    collect.add_argument("--output", required=True)
+    collect.add_argument("--task", default="reach")
+    collect.set_defaults(func=_cmd_vla)
+    evaluate = vla_sub.add_parser("eval", help="run a checkpoint in the humanoid sim")
+    evaluate.add_argument("robot")
+    evaluate.add_argument("--checkpoint", required=True)
+    evaluate.add_argument("--episodes", type=int, default=2)
+    evaluate.add_argument("--steps", type=int, default=16)
+    evaluate.add_argument("--output", required=True)
+    evaluate.set_defaults(func=_cmd_vla)
+    vla.set_defaults(func=_cmd_vla)
 
     return p
 

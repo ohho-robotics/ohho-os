@@ -293,4 +293,16 @@ class _MockModel:
         return {"vector": [0.0] * 9, "instruction": instruction, "mock": True}
 
 
-__all__ = ["serve", "build_app", "ServeUnavailable"]
+def apply_prediction(robot: Any, prediction: Any, contract: Any = None) -> Any:
+    """Map a serve prediction onto the robot API.
+
+    Arm targets use ``move_joints`` / ``move_ee`` / ``gripper``. Body velocity
+    uses ``drive``. A gated link receives those calls, so the humanoid policy
+    still checks mode, sim target, joint limits and the step cap.
+    """
+    from ..policy_contract import apply_prediction as _apply
+
+    return _apply(robot, prediction, contract)
+
+
+__all__ = ["serve", "build_app", "ServeUnavailable", "apply_prediction"]

@@ -178,6 +178,7 @@ def train_act(
     reader = DatasetReader(dataset)
     state_dim = reader.state_dim or 9
     action_dim = reader.action_dim or 9
+    layout = _layout_fields(reader)
 
     if mock:
         loss_curve = [
@@ -198,6 +199,7 @@ def train_act(
             "loss_curve": loss_curve,
             "final_loss": loss_curve[-1][1],
         }
+        config.update(layout)
         with open(out / "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         with open(out / "metrics.json", "w", encoding="utf-8") as f:
@@ -299,6 +301,7 @@ def train_act(
         "loss_curve": loss_curve,
         "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
+    config.update(layout)
     with open(out / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
@@ -313,6 +316,27 @@ def train_act(
         )
 
     return str(out)
+
+
+def _layout_fields(reader: DatasetReader) -> Dict[str, Any]:
+    """State and action names from the dataset, when the writer stored them."""
+    fields: Dict[str, Any] = {}
+    features = reader.info.features
+    for key, dest in (
+        ("observation.state", "state_names"),
+        ("action", "action_names"),
+    ):
+        feature = features.get(key) or {}
+        names = feature.get("names") if isinstance(feature, dict) else None
+        if (
+            isinstance(names, list)
+            and names
+            and all(isinstance(name, str) for name in names)
+        ):
+            fields[dest] = list(names)
+    if reader.info.arm_action:
+        fields["arm_action"] = reader.info.arm_action
+    return fields
 
 
 def load_act_checkpoint(

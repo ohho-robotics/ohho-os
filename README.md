@@ -126,6 +126,18 @@ python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200
 
 The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run this pipeline on CPU-only runners, verify LeRobotDataset loading, and upload the trained checkpoint and dataset artifacts (first run pending).
 
+## Upper-body policy on a humanoid
+
+The same `ohho train` and serve path covers a humanoid upper body. Collection is headless and scripted. The policy writes arm groups only; body velocity goes to `drive`, and the legs stay on the locomotion policy. Details, including the safety checks, are in [docs/humanoid-vla.md](docs/humanoid-vla.md).
+
+```bash
+ohho vla collect ROBOT --episodes 2 --steps 8 --output ./upper-body-data
+ohho train --dataset ./upper-body-data --policy act --smoke --steps 2 --output ./checkpoints
+ohho vla eval ROBOT --checkpoint ./checkpoints/act --output ./eval.json
+```
+
+A GPU fine-tune has not been run. Do not read a smoke run or a scripted checkpoint as a trained success rate. Still to do: run `ohho train` without `--smoke`, then log that checkpoint's eval success rate.
+
 ## Simulation WebSocket Server (`sim-serve`)
 
 `ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`) or connects to ROS 2 through rosbridge.

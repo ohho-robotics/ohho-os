@@ -42,6 +42,7 @@ ACTION_NAMES: tuple[str, ...] = (
     "prepare",
     "walk_mode",
     "damp",
+    "custom",
     "get_up",
     "lie_down",
     "look",

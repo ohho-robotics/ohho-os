@@ -45,6 +45,7 @@ HUMANOID_ALLOWLIST = frozenset(
         "prepare",
         "walk_mode",
         "damp",
+        "custom",
         "get_up",
         "lie_down",
         "look",
@@ -68,7 +69,7 @@ HUMANOID_MCP_TOOLS = frozenset(
         "hand",
     }
 )
-_MCP_REFUSED = frozenset({"move_joints", "damp", "arm", "release_stop"})
+_MCP_REFUSED = frozenset({"move_joints", "damp", "custom", "arm", "release_stop"})
 _DENIED_EXTRAS = (
     "kick",
     "shoot",
@@ -275,8 +276,8 @@ def humanoid_denied(action: str) -> bool:
 def humanoid_mcp_allowed(action: object) -> bool:
     """High-level humanoid tools a remote caller may name.
 
-    ``move_joints``, ``damp``, ``arm`` and ``release_stop`` are operator
-    paths. This function does not touch a transport.
+    ``move_joints``, ``damp``, ``custom``, ``arm`` and ``release_stop`` are
+    operator paths. This function does not touch a transport.
     """
     if not isinstance(action, str) or not action.strip():
         return False
