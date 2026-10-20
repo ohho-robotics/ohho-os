@@ -52,8 +52,23 @@ class ACTModel:
         else:
             action = [0.0] * action_dim
 
-        return {
-            "vector": [float(x) for x in action],
+        vector = [float(x) for x in action]
+        result: Dict[str, Any] = {
+            "vector": vector,
             "instruction": instruction,
             "mock": self.policy is None,
         }
+        names = self.config.get("action_names")
+        if (
+            isinstance(names, list)
+            and len(names) == len(vector)
+            and all(isinstance(name, str) for name in names)
+        ):
+            result["names"] = list(names)
+            result["values"] = {name: value for name, value in zip(names, vector)}
+        state_names = self.config.get("state_names")
+        if isinstance(state_names, list) and state_names:
+            result["state_names"] = list(state_names)
+        if self.config.get("arm_action"):
+            result["arm_action"] = self.config["arm_action"]
+        return result

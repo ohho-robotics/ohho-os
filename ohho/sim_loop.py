@@ -19,6 +19,7 @@ from .adapters.sim import SimTransport
 from .data import Recorder
 from .data.reader import DatasetReader
 from .data.recorder import _telemetry_to_state
+from .policy_contract import apply_policy_action, contract_for_spec
 from .registry import get_spec
 from .robot import Robot
 from .runtime import NativeRuntime
@@ -288,6 +289,7 @@ def evaluate_policy_sim(
     tp = SimTransport(spec)
     tp.connect()
     bot = Robot(spec, tp, NativeRuntime())
+    contract = contract_for_spec(spec)
 
     latencies: List[float] = []
     completed_steps = 0
@@ -314,15 +316,7 @@ def evaluate_policy_sim(
             if not action_vec:
                 raise ValueError(f"empty action vector returned at step {step_i}")
 
-            n_arm = len(spec.joint_names) if bot.has("manipulation") else 0
-            if n_arm > 0 and len(action_vec) >= n_arm:
-                bot.move_joints(action_vec[:n_arm])
-            if len(action_vec) >= n_arm + 3:
-                bot.drive(
-                    vx=action_vec[n_arm],
-                    vy=action_vec[n_arm + 1],
-                    w=action_vec[n_arm + 2],
-                )
+            apply_policy_action(bot, action_vec, contract)
             tp.step(0.1)
             completed_steps += 1
     finally:

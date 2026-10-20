@@ -113,10 +113,10 @@ Aerial keeps those generic rules. Humanoid uses `ohho/humanoid_policy.py`.
 | Fall | Latch when `fall_state` is not `upright` (`unknown` and a missing state count), or when roll/pitch stay above 0.5 rad for 100 ms. On latch, stop commanding. `damp()` runs once the vendor reports fallen or the mode is `FALLEN`. |
 | E-stop | Upright in `WALK` or `PREPARE`: zero velocity and hold `PREPARE`. In `CUSTOM`, or when fallen: `damp()`. No zero-torque and no drag. |
 | Joints | `move_joints` only in `CUSTOM`, only on a sim target. Positions stay inside the profile joint limits and move at most 0.15 rad per command. Explicit `kp` / `kd` are refused until a ceiling exists, then clamped. Not an MCP tool. |
-| Allowlist | `move`, `stop_move`, `prepare`, `walk_mode`, `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`, `move_joints` (gated). Also refused: kicks, shoot, handshake, zero-torque drag, and record/replay or custom trained trajectories. |
+| Allowlist | `move`, `stop_move`, `prepare`, `walk_mode`, `damp`, `custom`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`, `move_joints` (gated). `custom` is the posture that permits `move_joints`. Also refused: kicks, shoot, handshake, zero-torque drag, and record/replay or trained trajectories. |
 | Audit | Mode transitions (`mode_transition`), fall latches and damp events include `plugin` (the spec source) and `policy`. |
 
-`humanoid_mcp_allowed` is the remote subset. It excludes `move_joints`, `damp`, `arm` and `release_stop`.
+`humanoid_mcp_allowed` is the remote subset. It excludes `custom`, `move_joints`, `damp`, `arm` and `release_stop`.
 
 A plugin's `safety_policy(spec)` may return `None` (the class default) or a
 stricter policy. Velocity, acceleration, joint, effort, timeout, tilt and

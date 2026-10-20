@@ -116,6 +116,7 @@ HUMANOID_ACTIONS = frozenset(
         "prepare",
         "walk_mode",
         "damp",
+        "custom",
         "get_up",
         "lie_down",
         "look",

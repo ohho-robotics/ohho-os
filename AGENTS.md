@@ -56,7 +56,7 @@
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
 | **Hardware adapters** | ✅ M1 software complete — `serial://` (Yahboom base) + `feetech://` (SO-101 arm) + `composite` (base+arm merge for mobile-manipulators) + `dds://` (Unitree Go2 with real state polling) all built and mock-tested. **On-robot bring-up still pending** (hardware-gated). DJI/others not built. |
 | Agent loop | ✅ **real brain** — `HarnessBrain` wires `agent_engine.AgentHarness` (perceive→reason→act→reflect). `ToolRegistry` built from robot capabilities. `ClaudeToolCallingReasoner` over `ReasoningRouter` (cloud Claude when `ANTHROPIC_API_KEY` + `[agent]` extra, echo fallback otherwise). `ScriptedBrain` remains the no-dep fallback. |
-| Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.1), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. **OHH-340** records a humanoid episode from sim teleop; state and action names come from `joint_groups`. |
+| Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.1), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. **OHH-340** records a humanoid episode from sim teleop; state and action names come from `joint_groups`. **OHH-341** uses that same train/serve path for an upper-body humanoid: scripted collection, an ACT smoke recipe, and a headless eval. A GPU fine-tune has not been run. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, Claude-vision `VlmPerceptor`). CLI `ohho look`, `ohho memory` |
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 / OHH-336** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, plus `modes.request` for a declared `humanoid.posture` value; 300ms silence or deadman false zeros velocity and leaves the mode; a robot backend on a non-sim URI requires the arming phrase and `OHHO_ARM_HARDWARE=1` already in the environment; backends: `sim`, `robot`, and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
@@ -65,8 +65,8 @@
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. **OHH-313** delegates those decisions to a `SafetyPolicy` per `robot_class` (Ground, Arm, Legged) without changing caps or behaviour for those classes. **OHH-328** adds `HumanoidPolicy` for `robot_class` humanoid (asymmetric speed caps, watchdog that does not damp, fall latch, gated `move_joints`). Rules in §9a. CLI `--arm --estop-damp --safety-config` |
 | **Humanoid telemetry** | ✅ **OHH-327** — `Telemetry.custom["humanoid"]` on `ohho.telemetry.v1`: mode, vendor mode (logs only), fall state, base orientation, per-group joints, planar odom shadowed onto `Telemetry.odom`, battery, experimental. Unknown or missing fall state is not upright. |
 | **Humanoid MuJoCo sim** | ✅ **OHH-329** — `humanoid-mujoco` sim backend. A plugin supplies the MJCF, joint order, PD gains, observation layout and an ONNX or TorchScript checkpoint (default 50 Hz). `drive` stores a body velocity; the policy writes joint targets; PD runs every model step (`tau = kp (q_target - q) - kd dq`). `prepare`, `damp` and `custom` run with no policy. Protocol stays `simulated`, so SafetyGate is unchanged. Extra `humanoid-sim`. |
-| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → 617 tests, skipped=7. Local-only errors (do not skip in CI): `test_demo_drive` importing `tests.test_ros2`, and two self-test cases when the local `cv2` install is broken. |
+| CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest train vla` |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → 645 tests, skipped=7. Local-only errors (do not skip in CI): `test_demo_drive` importing `tests.test_ros2`, and two self-test cases when the local `cv2` install is broken. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and ≥95% line+branch coverage gates on `ohho/safety.py` and `ohho/humanoid_policy.py`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run, installs `plugins/ohho-booster`, and caches the pinned description archive and walk checkpoint. Other cells skip those tests when the packages or assets are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -177,6 +177,8 @@ sdk/
 │   ├── humanoid_telemetry.py  # custom["humanoid"] block (ohho.telemetry.v1): validator, JSON, odom shadow
 │   ├── humanoid_sim.py   # HumanoidSimConfig, observation layout, bind_sim_config (stdlib; no mujoco import)
 │   ├── policy_runner.py  # LocomotionPolicy — ONNX or TorchScript on CPU; runtime imported on load
+│   ├── policy_contract.py # state/action layout and apply_policy_action for base, arm, legged, humanoid (OHH-341)
+│   ├── humanoid_vla.py   # headless upper-body eval; scripted checkpoint; success-rate JSON (OHH-341)
 │   ├── robot.py          # Robot (RAL) — connect/drive/move_joints/telemetry/emergency_stop/has/disconnect; connect() shortcut
 │   ├── agent.py          # Agent + ScriptedBrain (fallback); _default_brain() lazily loads HarnessBrain
 │   ├── brains.py         # HarnessBrain — wires agent_engine (ToolRegistry from caps, RobotPerceptor, ClaudeToolCallingReasoner)
@@ -184,10 +186,12 @@ sdk/
 │   │   ├── __init__.py   # exports Recorder, Episode
 │   │   ├── recorder.py   # Recorder — wraps Robot, intercepts drive/move_joints, captures frames
 │   │   ├── writer.py     # write_dataset — LeRobot v2.0 (Parquet via pyarrow, JSON Lines fallback)
-│   │   └── reader.py     # DatasetReader — lightweight reader (no torch needed), stats()
+│   │   ├── reader.py     # DatasetReader — lightweight reader (no torch needed), stats()
+│   │   └── upper_body.py # scripted humanoid arm episodes through SafetyGate (OHH-341)
 │   ├── train/            # ohho.train — finetune() delegates to lerobot_engine, mock mode for sim
 │   │   ├── __init__.py   # finetune(), SUPPORTED_POLICIES, TrainUnavailable, _mock_train()
-│   │   └── act.py        # TinyACTPolicy + train_act() CPU Action Chunking Transformer
+│   │   ├── act.py        # TinyACTPolicy + train_act() CPU Action Chunking Transformer
+│   │   └── recipes.py    # training_recipe + CPU smoke_finetune (OHH-341)
 │   ├── serve/            # ohho.serve — FastAPI inference server, `ohho serve` CLI
 │   │   ├── __init__.py   # serve(), build_app(), ServeUnavailable, _MockModel
 │   │   └── act.py        # ACTModel inference adapter
@@ -200,7 +204,7 @@ sdk/
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list(--plugins)/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── cli.py            # argparse: doctor/list(--plugins)/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest/train/vla; main()
 │   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
 │   └── robots/
 │       ├── __init__.py   # package for the built-in plugin and example manifests
@@ -212,10 +216,12 @@ sdk/
 │   ├── architecture/
 │   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   └── humanoid-vla.md   # upper-body collect, smoke train, eval (OHH-341)
 ├── scripts/
 │   ├── check_classifiers.py
-│   └── sim_loop.py       # one-liner reproducible sim loop runner
+│   ├── sim_loop.py       # one-liner reproducible sim loop runner
+│   └── upper_body_vla.py # `ohho vla` wrapper for collection and eval
 └── tests/                # unittest suite including test_humanoid_mujoco.py and tests/fixtures/humanoid (small MJCF, no meshes)
 ```
 
@@ -483,6 +489,13 @@ Implemented `Ros2Runtime` (rclpy node behind the existing `Runtime` port) and
 - **PyPI:** not published from this repository. OHH-20 covers trusted
   publishing. Do not add a publish workflow here.
 
+### OHH-341 — upper-body VLA in sim (code only)
+Scripted headless collection, `ohho train` / `smoke_finetune`, and
+`ohho vla eval` share `finetune` and `apply_policy_action` with the mobile
+base. Arm targets pass `HumanoidPolicy` (`custom`, sim target, arm limits,
+0.15 rad step). The GPU fine-tune has not been run, and a logged success
+rate for that checkpoint is still to be produced. See `docs/humanoid-vla.md`.
+
 ---
 
 ## 9. START HERE: post-1.0 development
@@ -557,8 +570,9 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
    stop_move, move, euler (±0.3 rad), sit, rise_sit`. Always refuse flips,
    jumps, pounce, dance, handstand, walk_upright, `free_*`, cross_step — the
    denylist wins over any config file. Humanoid names (`prepare`, `walk_mode`,
-   `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`) are not
-   on those lists. A profile may name them; `command` then calls
+   `damp`, `custom`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`) are not
+   on those lists. `custom` is the posture that permits `move_joints`, and it
+   is not an MCP tool. A profile may name them; `command` then calls
    `send_humanoid` and never a sport call. `move_joints` stays refused for
    Ground, Arm and Legged. **OHH-328** `HumanoidPolicy` may forward it only
    in `CUSTOM` on a sim target, with joint limits, a 0.15 rad step and gain

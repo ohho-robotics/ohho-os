@@ -17,6 +17,7 @@ from .humanoid_teleop import record_humanoid_teleop_episode
 from .reader import DatasetReader
 from .recorder import Episode, Recorder
 from .teleop import record_go2_teleop_episodes
+from .upper_body import record_upper_body_episodes
 
 __all__ = [
     "Recorder",
@@ -24,4 +25,5 @@ __all__ = [
     "DatasetReader",
     "record_go2_teleop_episodes",
     "record_humanoid_teleop_episode",
+    "record_upper_body_episodes",
 ]
