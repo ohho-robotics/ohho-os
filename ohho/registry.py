@@ -344,10 +344,11 @@ def register(spec: RobotSpec) -> RobotSpec:
     """Add (or replace) a robot in the registry.
 
     Capability names must be in the vocabulary. Parameter objects are checked
-    against their schemas. The parameters describe the robot; they do not
-    change safety caps. Discovery still fills the registry from plugins, and
-    this spec is stored after that, so a failed built-in plugin is not hidden
-    by a second copy of the built-in table.
+    against their schemas.     The parameters describe the robot; they do not
+    change safety caps. Discovery loads plugin specs first, then this spec is
+    stored, so a later ``register`` replaces one id without hiding the others
+    and a failed built-in plugin is not hidden by a second copy of the
+    built-in table.
     """
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
     _ensure_plugins()

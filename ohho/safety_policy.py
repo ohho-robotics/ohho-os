@@ -12,8 +12,9 @@ schedule. These classes decide what those mechanisms mean for a robot class:
 
 ``GroundPolicy`` (mobile base and the ground half of a mobile manipulator),
 ``ArmPolicy`` and ``LeggedPolicy`` (quadruped) are the rules that already
-lived in the gate. Aerial (R-03) and humanoid (H-05) are not added here;
-those classes keep today's generic rules until their own policies exist.
+lived in the gate. Aerial (R-03) is not added here. Humanoid rules live in
+:class:`ohho.humanoid_policy.HumanoidPolicy` and are selected for
+``robot_class`` humanoid.
 
 A plugin may return a stricter policy from ``safety_policy(spec)``.
 ``load_policy`` refuses one that loosens a class cap. ``None`` keeps the
@@ -289,6 +290,34 @@ class SafetyPolicy:
         reasons = ("euler_limit",) if applied != tuple(args) else ()
         return ClampDecision(applied=applied, reasons=reasons)
 
+    def low_level_joints(
+        self,
+        args: Sequence[Any],
+        telemetry: Telemetry | None,
+    ) -> ClampDecision | None:
+        """``None`` means this class does not accept low-level joint targets.
+
+        The gate then refuses ``move_joints`` as not allowlisted. A humanoid
+        policy returns a :class:`ClampDecision` instead.
+        """
+        del args, telemetry
+        return None
+
+    def note_state(
+        self,
+        transport: Any,
+        telemetry: Telemetry | None,
+        *,
+        latched: bool,
+    ) -> None:
+        """Observe one telemetry sample. The default policy does nothing."""
+        del transport, telemetry, latched
+
+    def looser_than(self, class_policy: SafetyPolicy) -> list[str]:
+        """Extra ways ``self`` is looser than ``class_policy``. Default: none."""
+        del class_policy
+        return []
+
 
 class GroundPolicy(SafetyPolicy):
     """Wheeled base, and the base half of a mobile manipulator.
@@ -442,14 +471,18 @@ def reference_profile(spec: RobotSpec | None) -> Any:
 def policy_for_class(spec: RobotSpec | None) -> SafetyPolicy:
     """The default policy for ``spec.robot_class``.
 
-    Aerial and humanoid do not have their own policies yet. They use
-    :class:`GroundPolicy` with the conservative profile, which is how the
-    gate treats an unknown robot today.
+    Aerial does not have its own policy yet. It uses :class:`GroundPolicy`
+    with the conservative profile, which is how the gate treats an unknown
+    robot today. Humanoid uses :class:`~ohho.humanoid_policy.HumanoidPolicy`.
     """
-    profile = reference_profile(spec)
     robot_class = RobotClass.MOBILE_BASE if spec is None else spec.robot_class
     if not isinstance(robot_class, RobotClass):
         robot_class = RobotClass.MOBILE_BASE
+    if robot_class is RobotClass.HUMANOID:
+        from .humanoid_policy import HumanoidPolicy
+
+        return HumanoidPolicy.for_spec(spec)
+    profile = reference_profile(spec)
     if robot_class is RobotClass.MOBILE_MANIPULATOR:
         return GroundArmPolicy(profile)
     if robot_class is RobotClass.ARM:
@@ -604,6 +637,7 @@ def load_policy(spec: RobotSpec | None, *, plugin: Any = None) -> SafetyPolicy:
             "caps must be a SafetyProfile"
         )
     reasons = looser_reasons(profile, class_profile)
+    reasons.extend(supplied.looser_than(default))
     if reasons:
         raise SafetyPolicyError(
             f"plugin safety policy for {robot_id!r} refused at load: "
@@ -653,6 +687,12 @@ def arming_uri(transport: Any) -> str:
         iface = str(getattr(transport, "iface", "") or "")
         domain = getattr(transport, "domain_id", 0)
         return f"dds://{iface}?domain={domain!r}"
+    if protocol == "humanoid-mujoco":
+        host = str(getattr(transport, "host", "") or "")
+        if ":" in host:
+            host = f"[{host}]"
+        flag = getattr(transport, "sim_target", False) is True
+        return f"humanoid-mujoco://{host}?sim_target={flag}"
     return f"{protocol}://"
 
 

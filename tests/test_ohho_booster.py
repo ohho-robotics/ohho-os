@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from ohho.cli import main
 from ohho.humanoid import HumanoidMode
+from ohho.humanoid_policy import SIM_CAPS, class_profile
 from ohho.plugins import BUILTIN_ENTRY_VALUE, ENTRY_GROUP
 from ohho.registry import list_specs
 from ohho.robot_spec import HumanoidLimits, RobotClass, default_limits
@@ -159,10 +160,13 @@ class TestBoosterSpec(unittest.TestCase):
         speed = self.spec.capability_params["humanoid.locomotion"]["speed_max"]
         self.assertLessEqual(speed, generic.max_vx)
         self.assertNotIn("booster-t2", PROFILES)
+        # Class policy ceiling (sim). The generic unknown-robot cap is not
+        # the humanoid ceiling; a plugin profile may only be tighter.
+        ceiling = class_profile(SIM_CAPS)
         profile = profile_for("booster-t2", self.spec)
-        self.assertLessEqual(profile.max_vx, 0.3)
-        self.assertLessEqual(profile.max_vy, 0.3)
-        self.assertLessEqual(profile.max_wz, 1.0)
+        self.assertLessEqual(profile.max_vx, ceiling.max_vx)
+        self.assertLessEqual(profile.max_vy, ceiling.max_vy)
+        self.assertLessEqual(profile.max_wz, ceiling.max_wz)
 
     def test_mode_map_is_plain_data_and_omits_soccer(self):
         self.assertEqual(

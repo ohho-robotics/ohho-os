@@ -52,7 +52,7 @@ position would move the arm.
 | State watchdog | No robot state for 500 ms while armed → stop and latch. On robots with `require_orientation` (Go2), a state without roll/pitch does not count. |
 | E-stop latch | `emergency_stop()` calls the transport's stop (`StopMove()` on Go2) first, then `Damp()` only if the robot is already lying down (body height < 0.15 m) or `estop_damp` is set. Unknown posture never damps. |
 | Release | `release_stop()` needs an interactive TTY and the word `release` on hardware, is refused in CI, is refused while the latest state is still tilted or faulted, and leaves the gate **disarmed**. |
-| Allowlist | `command(action, *args)` forwards only allowlisted actions. Go2: `stand_up`, `stand_down`, `balance_stand`, `recovery_stand`, `stop_move`, `move`, `euler` (each angle clamped to ±0.3 rad), `sit`, `rise_sit`. Names are normalised (`StandUp` → `stand_up`). `stop_move` is accepted even when disarmed or latched. Humanoid names (`prepare`, `walk_mode`, `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`) are not on the built-in lists. A profile may name them; they then go to `send_humanoid`, never to a sport call. `move_joints` is refused even if a profile lists it. |
+| Allowlist | `command(action, *args)` forwards only allowlisted actions. Go2: `stand_up`, `stand_down`, `balance_stand`, `recovery_stand`, `stop_move`, `move`, `euler` (each angle clamped to ±0.3 rad), `sit`, `rise_sit`. Names are normalised (`StandUp` → `stand_up`). `stop_move` is accepted even when disarmed or latched. Humanoid names are not on the ground or legged lists. A profile may name them; they then go to `send_humanoid`, never to a sport call. `move_joints` stays refused for those classes. On a humanoid it is a separate gated path (see below). |
 | Denylist | Any action containing `flip`, `jump`, `pounce`, `dance`, `handstand`, `upright`, `cross_step`, or starting with `free`, is refused even if a config file lists it (the config loader rejects it). |
 | Tilt / fault guard | `|roll|` or `|pitch|` > 0.6 rad, unparseable orientation, or a non-zero `error_code` → stop and latch, armed or not. |
 | Fail closed | A transport exception, a watchdog error or an unwritable audit log trips the e-stop or disarms. |
@@ -95,10 +95,28 @@ e-stop mapping, arming and the tilt latch to a `SafetyPolicy`
 | `mobile_manipulator` (`omnibot`) | `GroundArmPolicy` | `ground+arm` |
 | `arm` | `ArmPolicy` | `arm` |
 | `quadruped` (`unitree-go2`) | `LeggedPolicy` | `legged` |
+| `humanoid` | `HumanoidPolicy` | `humanoid` |
 
-The numbers in the table below are unchanged. A class with no built-in
-profile still gets the conservative caps. Aerial and humanoid policies are
-not in this release; those classes keep today's generic rules.
+The numbers in the table below are unchanged for ground, arm and legged
+robots. A class with no built-in profile still gets the conservative caps.
+Aerial keeps those generic rules. Humanoid uses `ohho/humanoid_policy.py`.
+
+### HumanoidPolicy
+
+`robot_class` humanoid selects `HumanoidPolicy`. A plugin may only tighten it.
+
+| Control | Rule |
+|---|---|
+| Arming | Disarmed until `arm()`. `sim://` and `simulated://` arm through the existing simulator check. Loopback `humanoid-mujoco` arms only when the transport sets `sim_target=True` (the URI carries that exact token). Any other URI needs `OHHO_ARM_HARDWARE=1`, a TTY and the arming phrase. |
+| Speed | Sim: 0.5 m/s forward, 0.3 m/s back, 0.3 m/s lateral, 0.6 rad/s yaw. Hardware: 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. Clamps are audited as `clamp` with reason `velocity_cap`. |
+| Watchdog | 300 ms without a command zeros velocity and stays in `WALK` or `PREPARE`. It does not damp. |
+| Fall | Latch when `fall_state` is not `upright` (`unknown` and a missing state count), or when roll/pitch stay above 0.5 rad for 100 ms. On latch, stop commanding. `damp()` runs once the vendor reports fallen or the mode is `FALLEN`. |
+| E-stop | Upright in `WALK` or `PREPARE`: zero velocity and hold `PREPARE`. In `CUSTOM`, or when fallen: `damp()`. No zero-torque and no drag. |
+| Joints | `move_joints` only in `CUSTOM`, only on a sim target. Positions stay inside the profile joint limits and move at most 0.15 rad per command. Explicit `kp` / `kd` are refused until a ceiling exists, then clamped. Not an MCP tool. |
+| Allowlist | `move`, `stop_move`, `prepare`, `walk_mode`, `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`, `move_joints` (gated). Also refused: kicks, shoot, handshake, zero-torque drag, and record/replay or custom trained trajectories. |
+| Audit | Mode transitions (`mode_transition`), fall latches and damp events include `plugin` (the spec source) and `policy`. |
+
+`humanoid_mcp_allowed` is the remote subset. It excludes `move_joints`, `damp`, `arm` and `release_stop`.
 
 A plugin's `safety_policy(spec)` may return `None` (the class default) or a
 stricter policy. Velocity, acceleration, joint, effort, timeout, tilt and
