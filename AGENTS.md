@@ -47,6 +47,7 @@
 |---|---|
 | Robot Abstraction Layer (`Robot`) | ✅ working |
 | Capability model + registry | ✅ working (OmniBot, Unitree Go2, generic sim) |
+| RobotSpec v2 | ✅ **OHH-309** — additive `robot_class`, joint groups, per-class limits, assets, `ci_sim`, `source`, `capability_params`. Safety caps unchanged. ADR `docs/architecture/robot-plugins.md` is proposed, awaiting Varun's review. |
 | Runtime port + **native** backend | ✅ working (threaded scheduler, pub/sub, timers, params) |
 | **ROS 2** runtime backend | ✅ **M4 complete** — `Ros2Runtime` (rclpy node: timers, pub/sub via topics, params via node params) + `Ros2Transport` (bridges /cmd_vel, /odom, /arm/joint_states). `get_runtime("auto")` prefers ros2 when rclpy present. `ros2://` scheme registered. Fully testable with `FakeRos2Node` (no ROS 2 needed). |
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
@@ -147,7 +148,8 @@ sdk/
 │   ├── __init__.py       # exports Robot, connect, schema types, registry fns; __version__
 │   ├── schema.py         # Velocity, Odometry, JointReading, Telemetry, TransportStatus, ConnectionState, clamp()
 │   ├── capabilities.py   # capability string constants + ALL + is_known()
-│   ├── registry.py       # RobotSpec (frozen dataclass) + _BUILTINS + get_spec/list_specs/register/load_manifest
+│   ├── registry.py       # RobotSpec v2 (frozen dataclass) + _BUILTINS + get_spec/list_specs/register/load_manifest
+│   ├── robot_spec.py     # RobotClass, per-class limits, assets, CiSim, category table (OHH-309)
 │   ├── transport.py      # Transport (ABC) + BaseTransport (callback bookkeeping)
 │   ├── runtime/
 │   │   ├── __init__.py   # get_runtime("auto"|"native"|"ros2"), available_runtimes()
@@ -189,6 +191,8 @@ sdk/
 │   └── robots/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
+│   ├── architecture/
+│   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
 │   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
 │   └── unitree.md        # Go2 DDS adapter — sim-tested only; hardware OHH-135
@@ -228,10 +232,14 @@ Agent(bot).run("explore the room")             # returns list[str] log lines (sc
 `TransportStatus(protocol, state, label, latency_ms, msg_rate, error?, connected_since?)`,
 `ConnectionState` enum, `clamp(value, lo, hi)`.
 
-**RobotSpec (`ohho/registry.py`):** `id, name, category, capabilities(tuple),
-adapter, dof_base, dof_arm, max_lin, max_ang, joint_names(tuple)`, `.has(cap)`.
-Built-ins: `omnibot` (mecanum mobile-manip, 6-DOF arm, max_lin 0.2),
-`unitree-go2` (quadruped, max_lin 1.5), `sim` (generic holonomic).
+**RobotSpec (`ohho/registry.py`, v2 in `ohho/robot_spec.py`):** existing fields
+`id, name, category, capabilities(tuple), adapter, dof_base, dof_arm, max_lin,
+max_ang, joint_names(tuple)`, `.has(cap)`, plus `robot_class`, `joint_groups`,
+`limits`, `assets`, `ci_sim`, `source`, `capability_params`. `category` still
+loads; it maps onto `robot_class`. Built-ins: `omnibot` (mobile manipulator,
+6-DOF arm, max_lin 0.2), `unitree-go2` (quadruped, max_lin 1.5), `sim`
+(mobile base, generic holonomic). Safety caps are unchanged. ADR:
+`docs/architecture/robot-plugins.md`.
 
 **Capabilities (`ohho/capabilities.py`):** `base.drive`, `base.holonomic_drive`,
 `legged.pose`, `manipulation`, `perception.rgb`, `perception.depth`.
