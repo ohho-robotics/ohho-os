@@ -1,0 +1,25 @@
+name: PX4 SITL square (mavlink stub)
+
+# OHH-305. Prints the mavlink+udp://127.0.0.1:14540 square recipe.
+# Does not start PX4, Gazebo, Docker, or a MAVLink socket, and does not
+# install mavsdk. A follow-up job flies the square. D-22 (ArduPilot) waits
+# on this backend and is not this workflow.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  recipe:
+    name: print mavlink SITL square recipe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install OhhO OS (no mavlink extra, no SITL)
+        run: python -m pip install -e .
+      - name: Print the square recipe
+        run: python scripts/sitl_mavlink_square.py --print-recipe
