@@ -267,6 +267,23 @@ def lie_down(robot: _R) -> _R:
     return _posture(robot, "lie_down")
 
 
+_POSTURE_ACTIONS = frozenset(
+    {"prepare", "walk_mode", "damp", "custom", "get_up", "lie_down"}
+)
+
+
+def apply_posture(robot: _R, action: str) -> _R:
+    """Send one posture action. No-op without ``humanoid.posture``.
+
+    ``action`` is the transport name: ``prepare``, ``walk_mode``, ``damp``,
+    ``custom``, ``get_up`` or ``lie_down``. Callers that have already checked
+    the spec's declared modes use this so sim-serve and ``Robot`` share one path.
+    """
+    if action not in _POSTURE_ACTIONS:
+        raise ValueError(f"unknown posture action {action!r}")
+    return _posture(robot, action)
+
+
 def look(robot: _R, pitch: object, yaw: object) -> _R:
     """Point the head. Angles are radians. No-op without ``head.gaze``."""
     if not robot.has(caps.HEAD_GAZE):
@@ -441,6 +458,7 @@ __all__ = [
     "ACTION_NAMES",
     "FallState",
     "HumanoidMode",
+    "apply_posture",
     "damp",
     "fall_state_of",
     "get_up",

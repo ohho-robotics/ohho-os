@@ -231,8 +231,9 @@ def _cmd_sim_serve(args) -> int:
             port=args.port,
             rosbridge=args.rosbridge,
             rate_hz=args.rate,
+            transport=args.transport or None,
         )
-    except SimServeUnavailable as e:
+    except (SimServeUnavailable, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
@@ -574,10 +575,15 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument(
         "--backend",
         default="sim",
-        choices=["sim", "ros2", "isaac", "mujoco"],
-        help="simulation backend (sim, ros2, isaac, mujoco)",
+        choices=["sim", "ros2", "robot", "isaac", "mujoco"],
+        help="backend: sim, ros2, robot, isaac, mujoco",
     )
-    ss.add_argument("--robot", default="omnibot", help="robot spec id for sim backend")
+    ss.add_argument("--robot", default="omnibot", help="robot spec id")
+    ss.add_argument(
+        "--transport",
+        default="",
+        help="transport URI for --backend robot",
+    )
     ss.add_argument(
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
