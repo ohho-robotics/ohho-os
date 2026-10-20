@@ -24,8 +24,10 @@ plugins, extract safety policies, or edit the open drone branches.
    parameters, transports (URI schemes), sim backends, a safety policy (or uses
    its class default), a descriptor for the console and VR, asset locations and
    an optional doctor. Plugins are found through the Python entry-point group
-   `ohho.robots`. Built-ins use the same path once C-02 lands. Until then they
-   stay registered in `ohho/registry.py` with `source="builtin"`.
+   `ohho.robots`. Built-ins use that path (C-02). Spec data stays in
+   `ohho/registry.py` and `ohho.robots.builtin` registers it, with
+   `source="builtin"`. A checkout that has not been reinstalled loads the same
+   module when the entry point is absent.
 
 3. **Behaviour asks for capabilities, never for robot ids.**
    `robot.has("humanoid.locomotion")`, not `if robot_id == "booster-t2"`.
@@ -211,6 +213,9 @@ leave both a field and a property of the same name:
 - Old manifests and `RobotSpec(...)` calls keep working. New fields have defaults.
 - `example.json` still loads. Built-in `max_lin` / `max_ang` are unchanged.
 - Safety caps, watchdogs, arming and the e-stop path are unchanged.
-- Plugin discovery, per-class `SafetyPolicy`, the robot-id resolver and the CI
-  matrix are later issues (C-02, C-05, C-06, C-08). They should follow this
-  ADR rather than grow more fields on the flat spec.
+- Plugin discovery is C-02 (`ohho/plugins.py`, group `ohho.robots`).
+  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
+  gate delegates to Ground, Arm and Legged policies, and a plugin may only
+  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
+  unchanged. The robot-id resolver and the CI matrix remain later issues
+  (C-06, C-08). `resolve_transport` stays as it is until C-03.
