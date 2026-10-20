@@ -111,7 +111,10 @@ class BuiltinPlugin:
         }
 
     def safety_policy(self, spec: RobotSpec) -> None:
-        """``None`` keeps the class default. ``SafetyGate`` does not read this."""
+        """``None`` keeps the class default (ground, arm or legged).
+
+        ``SafetyGate`` calls this when the robot connects. Discovery does not.
+        """
         del spec
         return None
 
@@ -128,6 +131,10 @@ class BuiltinPlugin:
     ) -> None:
         """Doctor dispatch is R-06. This hook is not called while listing."""
         del spec, uri, read_only
+        return None
+
+    def asset_source(self) -> None:
+        """No pinned meshes. The sim matrix skips the asset fetch."""
         return None
 
 

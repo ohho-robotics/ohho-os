@@ -26,6 +26,7 @@ from ohho.plugins import BUILTIN_ENTRY_VALUE, ENTRY_GROUP
 from ohho.registry import list_specs
 from ohho.robot_spec import HumanoidLimits, RobotClass, default_limits
 from ohho.safety import PROFILES, profile_for
+from ohho.testing.conformance.vendors import EXCLUDED_FILES
 
 _REPO = Path(__file__).resolve().parents[1]
 _PLUGIN = _REPO / "plugins" / "ohho-booster"
@@ -403,6 +404,10 @@ class TestVendorNamesStayOutOfCore(unittest.TestCase):
         hits: list[str] = []
         for path in _OHHO.rglob("*"):
             if path.suffix not in {".py", ".json"}:
+                continue
+            rel = path.relative_to(_REPO).as_posix()
+            # The conformance denylist names the tokens it forbids.
+            if rel in EXCLUDED_FILES:
                 continue
             text = path.read_text(encoding="utf-8")
             for lineno, line in enumerate(text.splitlines(), 1):
