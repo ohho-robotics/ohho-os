@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ohho-booster"
+version = "0.1.0"
+description = "OhhO robot plugin: Booster T2 spec, joint groups, mode map and pinned assets."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = ["ohho-os>=1.1.3"]
+
+[project.optional-dependencies]
+booster = ["booster_robotics_sdk_python==1.6.3"]
+
+[project.entry-points."ohho.robots"]
+booster = "ohho_booster:plugin"
+
+[tool.setuptools.packages.find]
+include = ["ohho_booster*"]
+
+[tool.setuptools.package-data]
+ohho_booster = ["assets_manifest.json"]

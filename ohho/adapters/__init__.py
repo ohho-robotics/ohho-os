@@ -79,7 +79,8 @@ def resolve_transport(
     - ``uri="dds://<iface>"`` → Unitree DDS adapter.
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
-    - any other scheme → ``AdapterUnavailable``.
+    - any other scheme → a factory registered by a loaded plugin, or
+      ``AdapterUnavailable``.
     """
     if uri is None:
         return SimTransport(spec)
@@ -103,9 +104,16 @@ def resolve_transport(
 
     cls = _HARDWARE.get(scheme)
     if cls is None:
+        # Built-in schemes stay in ``_HARDWARE``. A miss asks loaded plugins.
+        from ..plugins import transport_factory
+
+        factory = transport_factory(scheme)
+        if factory is not None:
+            return factory(spec, address, runtime)
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation."
+            f"dds, ros2, or a scheme registered by a loaded plugin — or omit "
+            f"the transport to run in simulation."
         )
     return cls(spec, address)
 

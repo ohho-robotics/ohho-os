@@ -420,6 +420,29 @@ def reload_plugins() -> tuple[PluginInfo, ...]:
     return loaded_plugins()
 
 
+def transport_factory(scheme: str) -> TransportFactory | None:
+    """Return a loaded plugin's factory for ``scheme``, or ``None``.
+
+    Built-in schemes stay on the adapter map. This lookup is for a scheme
+    that map does not own. Looking up a factory does not import an optional
+    SDK; calling the factory may.
+    """
+    if not isinstance(scheme, str) or not scheme.strip():
+        return None
+    key = scheme.strip().lower()
+    for info in loaded_plugins():
+        if info.error is not None or info.plugin is None or key not in info.schemes:
+            continue
+        try:
+            table = _coerce_mapping(info.plugin.transports(), "transports")  # type: ignore[attr-defined]
+        except (TypeError, ValueError):
+            continue
+        factory = table.get(key)
+        if callable(factory):
+            return factory
+    return None
+
+
 def format_plugin_report(infos: Sequence[PluginInfo] | None = None) -> str:
     """Text for ``ohho list --plugins``: each plugin, its specs, any load error."""
     if infos is None:
@@ -447,4 +470,5 @@ __all__ = [
     "plugin_named",
     "register_loaded_specs",
     "reload_plugins",
+    "transport_factory",
 ]
