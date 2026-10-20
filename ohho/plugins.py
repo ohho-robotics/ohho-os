@@ -114,6 +114,9 @@ class PluginInfo:
     sim_factories: Mapping[str, SimFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
+    # The instance, so a sim connect can call an optional ``prepare_sim``.
+    # Discovery does not call it. Not part of equality or the list report.
+    plugin: Any = field(default=None, compare=False, hash=False, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -302,6 +305,7 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         distribution=_distribution_name(entry),
         transport_factories=MappingProxyType(schemes),
         sim_factories=MappingProxyType(backends),
+        plugin=plugin,
     )
 
 
@@ -524,7 +528,23 @@ def plugin_sim_backend(
         )
     if spec is None:
         return None
+    _call_prepare_sim(spec)
     return factory(spec, address, runtime)
+
+
+def _call_prepare_sim(spec: RobotSpec) -> None:
+    """Let the plugin that owns ``spec`` fetch or bind a sim config.
+
+    Optional. A plugin with no ``prepare_sim`` is unchanged. Discovery does
+    not call this; only a sim connect does.
+    """
+    robot_id = spec.id
+    for info in _usable():
+        if robot_id not in info.spec_ids:
+            continue
+        hook = getattr(info.plugin, "prepare_sim", None)
+        if callable(hook):
+            hook(spec)
 
 
 __all__ = [

@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from . import __version__
+from . import capabilities as caps
 from .adapters import available_adapters
 from .agent import Agent
 from .hardware import resolve_device
@@ -126,6 +127,9 @@ def _cmd_sim(args) -> int:
         f"simulating {bot.spec.name} — driving a pattern for {args.seconds:.0f}s (Ctrl-C to stop)"
     )
     try:
+        if bot.has(caps.HUMANOID_POSTURE):
+            bot.prepare()
+            bot.walk_mode()
         i = 0
         end = time.monotonic() + args.seconds
         while time.monotonic() < end:

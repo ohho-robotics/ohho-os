@@ -108,9 +108,14 @@ class LocomotionPolicy:
         module = self._module
         if not callable(module):
             raise RuntimeError("TorchScript policy is not loaded")
-        obs = torch.tensor([list(observation)], dtype=torch.float32)
+        flat_in = torch.tensor(list(observation), dtype=torch.float32)
+        batched = flat_in.unsqueeze(0)
         with torch.no_grad():
-            out = module(obs)
+            try:
+                out = module(batched)
+            except RuntimeError:
+                # Some checkpoints are traced on a flat vector, not a batch.
+                out = module(flat_in)
         flat = out.detach().reshape(-1).tolist()
         return tuple(float(value) for value in flat)
 
