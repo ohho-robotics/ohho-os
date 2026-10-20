@@ -190,7 +190,8 @@ sdk/
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   └── unitree.md        # Go2 DDS adapter — sim-tested only; hardware OHH-135
 ├── scripts/
 │   ├── check_classifiers.py
 │   └── sim_loop.py       # one-liner reproducible sim loop runner
