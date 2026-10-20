@@ -1,10 +1,18 @@
 """Robot plugin protocol and ``ohho.robots`` entry-point discovery.
 
 A plugin contributes specs, transport schemes and sim backends. ``safety_policy``
-returns ``None`` to keep the class default (C-05 wires policies into
-``SafetyGate``). ``descriptor`` returns ``None`` until C-04 / OHH-214.
-``doctor`` is the read-only hook R-06 will dispatch. Discovery does not call
-those three, so listing plugins cannot command a robot.
+returns ``None`` to keep the class default. ``SafetyGate`` calls it when the
+robot connects (OHH-313) and refuses a policy that loosens class caps.
+Discovery does not call it, so listing plugins cannot command a robot.
+``descriptor`` returns ``None`` until C-04 / OHH-214. ``doctor`` is the
+read-only hook R-06 will dispatch. Discovery does not call those two either.
+
+``asset_source`` is optional. When a plugin defines it, discovery stores the
+pinned repository and commit and does not download meshes. The sim matrix
+caches that pin (OHH-316). A plugin with no method, or one that returns
+``None``, has nothing to fetch. ``materialise_assets(dest)`` is also optional.
+The matrix calls it after the checkout so a plugin can put extra pinned files
+into that directory before the cache is saved. Discovery does not call it.
 
 Built-ins use this path. ``pyproject.toml`` registers
 ``ohho.robots.builtin:plugin``. A source checkout that has not been reinstalled
@@ -24,8 +32,11 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.metadata
+import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -51,7 +62,10 @@ _PLUGIN_METHODS = (
 
 
 class RobotPlugin(Protocol):
-    """What an ``ohho.robots`` entry point returns."""
+    """What an ``ohho.robots`` entry point returns.
+
+    ``asset_source`` is not required. See :class:`AssetSource`.
+    """
 
     name: str
 
@@ -67,7 +81,8 @@ class RobotPlugin(Protocol):
     def safety_policy(self, spec: RobotSpec) -> object | None:
         """A stricter class policy, or ``None`` for the class default.
 
-        ``SafetyGate`` does not consult this yet (C-05).
+        ``SafetyGate`` loads this when the robot connects. Discovery does not
+        call it. A policy that loosens class caps is refused at that load.
         """
 
     def descriptor(self, spec: RobotSpec) -> Mapping[str, Any] | None:
@@ -80,6 +95,42 @@ class RobotPlugin(Protocol):
         read_only: bool = True,
     ) -> DoctorReport | None:
         """Read-only doctor hook. ``None`` means the plugin has nothing to add."""
+
+
+_ASSET_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_ASSET_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True)
+class AssetSource:
+    """Pinned git commit for meshes. CI fetches it; this repo does not vendor it.
+
+    ``repository`` is ``owner/name`` for ``actions/checkout``. ``commit`` is a
+    full 40-character hex sha, so the cache key does not follow a branch.
+    """
+
+    repository: str
+    commit: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, str) or not isinstance(self.commit, str):
+            raise TypeError("asset repository and commit must be strings")
+        repository = self.repository.strip()
+        commit = self.commit.strip().lower()
+        owner, _slash, name = repository.partition("/")
+        if (
+            _ASSET_REPOSITORY.fullmatch(repository) is None
+            or owner in {".", ".."}
+            or name in {".", ".."}
+        ):
+            raise ValueError(
+                "asset repository must be owner/name "
+                "(a pinned git repo, not a vendored mesh path)"
+            )
+        if _ASSET_COMMIT.fullmatch(commit) is None:
+            raise ValueError("asset commit must be a 40-character hex sha")
+        object.__setattr__(self, "repository", repository)
+        object.__setattr__(self, "commit", commit)
 
 
 @dataclass(frozen=True)
@@ -108,14 +159,18 @@ class PluginInfo:
     error: str | None = None
     fallback: bool = False
     distribution: str = ""
+    # Empty when the plugin has no ``asset_source`` pin. CI skips the fetch.
+    asset_repository: str = ""
+    asset_commit: str = ""
     transport_factories: Mapping[str, TransportFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
     sim_factories: Mapping[str, SimFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
-    # The instance, so a sim connect can call an optional ``prepare_sim``.
-    # Discovery does not call it. Not part of equality or the list report.
+    # The instance, so a later policy load can call ``safety_policy`` and a
+    # sim connect can call an optional ``prepare_sim``. Discovery does not
+    # call either. Not part of equality or the list report.
     plugin: Any = field(default=None, compare=False, hash=False, repr=False)
 
     @property
@@ -271,16 +326,45 @@ def _coerce_mapping(raw: object, what: str) -> dict[str, Any]:
     return out
 
 
+def _read_asset_source(plugin: object, name: str) -> AssetSource | None:
+    """Return a pin, or ``None`` when the plugin does not fetch meshes.
+
+    A missing method is ``None``. A bad return is a load error. This does not
+    download anything.
+    """
+    method = getattr(plugin, "asset_source", None)
+    if method is None:
+        return None
+    if not callable(method):
+        raise TypeError(f"plugin {name!r} asset_source is not callable")
+    raw = method()
+    if raw is None:
+        return None
+    if not isinstance(raw, AssetSource):
+        raise TypeError(
+            f"plugin {name!r} asset_source() must return AssetSource or None, "
+            f"not {type(raw).__name__}"
+        )
+    return raw
+
+
 def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
     entry_name = str(getattr(entry, "name", "") or "")
     name = entry_name or "<unknown>"
     specs: tuple[RobotSpec, ...] = ()
+    plugin: object | None = None
+    asset_repository = ""
+    asset_commit = ""
     try:
         plugin = _materialize(entry.load())
         name = _plugin_name(plugin)
         specs = _coerce_specs(plugin, name)
         schemes = _coerce_mapping(plugin.transports(), "transports")  # type: ignore[attr-defined]
         backends = _coerce_mapping(plugin.sim_backends(), "sim_backends")  # type: ignore[attr-defined]
+        asset = _read_asset_source(plugin, name)
+        if asset is not None:
+            asset_repository = asset.repository
+            asset_commit = asset.commit
     except Exception as exc:
         return PluginInfo(
             name=name,
@@ -292,6 +376,9 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
             error=f"{type(exc).__name__}: {exc}",
             fallback=fallback,
             distribution=_distribution_name(entry),
+            asset_repository=asset_repository,
+            asset_commit=asset_commit,
+            plugin=plugin,
         )
     return PluginInfo(
         name=name,
@@ -303,6 +390,8 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         error=None,
         fallback=fallback,
         distribution=_distribution_name(entry),
+        asset_repository=asset_repository,
+        asset_commit=asset_commit,
         transport_factories=MappingProxyType(schemes),
         sim_factories=MappingProxyType(backends),
         plugin=plugin,
@@ -378,6 +467,20 @@ def _load_all() -> tuple[PluginInfo, ...]:
     return _reject_collisions(loaded)
 
 
+def plugin_named(name: str) -> object | None:
+    """The loaded plugin instance for ``name``, or ``None``.
+
+    Discovery stores the instance and does not call ``safety_policy``.
+    The gate calls that hook when it loads a policy.
+    """
+    if not name:
+        return None
+    for info in loaded_plugins():
+        if info.error is None and info.name == name and info.plugin is not None:
+            return info.plugin
+    return None
+
+
 def loaded_plugins() -> tuple[PluginInfo, ...]:
     """Discover plugins once per process. Failures are records, not raises."""
     global _CACHE, _in_load
@@ -426,6 +529,76 @@ def reload_plugins() -> tuple[PluginInfo, ...]:
     registry_mod._plugins_loading = False
     registry_mod._ensure_plugins()
     return loaded_plugins()
+
+
+def _cell(value: str) -> str:
+    return value.replace("|", "/").replace("\n", " ").replace("\r", " ")
+
+
+def ci_sim_matrix_rows() -> list[dict[str, str]]:
+    """One sim-matrix row per registered spec with ``ci_sim.enabled``.
+
+    Keys are what ``.github/workflows/sim-matrix.yml`` reads: ``robot``,
+    ``robot_class``, ``plugin``, ``scenario``, ``asset_repository`` and
+    ``asset_commit``. A spec whose scenario string is empty uses the class
+    default from :data:`ohho.robot_spec.CI_SCENARIOS`. Asset fields are empty
+    when the plugin has no pin, and the workflow then skips the fetch.
+    Rows follow :func:`ohho.registry.list_specs` (sorted by robot id).
+    """
+    from .registry import list_specs
+    from .robot_spec import CI_SCENARIOS, RobotClass
+
+    specs = list_specs()
+    owners: dict[str, PluginInfo] = {}
+    for info in loaded_plugins():
+        if info.error is not None:
+            continue
+        for spec_id in info.spec_ids:
+            owners.setdefault(spec_id, info)
+
+    rows: list[dict[str, str]] = []
+    for spec in specs:
+        ci_sim = spec.ci_sim
+        if ci_sim is None or not ci_sim.enabled:
+            continue
+        owner = owners.get(spec.id)
+        robot_class = spec.robot_class
+        if not isinstance(robot_class, RobotClass):
+            robot_class = RobotClass(str(robot_class))
+        scenario = ci_sim.scenario or CI_SCENARIOS[robot_class]
+        rows.append(
+            {
+                "robot": spec.id,
+                "robot_class": robot_class.value,
+                "plugin": owner.name if owner is not None else spec.source,
+                "scenario": scenario,
+                "asset_repository": owner.asset_repository if owner is not None else "",
+                "asset_commit": owner.asset_commit if owner is not None else "",
+            }
+        )
+    return rows
+
+
+def format_matrix_runtime(row: Mapping[str, str], runtime_s: int) -> str:
+    """Markdown for one matrix row, appended to ``GITHUB_STEP_SUMMARY``.
+
+    ``runtime_s`` is the whole conformance run for that row, in whole seconds.
+    """
+    if isinstance(runtime_s, bool) or not isinstance(runtime_s, int):
+        raise TypeError("runtime_s must be an int")
+    if runtime_s < 0:
+        raise ValueError("runtime_s must be >= 0")
+    robot = _cell(str(row.get("robot", "")))
+    robot_class = _cell(str(row.get("robot_class", "")))
+    plugin = _cell(str(row.get("plugin", "")))
+    scenario = _cell(str(row.get("scenario", "")))
+    return (
+        f"### {robot}\n"
+        "\n"
+        "| robot | class | plugin | scenario | runtime_s |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        f"| {robot} | {robot_class} | {plugin} | {scenario} | {runtime_s} |\n"
+    )
 
 
 def format_plugin_report(infos: Sequence[PluginInfo] | None = None) -> str:
@@ -532,6 +705,29 @@ def plugin_sim_backend(
     return factory(spec, address, runtime)
 
 
+def materialise_ci_assets(
+    plugin_name: str | None = None, dest: Path | None = None
+) -> None:
+    """Ask one plugin to fill a sim-matrix asset directory.
+
+    ``plugin_name`` defaults to ``MATRIX_PLUGIN``. ``dest`` defaults to
+    ``.sim-assets/<plugin>``. A plugin with no ``materialise_assets`` is
+    left as the checkout wrote it. This does not choose a robot id.
+    """
+    name = (
+        plugin_name if plugin_name is not None else os.environ.get("MATRIX_PLUGIN", "")
+    )
+    if not name:
+        return
+    root = dest if dest is not None else Path(".sim-assets") / name
+    plugin = plugin_named(name)
+    if plugin is None:
+        return
+    hook = getattr(plugin, "materialise_assets", None)
+    if callable(hook):
+        hook(root)
+
+
 def _call_prepare_sim(spec: RobotSpec) -> None:
     """Let the plugin that owns ``spec`` fetch or bind a sim config.
 
@@ -550,16 +746,21 @@ def _call_prepare_sim(spec: RobotSpec) -> None:
 __all__ = [
     "BUILTIN_ENTRY_VALUE",
     "ENTRY_GROUP",
+    "AssetSource",
     "DoctorReport",
     "PluginInfo",
     "RobotPlugin",
     "SimFactory",
     "TransportFactory",
+    "ci_sim_matrix_rows",
     "declared_sim_backend",
     "describe_plugin_schemes",
     "describe_plugin_sim_backends",
+    "format_matrix_runtime",
     "format_plugin_report",
     "loaded_plugins",
+    "materialise_ci_assets",
+    "plugin_named",
     "plugin_sim_backend",
     "plugin_transport",
     "register_loaded_specs",

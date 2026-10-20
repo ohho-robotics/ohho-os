@@ -22,10 +22,12 @@ from unittest.mock import patch
 
 from ohho.cli import main
 from ohho.humanoid import HumanoidMode
+from ohho.humanoid_policy import SIM_CAPS, class_profile
 from ohho.plugins import BUILTIN_ENTRY_VALUE, ENTRY_GROUP
 from ohho.registry import list_specs
 from ohho.robot_spec import HumanoidLimits, RobotClass, default_limits
 from ohho.safety import PROFILES, profile_for
+from ohho.testing.conformance.vendors import EXCLUDED_FILES
 
 _REPO = Path(__file__).resolve().parents[1]
 _PLUGIN = _REPO / "plugins" / "ohho-booster"
@@ -140,7 +142,8 @@ class TestBoosterSpec(unittest.TestCase):
         self.assertTrue(spec.assets.urdf.endswith("T2_31dof.urdf"))
         self.assertTrue(spec.assets.mjcf.endswith("T2_31dof.xml"))
         self.assertEqual(spec.sim_backend, "humanoid-mujoco")
-        self.assertFalse(spec.ci_sim.enabled)
+        self.assertTrue(spec.ci_sim.enabled)
+        self.assertEqual(spec.ci_sim.scenario, "humanoid_walk")
 
     def test_limits_are_not_looser_than_the_humanoid_defaults(self):
         generic = default_limits(RobotClass.HUMANOID, 0.5, 1.0)
@@ -158,10 +161,13 @@ class TestBoosterSpec(unittest.TestCase):
         speed = self.spec.capability_params["humanoid.locomotion"]["speed_max"]
         self.assertLessEqual(speed, generic.max_vx)
         self.assertNotIn("booster-t2", PROFILES)
+        # Class policy ceiling (sim). The generic unknown-robot cap is not
+        # the humanoid ceiling; a plugin profile may only be tighter.
+        ceiling = class_profile(SIM_CAPS)
         profile = profile_for("booster-t2", self.spec)
-        self.assertLessEqual(profile.max_vx, 0.3)
-        self.assertLessEqual(profile.max_vy, 0.3)
-        self.assertLessEqual(profile.max_wz, 1.0)
+        self.assertLessEqual(profile.max_vx, ceiling.max_vx)
+        self.assertLessEqual(profile.max_vy, ceiling.max_vy)
+        self.assertLessEqual(profile.max_wz, ceiling.max_wz)
 
     def test_mode_map_is_plain_data_and_omits_soccer(self):
         self.assertEqual(
@@ -210,6 +216,17 @@ class TestBoosterDiscovery(unittest.TestCase):
             self.assertNotIn("error:", report)
             info_schemes = report
             self.assertNotIn("booster://", info_schemes)
+            code, text = _stdout(["list", "--json", "--ci-sim"])
+            self.assertEqual(code, 0)
+            rows = {row["robot"]: row for row in json.loads(text)}
+            self.assertIn("booster-t2", rows)
+            self.assertEqual(rows["booster-t2"]["robot_class"], "humanoid")
+            self.assertEqual(rows["booster-t2"]["plugin"], "booster")
+            self.assertEqual(rows["booster-t2"]["scenario"], "humanoid_walk")
+            self.assertIn("/", rows["booster-t2"]["asset_repository"])
+            self.assertEqual(len(rows["booster-t2"]["asset_commit"]), 40)
+            self.assertIn("omnibot", rows)
+            self.assertIn("sim", rows)
 
         with _discovered(without_plugin):
             self.assertNotIn("booster-t2", {spec.id for spec in list_specs()})
@@ -368,6 +385,30 @@ class TestAssetPin(unittest.TestCase):
                     assets_mod.fetch_policy(folder / "other", url=blob.as_uri())
                 self.assertIn("sha256", str(caught.exception))
 
+    def test_checkout_keeps_the_mjcf_and_stores_the_checkpoint(self):
+        from ohho_booster import assets as assets_mod
+
+        pin = self.manifest
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mjcf = root / str(pin["paths"]["mjcf"])
+            mjcf.parent.mkdir(parents=True)
+            mjcf.write_text("<mujoco/>", encoding="utf-8")
+            checkpoint = root / "policies" / "walk.pt"
+            with (
+                patch.object(assets_mod, "fetch_assets") as archive,
+                patch.object(assets_mod, "fetch_policy", return_value=checkpoint),
+            ):
+                found_mjcf, found_policy = assets_mod.materialise_checkout(root)
+            archive.assert_not_called()
+            self.assertEqual(found_mjcf, mjcf)
+            self.assertEqual(found_policy, checkpoint)
+            self.assertEqual(assets_mod.matrix_checkout(root), root)
+            self.assertEqual(
+                assets_mod.description_repository(pin),
+                str(pin["upstream"]).removeprefix("https://github.com/").strip("/"),
+            )
+
     def test_network_fetch_matches_pinned_joint_names(self):
         """Compare upstream T2_JOINT_NAMES with the copy in the plugin.
 
@@ -403,6 +444,10 @@ class TestVendorNamesStayOutOfCore(unittest.TestCase):
         hits: list[str] = []
         for path in _OHHO.rglob("*"):
             if path.suffix not in {".py", ".json"}:
+                continue
+            rel = path.relative_to(_REPO).as_posix()
+            # The conformance denylist names the tokens it forbids.
+            if rel in EXCLUDED_FILES:
                 continue
             text = path.read_text(encoding="utf-8")
             for lineno, line in enumerate(text.splitlines(), 1):

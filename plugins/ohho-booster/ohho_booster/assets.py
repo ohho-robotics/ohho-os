@@ -160,8 +160,61 @@ def fetch_policy(
     return path
 
 
+def description_repository(manifest: Mapping[str, Any] | None = None) -> str:
+    """``owner/name`` for the pinned description archive."""
+    pin = dict(manifest) if manifest is not None else load_manifest()
+    upstream = str(pin["upstream"]).strip()
+    marker = "https://github.com/"
+    if not upstream.startswith(marker):
+        raise ValueError("description upstream must be https://github.com/owner/name")
+    repository = upstream[len(marker) :].strip("/")
+    if repository.endswith(".git"):
+        repository = repository[: -len(".git")]
+    return repository
+
+
+def matrix_checkout(root: Path | None = None) -> Path | None:
+    """Sim-matrix checkout of this plugin when the pinned MJCF is already there.
+
+    The workflow checks the description repository out at
+    ``.sim-assets/<plugin>``. That tree is the repository root, not the
+    extracted archive layout.
+    """
+    base = Path(root) if root is not None else Path(".sim-assets") / "booster"
+    mjcf = base / str(load_manifest()["paths"]["mjcf"])
+    if mjcf.is_file():
+        return base
+    return None
+
+
+def materialise_checkout(dest: Path) -> tuple[Path, Path]:
+    """Return ``(mjcf, checkpoint)`` inside ``dest``.
+
+    A git checkout that already contains the MJCF is reused. The locomotion
+    checkpoint is a second pin and is stored under ``dest`` so the matrix
+    cache, keyed on the description commit, holds both. A matching checkpoint
+    is not downloaded again.
+    """
+    pin = load_manifest()
+    root = Path(dest)
+    mjcf = root / str(pin["paths"]["mjcf"])
+    if not mjcf.is_file():
+        fetched = fetch_assets(root)
+        mjcf = fetched / str(pin["paths"]["mjcf"])
+    checkpoint = fetch_policy(root)
+    return mjcf, checkpoint
+
+
 def ensure_assets(dest: Path | None = None) -> tuple[Path, Path]:
-    """Return ``(mjcf, checkpoint)`` from the cache, fetching anything missing."""
+    """Return ``(mjcf, checkpoint)`` from the cache, fetching anything missing.
+
+    A sim-matrix checkout at ``.sim-assets/booster`` wins over the home cache
+    when ``dest`` is omitted, so CI does not download the mesh archive twice.
+    """
+    if dest is None:
+        checkout = matrix_checkout()
+        if checkout is not None:
+            return materialise_checkout(checkout)
     root = fetch_assets(dest)
     checkpoint = fetch_policy(dest)
     mjcf = root / str(load_manifest()["paths"]["mjcf"])

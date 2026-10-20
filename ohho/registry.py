@@ -23,6 +23,7 @@ from . import capabilities as caps
 from .capability_params import reject_unknown_capabilities
 from .robot_spec import (
     BUILTIN_SOURCE,
+    CI_SCENARIOS,
     GENERIC_CAPABILITIES,
     AerialLimits,
     CiSim,
@@ -261,6 +262,10 @@ _BUILTINS: dict[str, RobotSpec] = {
         joint_groups={"arm": _OMNIBOT_ARM},
         robot_class=RobotClass.MOBILE_MANIPULATOR,
         source=BUILTIN_SOURCE,
+        ci_sim=CiSim(
+            enabled=True,
+            scenario=CI_SCENARIOS[RobotClass.MOBILE_MANIPULATOR],
+        ),
     ),
     "unitree-go2": RobotSpec(
         id="unitree-go2",
@@ -281,6 +286,7 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_ang=2.0,
         robot_class=RobotClass.QUADRUPED,
         source=BUILTIN_SOURCE,
+        # No registered sim backend for this class, so it stays out of the matrix.
         capability_params={caps.LEGGED_POSE: {"poses": list(_QUADRUPED_POSES)}},
     ),
     "sim": RobotSpec(
@@ -295,6 +301,10 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_ang=2.0,
         robot_class=RobotClass.MOBILE_BASE,
         source=BUILTIN_SOURCE,
+        ci_sim=CiSim(
+            enabled=True,
+            scenario=CI_SCENARIOS[RobotClass.MOBILE_BASE],
+        ),
     ),
 }
 
@@ -334,10 +344,11 @@ def register(spec: RobotSpec) -> RobotSpec:
     """Add (or replace) a robot in the registry.
 
     Capability names must be in the vocabulary. Parameter objects are checked
-    against their schemas. The parameters describe the robot; they do not
-    change safety caps. Discovery still fills the registry from plugins, and
-    this spec is stored after that, so a failed built-in plugin is not hidden
-    by a second copy of the built-in table.
+    against their schemas.     The parameters describe the robot; they do not
+    change safety caps. Discovery loads plugin specs first, then this spec is
+    stored, so a later ``register`` replaces one id without hiding the others
+    and a failed built-in plugin is not hidden by a second copy of the
+    built-in table.
     """
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
     _ensure_plugins()

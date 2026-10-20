@@ -17,8 +17,12 @@ plugins, extract safety policies, or edit the open drone branches.
    contain `booster`, `t2`, `unitree`, `go2`, `px4`, `crazyflie`, `yahboom` or
    `omnibot` once the M0R refactors land. A CI grep test enforces this for new
    names from day one (`booster`, `t2`) and for the existing names once each
-   has moved. That grep is C-07. It is not added here, and the built-in specs
-   in `ohho/registry.py` keep their current ids until M0R.
+   has moved. That grep is C-07. It lives in
+   `ohho/testing/conformance` and reads
+   `ohho/testing/conformance/vendor_allowlist.txt`. Names still in core are
+   listed there with the issue that moves them (R-01, R-02, R-03). `booster`
+   and `t2` are not allowlisted. Built-in specs in `ohho/registry.py` keep
+   their current ids until M0R.
 
 2. **A robot is a plugin.** A plugin declares specs, capabilities with
    parameters, transports (URI schemes), sim backends, a safety policy (or uses
@@ -47,7 +51,8 @@ plugins, extract safety policies, or edit the open drone branches.
 6. **Sims, CI and the console are parameterised by robot.** One CI matrix over
    registered robots, one scenario per robot class, one console sim page driven
    by the descriptor. `RobotSpec.ci_sim` is the opt-in (`enabled` plus a
-   scenario name). The matrix workflow is C-08.
+   scenario name). The matrix workflow is C-08 / OHH-316:
+   `.github/workflows/sim-matrix.yml`, fed by `ohho list --json --ci-sim`.
 
 ## Where plugins live
 
@@ -208,6 +213,35 @@ leave both a field and a property of the same name:
 `requires_hardware_arming` on the spec is this aerial flag only. It is not the
 `SafetyGate` arming check, and it does not arm hardware.
 
+## Conformance kit (C-07 / OHH-315)
+
+`python -m ohho.testing.conformance --robot <id>` runs that robot's class
+scenario on the plugin's sim backend only. The kit calls
+`RobotPlugin.sim_backends()` and refuses a transport whose protocol is not
+`simulated`. It does not open a hardware scheme.
+
+A new plugin runs it like this:
+
+1. Register a sim backend from `sim_backends()` and set `RobotSpec.sim_backend`,
+   or leave it empty to use the class default (`kinematic` for a ground robot
+   or an arm the built-in backend can run).
+2. Run `python -m ohho.testing.conformance --robot <id>`.
+3. `mobile_base` and `mobile_manipulator` drive a 1 m square, then check that a
+   stale command zeros velocity and that e-stop latches.
+4. An `arm` moves to home, clamps a joint command to the safety profile, and
+   disables torque on e-stop in sim.
+5. `humanoid` runs `humanoid_walk` on `humanoid-mujoco`: prepare, walk 1 m,
+   turn 90 degrees, stop, e-stop while walking (hold prepare, do not damp
+   while upright), then an injected push that latches the fall and damps.
+   `quadruped` and `aerial` stay in the kit registry with no sim backend.
+   That report is skipped, with the reason, and is not a pass.
+
+Every run also checks the telemetry schema, that MCP payloads carry `backend`
+and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that
+the plugin imports no vendor SDK at load, and that vendor names outside plugin
+packages are on the allowlist. `booster` and `t2` fail at `file:line`. The
+allowlist also names `feetech` (R-01) and `ardupilot` (R-03).
+
 ## Consequences
 
 - Old manifests and `RobotSpec(...)` calls keep working. New fields have defaults.
@@ -219,7 +253,8 @@ leave both a field and a property of the same name:
   scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
   default) selects a plugin sim backend for `sim://` and for auto; an empty
   name keeps today's simulator return. `dds://` stays the Unitree scheme.
-  Per-class `SafetyPolicy`, the robot-id resolver and the CI matrix are later
-  issues (C-05, C-06, C-08). They should follow this ADR rather than grow more
-  fields on the flat spec. `SafetyGate` profile lookup stays as it is until
-  C-05.
+  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
+  gate delegates to Ground, Arm and Legged policies, and a plugin may only
+  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
+  unchanged. The robot-id resolver remains C-06. The CI matrix is
+  `.github/workflows/sim-matrix.yml` (C-08 / OHH-316).
