@@ -153,9 +153,9 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 
 1. **In-process simulation (no ROS required):**
    ```bash
-   ohho sim-serve --backend sim --port 8765
+   ohho sim-serve --backend sim --port 8790
    ```
-   Serves the existing in-process `sim://` robot on port 8765 with zero external dependencies.
+   Serves the existing in-process `sim://` robot on port 8790 with zero external dependencies. The default is 8790 because port 8765 is OmniBot's Foxglove bridge.
 
 2. **ROS 2 bridge:**
    ```bash
