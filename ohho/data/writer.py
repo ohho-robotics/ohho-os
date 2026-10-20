@@ -139,6 +139,59 @@ def _write_episodes(meta_dir: Path, episodes: List[Episode]) -> None:
             )
 
 
+def _episode_names(episodes: List[Episode], attr: str) -> Optional[List[str]]:
+    """Names stored on the episode by the recorder, when every episode agrees."""
+    chosen: Optional[List[str]] = None
+    for ep in episodes:
+        names = getattr(ep, attr, None)
+        if not names:
+            continue
+        current = [str(name) for name in names]
+        if chosen is None:
+            chosen = current
+        elif current != chosen:
+            return None
+    return chosen
+
+
+def _arm_action(episodes: List[Episode]) -> Optional[str]:
+    """The arm-action form, when the dataset uses one form."""
+    forms = []
+    for ep in episodes:
+        form = getattr(ep, "arm_action", None)
+        if form and form not in forms:
+            forms.append(str(form))
+    if len(forms) == 1:
+        return forms[0]
+    return None
+
+
+def _image_keys(episodes: List[Episode]) -> List[str]:
+    keys: List[str] = []
+    for ep in episodes:
+        for key, frames in ep.images.items():
+            if frames and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _first_image(episodes: List[Episode], key: str) -> Any:
+    for ep in episodes:
+        frames = ep.images.get(key) or []
+        if frames:
+            return frames[0]
+    return None
+
+
+def _image_hw(sample: Any) -> tuple[int, int]:
+    vid_h, vid_w = 480, 640
+    if hasattr(sample, "shape") and len(sample.shape) >= 2:
+        vid_h, vid_w = int(sample.shape[0]), int(sample.shape[1])
+    elif hasattr(sample, "size"):
+        vid_w, vid_h = int(sample.size[0]), int(sample.size[1])
+    return vid_h, vid_w
+
+
 def _write_info(
     meta_dir: Path,
     episodes: List[Episode],
@@ -151,14 +204,23 @@ def _write_info(
     state_dim = episodes[0].state_dim if episodes else 0
     action_dim = episodes[0].action_dim if episodes else 0
 
-    if robot_type == "unitree-go2" or state_dim == 31:
+    explicit_state = _episode_names(episodes, "state_names")
+    explicit_action = _episode_names(episodes, "action_names")
+    if explicit_state is not None and len(explicit_state) == state_dim:
+        state_names = explicit_state
+    elif robot_type == "unitree-go2" or state_dim == 31:
         state_names = GO2_STATE_NAMES[:state_dim]
-        action_names = GO2_ACTION_NAMES[:action_dim]
     elif state_dim == 9:
         state_names = OMNIBOT_STATE_NAMES[:state_dim]
-        action_names = OMNIBOT_ACTION_NAMES[:action_dim]
     else:
         state_names = BASE_STATE_NAMES[:state_dim]
+    if explicit_action is not None and len(explicit_action) == action_dim:
+        action_names = explicit_action
+    elif robot_type == "unitree-go2" or state_dim == 31:
+        action_names = GO2_ACTION_NAMES[:action_dim]
+    elif state_dim == 9:
+        action_names = OMNIBOT_ACTION_NAMES[:action_dim]
+    else:
         action_names = BASE_ACTION_NAMES[:action_dim]
 
     has_raw = any(f.action_raw is not None for ep in episodes for f in ep.frames)
@@ -184,22 +246,10 @@ def _write_info(
             "names": action_names,
         }
 
-    # Video feature detection
-    vid_h, vid_w = 480, 640
-    if has_videos:
-        for ep in episodes:
-            if (
-                "observation.images.front" in ep.images
-                and ep.images["observation.images.front"]
-            ):
-                sample_img = ep.images["observation.images.front"][0]
-                if hasattr(sample_img, "shape") and len(sample_img.shape) >= 2:
-                    vid_h, vid_w = int(sample_img.shape[0]), int(sample_img.shape[1])
-                elif hasattr(sample_img, "size"):
-                    vid_w, vid_h = int(sample_img.size[0]), int(sample_img.size[1])
-                break
-
-        features["observation.images.front"] = {
+    for image_key in _image_keys(episodes):
+        sample = _first_image(episodes, image_key)
+        vid_h, vid_w = _image_hw(sample)
+        features[image_key] = {
             "dtype": "video",
             "shape": [3, vid_h, vid_w],
             "names": ["channels", "height", "width"],
@@ -234,6 +284,9 @@ def _write_info(
         "tasks": tasks,
         "features": {**features, **_SCALAR_FEATURES},
     }
+    arm_action = _arm_action(episodes)
+    if arm_action is not None:
+        info["arm_action"] = arm_action
     with open(meta_dir / "info.json", "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2)
     return features
@@ -319,9 +372,9 @@ def _write_episodes_stats(meta_dir: Path, episodes: List[Episode]) -> None:
                     for frame in ep.frames
                 ]
                 ep_stats["action_raw"] = _feature_stats(raw_rows)
-            front = ep.images.get("observation.images.front", [])
-            if front:
-                ep_stats["observation.images.front"] = _image_feature_stats(front)
+            for image_key, frames in ep.images.items():
+                if frames:
+                    ep_stats[image_key] = _image_feature_stats(frames)
             line = {"episode_index": ep.episode_index, "stats": ep_stats}
             f.write(json.dumps(line) + "\n")
 
@@ -363,45 +416,14 @@ def _write_stats(meta_dir: Path, episodes: List[Episode]) -> None:
             "mean": [float(sum(col) / len(col)) for col in raw_cols],
         }
 
-    # Video stats if front camera is present
-    has_videos = any(ep.has_videos for ep in episodes)
-    if has_videos:
+    for image_key in _image_keys(episodes):
         video_frames = []
         for ep in episodes:
-            frames = ep.images.get("observation.images.front", [])
+            frames = ep.images.get(image_key, [])
             if frames:
-                video_frames.extend(frames[:5])  # Sample a few frames per episode
+                video_frames.extend(frames[:5])
         if video_frames:
-            try:
-                import numpy as np  # type: ignore
-
-                arr = np.array(video_frames, dtype=np.float32) / 255.0
-                c_min = arr.min(axis=(0, 1, 2)).tolist()
-                c_max = arr.max(axis=(0, 1, 2)).tolist()
-                c_mean = arr.mean(axis=(0, 1, 2)).tolist()
-                stats["observation.images.front"] = {
-                    "min": [
-                        [[float(c_min[0])]],
-                        [[float(c_min[1])]],
-                        [[float(c_min[2])]],
-                    ],
-                    "max": [
-                        [[float(c_max[0])]],
-                        [[float(c_max[1])]],
-                        [[float(c_max[2])]],
-                    ],
-                    "mean": [
-                        [[float(c_mean[0])]],
-                        [[float(c_mean[1])]],
-                        [[float(c_mean[2])]],
-                    ],
-                }
-            except Exception:
-                stats["observation.images.front"] = {
-                    "min": [[[0.0]], [[0.0]], [[0.0]]],
-                    "max": [[[1.0]], [[1.0]], [[1.0]]],
-                    "mean": [[[0.5]], [[0.5]], [[0.5]]],
-                }
+            stats[image_key] = _image_feature_stats(video_frames)
 
     with open(meta_dir / "stats.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
@@ -472,7 +494,8 @@ def _write_dataset_card(
     """Generate a standard LeRobot dataset card (README.md)."""
     total_frames = sum(ep.length for ep in episodes)
     tags = ["lerobot", "robotics", robot_type]
-    has_videos = any(ep.has_videos for ep in episodes)
+    image_keys = _image_keys(episodes)
+    has_videos = bool(image_keys)
     if has_videos:
         tags.append("video")
     tag_lines = "\n".join(f"- {t}" for t in tags)
@@ -501,7 +524,7 @@ This dataset contains teleoperation demonstrations recorded with OhhO OS on {rob
 - **Episodes**: {len(episodes)}
 - **Total Frames**: {total_frames}
 - **FPS**: {fps}
-- **Videos**: {"Yes (observation.images.front)" if has_videos else "No"}
+- **Videos**: {"Yes (" + ", ".join(image_keys) + ")" if image_keys else "No"}
 
 ### Tasks
 {task_lines}
@@ -511,8 +534,11 @@ This dataset contains teleoperation demonstrations recorded with OhhO OS on {rob
 - `action`: shape {action_feat.get("shape", [])} ({action_names})
 - `action_raw`: shape {action_feat.get("shape", [])} (raw requested action before SafetyGate clamping)
 """
-    if has_videos:
-        card += "- `observation.images.front`: shape [3, H, W] front-camera video encoded as MP4 per episode\n"
+    form = _arm_action(episodes)
+    if form is not None:
+        card += f"- arm action form: `{form}` (`arm_action` in info.json)\n"
+    for image_key in image_keys:
+        card += f"- `{image_key}`: shape [3, H, W] encoded as MP4 per episode\n"
 
     card += f"""
 ## Usage

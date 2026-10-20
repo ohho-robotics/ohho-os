@@ -43,9 +43,28 @@ _VENDOR = re.compile(r"booster|\bt2\b", re.IGNORECASE)
 
 
 def _ensure_plugin_path() -> None:
+    """Import this checkout's plugin ahead of any editable install.
+
+    Plugin discovery can import ``ohho_booster`` before this path is first.
+    Drop that module so the tests read the spec in this tree.
+    """
     root = str(_PLUGIN)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    if root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
+    loaded = sys.modules.get("ohho_booster")
+    loaded_file = str(getattr(loaded, "__file__", "") or "")
+    if loaded is None:
+        return
+    try:
+        inside = Path(loaded_file).resolve().is_relative_to(_PLUGIN.resolve())
+    except (OSError, ValueError):
+        inside = False
+    if inside:
+        return
+    for name in list(sys.modules):
+        if name == "ohho_booster" or name.startswith("ohho_booster."):
+            del sys.modules[name]
 
 
 @contextmanager

@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .. import capabilities as caps
 from ..robot import Robot
@@ -37,6 +37,13 @@ class Frame:
     image: Optional[Any] = None
 
 
+def _is_humanoid(robot: Robot) -> bool:
+    """Humanoid layout, checked before the legged and arm layouts."""
+    from .humanoid_features import is_humanoid
+
+    return is_humanoid(robot)
+
+
 @dataclass
 class Episode:
     """A recorded episode — a list of frames plus metadata."""
@@ -47,6 +54,9 @@ class Episode:
     task_index: int = 0
     fps: float = 10.0
     images: Dict[str, List[Any]] = field(default_factory=dict)
+    state_names: Optional[List[str]] = None
+    action_names: Optional[List[str]] = None
+    arm_action: Optional[str] = None
 
     @property
     def length(self) -> int:
@@ -189,6 +199,11 @@ def _telemetry_to_state(robot: Robot) -> List[float]:
     - Mobile-manipulation 9-D: arm joints (6) + base velocity (3)
     - Base-only 3-D: base velocity (vx, vy, omega)
     """
+    if _is_humanoid(robot):
+        from .humanoid_features import observation_state
+
+        return observation_state(robot)
+
     t = robot.telemetry()
     base_vel = (
         [float(t.odom.vx), float(t.odom.vy), float(t.odom.omega)]
@@ -332,11 +347,18 @@ class Recorder:
         repo_id: str = "local/episodes",
         fps: float = 10.0,
         camera_fn: Optional[Any] = None,
+        arm_action: Optional[str] = None,
     ) -> None:
         self.robot = robot
         self.repo_id = repo_id
         self.fps = fps
         self._camera_fn = camera_fn
+        if arm_action is not None:
+            from .humanoid_features import ARM_ACTIONS
+
+            if arm_action not in ARM_ACTIONS:
+                raise ValueError("arm_action must be 'ee_pose' or 'arm_joints'")
+        self._arm_action = arm_action
         self._current_mode: float = 0.0
         self._episodes: List[Episode] = []
         self._current: Optional[Episode] = None
@@ -363,6 +385,10 @@ class Recorder:
 
     def _zero_action(self) -> List[float]:
         """Zero action vector sized to the robot's DOF and category."""
+        if _is_humanoid(self.robot):
+            from .humanoid_features import action_names
+
+            return [0.0] * len(action_names(self.robot.spec, self._arm_form()))
         if _is_legged(self.robot):
             return [0.0, 0.0, 0.0, getattr(self, "_current_mode", 0.0)]
         n_arm = (
@@ -374,10 +400,19 @@ class Recorder:
         """Intercept drive/move_joints to capture both raw requests and clamped actions."""
         original_drive = self.robot.drive
         original_move_joints = self.robot.move_joints
+        original_move_ee = self.robot.move_ee
+        original_gripper = self.robot.gripper
 
         recorder = self
 
         def drive(vx: float = 0.0, vy: float = 0.0, w: float = 0.0):
+            if _is_humanoid(recorder.robot):
+                recorder._set_velocity(vx, vy, w, raw=True)
+                res = original_drive(vx, vy, w)
+                sent_vx, sent_vy, sent_w = recorder._sent_velocity(vx, vy, w)
+                recorder._set_velocity(sent_vx, sent_vy, sent_w, raw=False)
+                return res
+
             # 1. Capture raw action requested
             raw_action = recorder._last_action_raw[:]
             if _is_legged(recorder.robot):
@@ -434,8 +469,11 @@ class Recorder:
             recorder._last_action = clamped_action
             return res
 
-        def move_joints(positions):
-            positions = list(positions)
+        def move_joints(*args, **kwargs):
+            if _is_humanoid(recorder.robot):
+                recorder._note_humanoid_joints(args, kwargs)
+                return original_move_joints(*args, **kwargs)
+            positions = list(args[0] if args else [])
             raw_action = recorder._last_action_raw[:]
             n_arm = min(
                 len(positions),
@@ -457,8 +495,156 @@ class Recorder:
             recorder._last_action = clamped_action
             return res
 
+        def move_ee(side, pose, t=0.0):
+            if _is_humanoid(recorder.robot):
+                recorder._note_ee(side, pose)
+            return original_move_ee(side, pose, t)
+
+        def gripper(side, cmd):
+            if _is_humanoid(recorder.robot):
+                recorder._note_gripper(side, cmd)
+            return original_gripper(side, cmd)
+
         self.robot.drive = drive  # type: ignore[method-assign]
         self.robot.move_joints = move_joints  # type: ignore[method-assign]
+        self.robot.move_ee = move_ee  # type: ignore[method-assign]
+        self.robot.gripper = gripper  # type: ignore[method-assign]
+
+    def _arm_form(self) -> str:
+        from .humanoid_features import (
+            ARM_ACTION_ARM_JOINTS,
+            ARM_ACTION_EE_POSE,
+        )
+
+        if self._arm_action in (ARM_ACTION_EE_POSE, ARM_ACTION_ARM_JOINTS):
+            return self._arm_action
+        if self._current is not None and self._current.arm_action:
+            return self._current.arm_action
+        return ARM_ACTION_EE_POSE
+
+    def _action_name_list(self) -> List[str]:
+        if self._current is not None and self._current.action_names:
+            return list(self._current.action_names)
+        from .humanoid_features import action_names
+
+        return action_names(self.robot.spec, self._arm_form())
+
+    def _set_velocity(self, vx: float, vy: float, wz: float, *, raw: bool) -> None:
+        current = self._last_action_raw if raw else self._last_action
+        updated = list(current)
+        if len(updated) < 3:
+            updated = self._zero_action()
+        updated[0] = float(vx)
+        updated[1] = float(vy)
+        updated[2] = float(wz)
+        if raw:
+            self._last_action_raw = updated
+        else:
+            self._last_action = updated
+
+    def _sent_velocity(
+        self, vx: float, vy: float, w: float
+    ) -> tuple[float, float, float]:
+        """Velocity that reached the transport, after the robot clamp."""
+        tp = self.robot.transport
+        if hasattr(tp, "_last_sent"):
+            sent_vx, sent_vy, sent_w = tp._last_sent
+            return float(sent_vx), float(sent_vy), float(sent_w)
+        from ..schema import clamp as schema_clamp
+
+        sent_vx = schema_clamp(vx, -self.robot.spec.max_lin, self.robot.spec.max_lin)
+        sent_vy = (
+            schema_clamp(vy, -self.robot.spec.max_lin, self.robot.spec.max_lin)
+            if self.robot.has(caps.BASE_HOLONOMIC)
+            else 0.0
+        )
+        sent_w = schema_clamp(w, -self.robot.spec.max_ang, self.robot.spec.max_ang)
+        return float(sent_vx), float(sent_vy), float(sent_w)
+
+    def _write_slots(self, start: int, values: Sequence[float], width: int) -> None:
+        for offset in range(width):
+            value = float(values[offset]) if offset < len(values) else 0.0
+            index = start + offset
+            if index >= len(self._last_action):
+                break
+            self._last_action[index] = value
+            self._last_action_raw[index] = value
+
+    def _note_ee(self, side: object, pose: object) -> None:
+        from .humanoid_features import ARM_ACTION_EE_POSE, EE_POSE_WIDTH
+
+        if self._arm_form() != ARM_ACTION_EE_POSE:
+            return
+        if not isinstance(side, str):
+            return
+        key = f"{side.strip().lower()}_ee_x"
+        names = self._action_name_list()
+        if key not in names:
+            return
+        values = (
+            list(pose)
+            if isinstance(pose, Sequence) and not isinstance(pose, (str, bytes))
+            else []
+        )
+        self._write_slots(names.index(key), values, EE_POSE_WIDTH)
+
+    def _note_gripper(self, side: object, cmd: object) -> None:
+        from .humanoid_features import gripper_value
+
+        if not isinstance(side, str):
+            return
+        key = f"{side.strip().lower()}_gripper"
+        names = self._action_name_list()
+        if key not in names:
+            return
+        index = names.index(key)
+        value = gripper_value(cmd)
+        if index < len(self._last_action):
+            self._last_action[index] = value
+            self._last_action_raw[index] = value
+
+    def _note_humanoid_joints(self, args: tuple, kwargs: dict) -> None:
+        from .humanoid_features import ARM_ACTION_ARM_JOINTS
+
+        if self._arm_form() != ARM_ACTION_ARM_JOINTS:
+            return
+        if not args or not isinstance(args[0], str):
+            return
+        group = args[0].strip()
+        raw_q = args[1] if len(args) > 1 else kwargs.get("q")
+        if isinstance(raw_q, (str, bytes)) or not isinstance(raw_q, Sequence):
+            return
+        prefix = f"{group}."
+        names = self._action_name_list()
+        slots = [i for i, name in enumerate(names) if name.startswith(prefix)]
+        for offset, index in enumerate(slots):
+            if offset >= len(raw_q) or index >= len(self._last_action):
+                break
+            value = float(raw_q[offset])
+            self._last_action[index] = value
+            self._last_action_raw[index] = value
+
+    def _image_key(self) -> str:
+        from .humanoid_features import HEAD_IMAGE_KEY
+
+        if _is_humanoid(self.robot):
+            return HEAD_IMAGE_KEY
+        return "observation.images.front"
+
+    def _store_image(self, frame: Optional[Any]) -> None:
+        if self._current is None:
+            return
+        key = self._image_key()
+        if frame is None and key not in self._current.images:
+            return
+        bucket = self._current.images.setdefault(key, [])
+        while len(bucket) < self._frame_idx:
+            fill = frame if frame is not None else bucket[-1]
+            bucket.append(fill)
+        if frame is not None:
+            bucket.append(frame)
+        elif bucket:
+            bucket.append(bucket[-1])
 
     # ── manual recording ─────────────────────────────────────────────────────
     def start_episode(self, task: str = "") -> Episode:
@@ -474,7 +660,18 @@ class Recorder:
             fps=self.fps,
         )
         self._frame_idx = 0
-        self._last_action = self._zero_action()
+        if _is_humanoid(self.robot):
+            from .humanoid_features import action_names, choose_arm_action, state_names
+
+            form = choose_arm_action(self.robot, self._arm_action)
+            self._current.arm_action = form
+            self._current.state_names = state_names(self.robot.spec)
+            self._current.action_names = action_names(self.robot.spec, form)
+            zeros = [0.0] * len(self._current.action_names)
+            self._last_action = zeros[:]
+            self._last_action_raw = zeros[:]
+        else:
+            self._last_action = self._zero_action()
         return self._current
 
     def _capture_camera_frame(self) -> Optional[Any]:
@@ -528,10 +725,7 @@ class Recorder:
         ts = self._frame_idx / self.fps if self.fps else float(self._frame_idx)
 
         cam_frame = self._capture_camera_frame()
-        if cam_frame is not None:
-            if "observation.images.front" not in self._current.images:
-                self._current.images["observation.images.front"] = []
-            self._current.images["observation.images.front"].append(cam_frame)
+        self._store_image(cam_frame)
 
         frame = Frame(
             observation_state=state,

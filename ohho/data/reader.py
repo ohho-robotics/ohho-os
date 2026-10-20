@@ -28,6 +28,7 @@ class DatasetInfo:
     video_path: Optional[str] = None
     features: Dict[str, Any] = field(default_factory=dict)
     tasks: List[str] = field(default_factory=list)
+    arm_action: Optional[str] = None
 
 
 @dataclass
@@ -70,6 +71,7 @@ class DatasetReader:
             video_path=d.get("video_path"),
             features=d.get("features", {}),
             tasks=d.get("tasks", []),
+            arm_action=d.get("arm_action"),
         )
 
     def _load_episodes(self) -> List[dict]:
