@@ -20,6 +20,8 @@ from .schema import (
     Velocity,
 )
 from .robot import Robot, connect
+from .config import RobotProfile, load_robot_profile, resolve_robot_id
+from .session import RobotSession
 from .registry import RobotSpec, get_spec, list_specs, register
 
 __all__ = [
@@ -30,6 +32,10 @@ __all__ = [
     "get_spec",
     "list_specs",
     "register",
+    "RobotProfile",
+    "load_robot_profile",
+    "resolve_robot_id",
+    "RobotSession",
     "Velocity",
     "Odometry",
     "JointReading",
