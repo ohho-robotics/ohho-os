@@ -7,9 +7,13 @@ class TestCapabilities(unittest.TestCase):
     def test_membership(self):
         self.assertIn(caps.MANIPULATION, caps.ALL)
         self.assertIn(caps.BASE_HOLONOMIC, caps.ALL)
+        self.assertIn(caps.AERIAL, caps.ALL)
+        self.assertEqual(caps.AERIAL, "aerial")
 
     def test_is_known(self):
         self.assertTrue(caps.is_known(caps.BASE_DRIVE))
+        self.assertTrue(caps.is_known(caps.AERIAL))
+        self.assertTrue(caps.is_known("aerial"))
         self.assertFalse(caps.is_known("not.a.capability"))
 
 

@@ -2,8 +2,8 @@
 
 A robot declares *what it can do*; behaviors ask ``robot.has(...)`` rather than
 assuming hardware. This is what lets one behavior — or a whole agent — run across
-a wheeled base, a quadruped, a humanoid and an arm, degrading gracefully when a
-capability is absent.
+a wheeled base, a quadruped, a humanoid, an arm, or an aircraft, degrading
+gracefully when a capability is absent.
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ from __future__ import annotations
 BASE_DRIVE = "base.drive"
 BASE_HOLONOMIC = "base.holonomic_drive"  # implies BASE_DRIVE, plus strafing (linear_y)
 LEGGED_POSE = "legged.pose"
+
+# Aerial. Planar ``base.drive`` does not imply this.
+AERIAL = "aerial"
 
 # Manipulation
 MANIPULATION = "manipulation"
@@ -26,6 +29,7 @@ ALL: frozenset[str] = frozenset(
         BASE_DRIVE,
         BASE_HOLONOMIC,
         LEGGED_POSE,
+        AERIAL,
         MANIPULATION,
         PERCEPTION_RGB,
         PERCEPTION_DEPTH,
