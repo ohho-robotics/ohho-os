@@ -60,11 +60,11 @@
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
-| **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. **OHH-313** delegates those decisions to a `SafetyPolicy` per `robot_class` (Ground, Arm, Legged) without changing caps or behaviour. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
+| **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. **OHH-313** delegates those decisions to a `SafetyPolicy` per `robot_class` (Ground, Arm, Legged) without changing caps or behaviour for those classes. **OHH-328** adds `HumanoidPolicy` for `robot_class` humanoid (asymmetric speed caps, watchdog that does not damp, fall latch, gated `move_joints`). Rules in §9a. CLI `--arm --estop-damp --safety-config` |
 | **Humanoid telemetry** | ✅ **OHH-327** — `Telemetry.custom["humanoid"]` on `ohho.telemetry.v1`: mode, vendor mode (logs only), fall state, base orientation, per-group joints, planar odom shadowed onto `Telemetry.odom`, battery, experimental. Unknown or missing fall state is not upright. |
 | CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
 | Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → 461 tests, skipped=7. Local-only errors (do not skip in CI): `test_demo_drive` importing `tests.test_ros2`, and two self-test cases when the local `cv2` install is broken. |
-| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
+| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and ≥95% line+branch coverage gates on `ohho/safety.py` and `ohho/humanoid_policy.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
 (`yahboom`, `feetech`, `composite`, `unitree`) are built and unit-tested against
@@ -190,6 +190,7 @@ sdk/
 │   ├── selftest.py       # ohho.selftest — hardware self-test suite (motors, encoders, IMU, servos, camera)
 │   ├── safety.py         # ohho.safety — SafetyGate(Transport), SafetyProfile, AuditLog, arming policy
 │   ├── safety_policy.py  # SafetyPolicy per robot class (Ground, Arm, Legged); plugin caps may only tighten (OHH-313)
+│   ├── humanoid_policy.py # HumanoidPolicy (OHH-328): caps, watchdog, fall latch, joint gating
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
@@ -547,8 +548,13 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
    denylist wins over any config file. Humanoid names (`prepare`, `walk_mode`,
    `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`) are not
    on those lists. A profile may name them; `command` then calls
-   `send_humanoid` and never a sport call. `move_joints` stays refused at the
-   gate.
+   `send_humanoid` and never a sport call. `move_joints` stays refused for
+   Ground, Arm and Legged. **OHH-328** `HumanoidPolicy` may forward it only
+   in `CUSTOM` on a sim target, with joint limits, a 0.15 rad step and gain
+   ceilings. A stale command on a humanoid zeros velocity and does not damp.
+   Upright e-stop in `WALK`/`PREPARE` holds `PREPARE`. Fall state other than
+   `upright`, or roll/pitch above 0.5 rad for 100 ms, latches. Hardware speed
+   stays at 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. A plugin may only tighten.
 8. **Tilt / fault.** `|roll|` or `|pitch|` > 0.6 rad, or `error_code != 0` →
    stop + latch, armed or not.
 9. **Arming.** Never automatic, including tests and CI. Any non-loopback
@@ -556,9 +562,11 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
    TTY confirmation ("I am physically present, the area is clear, the remote is
    in my hand"), logged with a timestamp. CI env or non-TTY → refused.
 10. **Audit.** Every arm/disarm, e-stop, release, clamp, refusal and watchdog
-    trip goes to `~/.ohho/safety/<UTC date>.jsonl`.
+    trip goes to `~/.ohho/safety/<UTC date>.jsonl`. Humanoid records add
+    `mode_transition` and a `plugin` field on fall latches.
 11. **Tests.** Fake clock + fake transports only; no sleeps, no hardware. CI
-    fails below 95 % line + branch coverage on `ohho/safety.py`.
+    fails below 95 % line + branch coverage on `ohho/safety.py` and on
+    `ohho/humanoid_policy.py`.
 
 Not gated: `ohho selftest` and `tests/hil/` construct adapters directly (they
 have their own consent: `--allow-spin`, `OHHO_HIL=1`). The MuJoCo 2 m/s →
