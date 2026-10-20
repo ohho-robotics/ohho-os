@@ -18,16 +18,27 @@ __all__ = ["booster_transport", "ros2_transport"]
 
 
 def booster_transport(
-    spec: RobotSpec | None, address: str, runtime: Any
+    spec: RobotSpec | None,
+    address: str,
+    runtime: Any,
+    read_only: bool = False,
 ) -> BoosterTransport:
-    """Build a ``booster://`` link. Importing this function does not import the SDK."""
+    """Build a ``booster://`` link. Importing this function does not import the SDK.
+
+    ``read_only=True`` builds a session that refuses state-changing RPCs and
+    a transport that does not call them.
+    """
     del runtime
     from ohho.adapters.errors import AdapterUnavailable
 
     from .sdk import SdkUnavailable, open_session
 
+    text = str(address or "")
     try:
-        session = open_session(str(address or ""))
+        if read_only:
+            session = open_session(text, read_only=True)
+        else:
+            session = open_session(text)
     except (SdkUnavailable, ValueError) as exc:
         raise AdapterUnavailable(str(exc)) from exc
-    return BoosterTransport(spec, str(address or ""), session)
+    return BoosterTransport(spec, text, session, read_only=read_only)

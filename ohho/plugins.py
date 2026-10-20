@@ -5,24 +5,32 @@ returns ``None`` to keep the class default. ``SafetyGate`` calls it when the
 robot connects (OHH-313) and refuses a policy that loosens class caps.
 Discovery does not call it, so listing plugins cannot command a robot.
 ``descriptor`` returns ``None`` until C-04 / OHH-214. ``doctor`` is the
-read-only hook R-06 will dispatch. Discovery does not call those two either.
+read-only hook. :func:`plugin_doctor` calls it for the plugin that registered
+the resolved robot id. Discovery does not call those two. R-06 can reuse
+:func:`plugin_doctor` for every plugin.
 
 Built-ins use this path. ``pyproject.toml`` registers
 ``ohho.robots.builtin:plugin``. A source checkout that has not been reinstalled
 has no entry point; discovery then loads that same module directly.
 
-One plugin failing to import is recorded and skipped. A duplicate robot id or
-transport scheme is a load error naming both plugins; the earlier plugin keeps
-its robots. The built-in plugin is applied first so a third-party collision
-does not drop sim, OmniBot or Go2.
+One plugin failing to import is recorded and skipped. A duplicate robot id,
+transport scheme or sim backend is a load error naming both plugins; the
+earlier plugin keeps its robots and factories. The built-in plugin is applied
+first so a third-party collision does not drop sim, OmniBot or Go2.
+
+``resolve_transport`` reads the factories stored here. A scheme or backend a
+plugin did not register is absent from these maps, so the adapter scheme dict
+stays the fallback.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import importlib.metadata
+import inspect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Protocol
 
 from .registry import RobotSpec
@@ -76,15 +84,18 @@ class RobotPlugin(Protocol):
         uri: str | None = None,
         read_only: bool = True,
     ) -> DoctorReport | None:
-        """Read-only doctor hook. ``None`` means the plugin has nothing to add."""
+        """Read-only doctor hook. ``None`` means the plugin has nothing to add.
+
+        ``ohho doctor --robot`` calls this for the plugin that registered the
+        resolved robot. The hook must not command the robot.
+        """
 
 
 @dataclass(frozen=True)
 class DoctorReport:
     """Result of a plugin doctor hook. It must not command the robot.
 
-    R-06 (``ohho doctor --robot``) will print this. Discovery never calls
-    ``doctor``.
+    ``ohho doctor --robot`` prints this. Discovery never calls ``doctor``.
     """
 
     ok: bool
@@ -108,6 +119,12 @@ class PluginInfo:
     # The instance, so a later policy load can call ``safety_policy`` without
     # discovery calling it. Not part of equality or the list report.
     plugin: Any = field(default=None, compare=False, hash=False)
+    transport_factories: Mapping[str, TransportFactory] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
+    sim_factories: Mapping[str, SimFactory] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
 
     @property
     def ok(self) -> bool:
@@ -297,11 +314,16 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         fallback=fallback,
         distribution=_distribution_name(entry),
         plugin=plugin,
+        transport_factories=MappingProxyType(schemes),
+        sim_factories=MappingProxyType(backends),
     )
 
 
 def _collision_messages(
-    info: PluginInfo, seen_ids: Mapping[str, str], seen_schemes: Mapping[str, str]
+    info: PluginInfo,
+    seen_ids: Mapping[str, str],
+    seen_schemes: Mapping[str, str],
+    seen_backends: Mapping[str, str],
 ) -> list[str]:
     messages: list[str] = []
     seen_in_plugin: set[str] = set()
@@ -326,18 +348,26 @@ def _collision_messages(
                 f"duplicate transport scheme {scheme!r} from plugins "
                 f"{owner!r} and {info.name!r}"
             )
+    for backend in info.sim_backends:
+        owner = seen_backends.get(backend)
+        if owner is not None:
+            messages.append(
+                f"duplicate sim backend {backend!r} from plugins "
+                f"{owner!r} and {info.name!r}"
+            )
     return messages
 
 
 def _reject_collisions(infos: Sequence[PluginInfo]) -> tuple[PluginInfo, ...]:
     seen_ids: dict[str, str] = {}
     seen_schemes: dict[str, str] = {}
+    seen_backends: dict[str, str] = {}
     accepted: list[PluginInfo] = []
     for info in infos:
         if info.error:
             accepted.append(info)
             continue
-        messages = _collision_messages(info, seen_ids, seen_schemes)
+        messages = _collision_messages(info, seen_ids, seen_schemes, seen_backends)
         if messages:
             accepted.append(dataclasses.replace(info, error="; ".join(messages)))
             continue
@@ -345,6 +375,8 @@ def _reject_collisions(infos: Sequence[PluginInfo]) -> tuple[PluginInfo, ...]:
             seen_ids[robot_id] = info.name
         for scheme in info.schemes:
             seen_schemes[scheme] = info.name
+        for backend in info.sim_backends:
+            seen_backends[backend] = info.name
         accepted.append(info)
     return tuple(accepted)
 
@@ -354,6 +386,48 @@ def _load_all() -> tuple[PluginInfo, ...]:
         _load_one(entry, fallback=fallback) for entry, fallback in _discover_entries()
     ]
     return _reject_collisions(loaded)
+
+
+def plugin_for_robot(robot_id: str) -> tuple[object, RobotSpec] | None:
+    """The plugin and spec that registered ``robot_id``, or ``None``.
+
+    A plugin with a load error does not match. The lookup is the robot id
+    from the resolver, not a vendor name.
+    """
+    if not isinstance(robot_id, str) or not robot_id.strip():
+        return None
+    key = robot_id.strip()
+    for info in loaded_plugins():
+        if info.error is not None or info.plugin is None:
+            continue
+        for spec in info.specs:
+            if spec.id == key:
+                return info.plugin, spec
+    return None
+
+
+def plugin_doctor(
+    robot_id: str,
+    uri: str | None = None,
+    *,
+    read_only: bool = True,
+) -> DoctorReport | None:
+    """Call the doctor hook for the plugin that registered ``robot_id``.
+
+    ``None`` means no loaded plugin owns that id, or its hook returned
+    ``None``. The call is read-only. Discovery does not use this.
+    """
+    found = plugin_for_robot(robot_id)
+    if found is None:
+        return None
+    plugin, spec = found
+    doctor = getattr(plugin, "doctor", None)
+    if not callable(doctor):
+        return None
+    report = doctor(spec, uri, read_only)
+    if report is None or not isinstance(report, DoctorReport):
+        return None
+    return report
 
 
 def plugin_named(name: str) -> object | None:
@@ -457,6 +531,130 @@ def format_plugin_report(infos: Sequence[PluginInfo] | None = None) -> str:
     return "\n".join(lines)
 
 
+def _usable(infos: Sequence[PluginInfo] | None = None) -> tuple[PluginInfo, ...]:
+    if infos is None:
+        infos = loaded_plugins()
+    return tuple(info for info in infos if info.error is None)
+
+
+def _join_names(info: PluginInfo, names: Sequence[str]) -> str:
+    listed = ", ".join(names) if names else "—"
+    return f"{info.name}: {listed}"
+
+
+def describe_plugin_schemes(infos: Sequence[PluginInfo] | None = None) -> str:
+    """``plugin: scheme, scheme; ...`` for plugins that loaded cleanly."""
+    parts = [_join_names(info, info.schemes) for info in _usable(infos)]
+    if not parts:
+        return "Plugin schemes: —."
+    return "Plugin schemes: " + "; ".join(parts) + "."
+
+
+def describe_plugin_sim_backends(infos: Sequence[PluginInfo] | None = None) -> str:
+    """``plugin: backend, backend; ...`` for plugins that loaded cleanly."""
+    parts = [_join_names(info, info.sim_backends) for info in _usable(infos)]
+    if not parts:
+        return "Plugin sim backends: —."
+    return "Plugin sim backends: " + "; ".join(parts) + "."
+
+
+def accepts_read_only(factory: object) -> bool:
+    """True when ``factory`` can take a ``read_only`` argument."""
+    try:
+        params = inspect.signature(factory).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if "read_only" in params:
+        return True
+    return any(item.kind is inspect.Parameter.VAR_KEYWORD for item in params.values())
+
+
+def invoke_transport_factory(
+    factory: TransportFactory,
+    spec: RobotSpec | None,
+    address: str,
+    runtime: Any,
+    *,
+    read_only: bool = False,
+) -> Transport:
+    """Call a transport factory. ``read_only`` is passed only when accepted.
+
+    Factories that do not take the flag keep the three-argument call.
+    """
+    if read_only and accepts_read_only(factory):
+        return factory(spec, address, runtime, read_only=True)  # type: ignore[call-arg,arg-type]
+    return factory(spec, address, runtime)  # type: ignore[arg-type]
+
+
+def plugin_transport(
+    scheme: str,
+    spec: RobotSpec | None,
+    address: str,
+    runtime: Any,
+    read_only: bool = False,
+) -> Transport | None:
+    """Build a transport from the first plugin that registered ``scheme``.
+
+    ``None`` means no loaded plugin provides it. Callers then use the scheme
+    dict in :mod:`ohho.adapters`. ``read_only=True`` is forwarded when the
+    factory accepts it, so a read-only link is enforced inside that transport.
+    """
+    factory = None
+    for info in _usable():
+        factory = info.transport_factories.get(scheme)
+        if factory is not None:
+            break
+    if factory is None:
+        return None
+    # ``resolve_transport`` historically allows ``spec=None``; factories match that.
+    return invoke_transport_factory(
+        factory, spec, address, runtime, read_only=read_only
+    )
+
+
+def declared_sim_backend(spec: object) -> str:
+    """Sim backend name on a spec, or ``""`` when none is declared.
+
+    Reads :attr:`ohho.registry.RobotSpec.sim_backend`. Blank means ``sim://``
+    keeps today's simulator. Lookup is case-insensitive, matching plugin names.
+    """
+    if spec is None:
+        return ""
+    raw = getattr(spec, "sim_backend", "")
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip().lower()
+
+
+def plugin_sim_backend(
+    spec: RobotSpec | None, address: str, runtime: Any
+) -> Transport | None:
+    """Build the spec's declared sim backend, or ``None`` when none is declared.
+
+    A declared name that no plugin registered raises
+    :class:`ohho.adapters.errors.AdapterUnavailable` and lists each plugin's
+    backends. An undeclared spec returns ``None`` so the caller keeps today's
+    ``sim://`` behaviour.
+    """
+    name = declared_sim_backend(spec)
+    if not name:
+        return None
+    factory = None
+    for info in _usable():
+        factory = info.sim_factories.get(name)
+        if factory is not None:
+            break
+    if factory is None:
+        from .adapters.errors import AdapterUnavailable
+
+        raise AdapterUnavailable(
+            f"Unknown sim backend {name!r}. {describe_plugin_sim_backends()}"
+        )
+    if spec is None:
+        return None
+    return factory(spec, address, runtime)
+
+
 __all__ = [
     "BUILTIN_ENTRY_VALUE",
     "ENTRY_GROUP",
@@ -465,9 +663,17 @@ __all__ = [
     "RobotPlugin",
     "SimFactory",
     "TransportFactory",
+    "declared_sim_backend",
+    "describe_plugin_schemes",
+    "describe_plugin_sim_backends",
     "format_plugin_report",
+    "invoke_transport_factory",
     "loaded_plugins",
+    "plugin_doctor",
+    "plugin_for_robot",
     "plugin_named",
+    "plugin_sim_backend",
+    "plugin_transport",
     "register_loaded_specs",
     "reload_plugins",
     "transport_factory",

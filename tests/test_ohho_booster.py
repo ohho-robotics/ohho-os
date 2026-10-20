@@ -245,7 +245,12 @@ class TestBoosterDiscovery(unittest.TestCase):
         self.assertEqual(bot.sim_backends(), {})
         self.assertIsNone(bot.safety_policy(spec))
         self.assertIsNone(bot.descriptor(spec))
-        self.assertIsNone(bot.doctor(spec, None, True))
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"OHHO_HOME": tmp}):
+                report = bot.doctor(spec, None, True)
+        self.assertIsNotNone(report)
+        self.assertFalse(report.ok)
+        self.assertIn("network interface", report.summary)
 
 
 class TestNoSdkImport(unittest.TestCase):

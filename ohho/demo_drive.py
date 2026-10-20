@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from .config import default_home, load_robot_profile, resolve_robot_id
 from .registry import UnknownRobot
 from .robot import Robot
 
@@ -128,7 +129,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "(change --transport only; runtime defaults per transport)."
         )
     )
-    p.add_argument("--robot", default="omnibot", help="robot spec id")
+    p.add_argument(
+        "--robot",
+        default=None,
+        help="robot spec id (else OHHO_ROBOT, ~/.ohho/config.toml, or sim)",
+    )
     p.add_argument(
         "--transport",
         default="sim://",
@@ -167,13 +172,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
+    resolved = resolve_robot_id(args.robot, home=default_home())
+    profile = load_robot_profile(resolved.robot_id, home=default_home())
     runtime = args.runtime or default_runtime_for_transport(args.transport)
     print(
-        f"demo_drive: robot={args.robot} transport={args.transport} runtime={runtime} "
+        f"demo_drive: robot={resolved.robot_id} transport={args.transport} runtime={runtime} "
         f"vx={args.vx} for {args.seconds}s"
     )
     try:
-        bot = Robot.connect(args.robot, transport=args.transport, runtime=runtime)
+        bot = Robot.connect(
+            resolved.robot_id,
+            transport=args.transport,
+            runtime=runtime,
+            sim_backend=profile.sim_backend,
+            asset_path=profile.asset_path,
+            safety_overrides=dict(profile.safety_overrides) or None,
+        )
     except UnknownRobot as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

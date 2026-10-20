@@ -13,6 +13,7 @@ from unittest.mock import patch
 from ohho.adapters import resolve_transport
 from ohho.adapters.errors import AdapterUnavailable
 from ohho.humanoid import is_upright
+from ohho.humanoid_telemetry import HUMANOID_BLOCK_KEYS
 from ohho.robot import Robot
 from ohho.runtime.native import NativeRuntime
 from ohho.safety import AuditLog, SafetyGate
@@ -37,6 +38,8 @@ _ensure_plugin_path()
 
 from ohho_booster.factory import booster_transport  # noqa: E402
 from ohho_booster.messages import (  # noqa: E402
+    TOPIC_JOINT_CTRL,
+    TOPIC_LOCO_API,
     CommandRefused,
     UnknownRobotModel,
     fall_state_name,
@@ -46,6 +49,7 @@ from ohho_booster.messages import (  # noqa: E402
 from ohho_booster.modes import generic_mode  # noqa: E402
 from ohho_booster.plugin import plugin as plugin_factory  # noqa: E402
 from ohho_booster.sdk import (  # noqa: E402
+    STATE_CHANGING_RPCS,
     CommandFailed,
     SdkSession,
     SdkUnavailable,
@@ -266,7 +270,11 @@ class _Client:
 
     def GetRobotInfo(self) -> _Bag:
         self.calls.append("GetRobotInfo")
-        return _Bag(model=self.sdk.model, name="robot")
+        fields: dict[str, object] = {"model": self.sdk.model, "name": "robot"}
+        firmware = getattr(self.sdk, "firmware", None)
+        if firmware is not None:
+            fields["version"] = firmware
+        return _Bag(**fields)
 
     def GetMode(self) -> _Bag:
         self.calls.append("GetMode")
@@ -894,6 +902,155 @@ class RegistryCase(unittest.TestCase):
         self.assertIn(pin, plugin)
         all_extra = root.split("all = [", 1)[1].split("]", 1)[0]
         self.assertNotIn("booster_robotics_sdk_python", all_extra)
+
+
+def _rpc_names(calls: list[object]) -> set[object]:
+    names: set[object] = set()
+    for item in calls:
+        names.add(item[0] if isinstance(item, tuple) else item)
+    return names
+
+
+class ReadOnlyCase(unittest.TestCase):
+    def test_read_only_publishes_nothing_and_keeps_humanoid_telemetry(self) -> None:
+        """Fails if a joint publish or a state-changing RPC is attempted.
+
+        The link is in ``WALK``, so a missing guard would call ``Move``.
+        """
+        sdk = FakeSdk(model="T2", mode=2)
+        sdk.firmware = "1.8.3"
+        session = SdkSession(_ADDRESS, 0, sdk, read_only=True)
+        spec = booster_t2_spec()
+        transport = BoosterTransport(spec, _ADDRESS, session, read_only=True)
+        transport.connect()
+        self.assertEqual(session.mode(), "kWalking")
+        for sub in sdk.subs:
+            topic = getattr(sub, "topic", "")
+            if topic == "rt/low_state":
+                sub.cb(_low())  # type: ignore[attr-defined]
+            elif topic == "rt/fall_down":
+                sub.cb(SimpleNamespace(fall_down_state="IS_READY"))  # type: ignore[attr-defined]
+            elif topic == "rt/odometer_state":
+                sub.cb(SimpleNamespace(x=0.1, y=0.2, theta=0.3))  # type: ignore[attr-defined]
+        block = transport.read().custom["humanoid"]
+        for key in HUMANOID_BLOCK_KEYS:
+            self.assertIn(key, block)
+        self.assertEqual(block["mode"], "WALK")
+        self.assertEqual(block["fall_state"], "upright")
+        self.assertIn("head", block["joints"])
+        self.assertEqual(set(block["battery"]), {"fraction", "voltage"})
+
+        transport.send_velocity(Velocity(0.4, 0.2, 0.1))
+        transport.send_joint_command("head_pitch_joint", 0.2)
+        transport.emergency_stop()
+        for action in (
+            "prepare",
+            "walk_mode",
+            "damp",
+            "custom",
+            "get_up",
+            "lie_down",
+            "look",
+            "move_ee",
+            "gripper",
+            "hand",
+            "move_joints",
+            "reset_odometry",
+        ):
+            with self.subTest(action=action):
+                with self.assertRaises(CommandRefused) as caught:
+                    transport.send_humanoid(action)
+                self.assertEqual(caught.exception.reason, "read_only")
+
+        refused = (
+            lambda: session.change_mode("kPrepare"),
+            lambda: session.move(1.0, 0.0, 0.0),
+            lambda: session.rotate_head(0.1, 0.1),
+            lambda: session.get_up(),
+            lambda: session.lie_down(),
+            lambda: session.move_hand("left", (0, 0, 0, 0, 0, 0), 0.1),
+            lambda: session.move_dual_hands(
+                (0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0), 0.1
+            ),
+            lambda: session.control_gripper("left", "open"),
+            lambda: session.control_hand("left", (0.1,)),
+            lambda: session.reset_odometry(),
+            lambda: session.publish_joints(
+                "SERIAL",
+                [
+                    {
+                        "mode": 0.0,
+                        "q": 0.0,
+                        "dq": 0.0,
+                        "tau": 0.0,
+                        "kp": 0.0,
+                        "kd": 0.0,
+                        "weight": 0.0,
+                    }
+                ],
+            ),
+        )
+        for call in refused:
+            with self.assertRaises(CommandRefused):
+                call()
+
+        self.assertEqual(sdk.publishers, [])
+        self.assertEqual(sdk.written, [])
+        blob = repr(sdk.events)
+        self.assertNotIn(TOPIC_JOINT_CTRL, blob)
+        self.assertNotIn(TOPIC_LOCO_API, blob)
+        assert sdk.client is not None
+        self.assertTrue(STATE_CHANGING_RPCS.isdisjoint(_rpc_names(sdk.client.calls)))
+        self.assertTrue(
+            _rpc_names(sdk.client.calls)
+            <= {"Init", "GetRobotInfo", "GetMode", "GetStatus"}
+        )
+
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        gate = SafetyGate(
+            transport,
+            spec,
+            audit=AuditLog(tmp.name),
+            auto_tick=False,
+            environ={},
+        )
+        gate.connect()
+        gate._zero_inner()
+        assert sdk.client is not None
+        self.assertTrue(STATE_CHANGING_RPCS.isdisjoint(_rpc_names(sdk.client.calls)))
+        self.assertEqual(sdk.publishers, [])
+        self.assertEqual(sdk.written, [])
+
+    def test_resolve_read_only_reaches_the_session(self) -> None:
+        spec = booster_t2_spec()
+        sdk = FakeSdk(model="T2", mode=2)
+        seen: dict[str, object] = {}
+
+        def opener(address: str, sdk_module: object = None, *, read_only: bool = False):
+            del sdk_module
+            seen["address"] = address
+            seen["read_only"] = read_only
+            return SdkSession(address.partition("?")[0], 0, sdk, read_only=read_only)
+
+        entry = _Entry("booster", "ohho_booster:plugin", plugin_factory)
+        with _discovered(lambda: [_builtin_entry(), entry]):
+            with patch("ohho_booster.sdk.open_session", opener):
+                transport = resolve_transport(
+                    f"booster://{_ADDRESS}?domain=2", spec, None, read_only=True
+                )
+        self.assertEqual(seen["address"], f"{_ADDRESS}?domain=2")
+        self.assertIs(seen["read_only"], True)
+        self.assertIsInstance(transport, BoosterTransport)
+        self.assertTrue(transport.read_only)
+        self.assertTrue(transport._session.read_only)
+        transport.connect()
+        transport.send_velocity(Velocity(0.3, 0.0, 0.0))
+        with self.assertRaises(CommandRefused):
+            transport._session.publish_joints("SERIAL", [])
+        self.assertEqual(sdk.publishers, [])
+        assert sdk.client is not None
+        self.assertTrue(STATE_CHANGING_RPCS.isdisjoint(_rpc_names(sdk.client.calls)))
 
 
 if __name__ == "__main__":

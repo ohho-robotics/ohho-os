@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .. import capabilities as caps
+from ..config import resolve_robot_id
 from ..robot import Robot
 
 
@@ -101,6 +102,9 @@ class Recorder:
         fps: float = 10.0,
     ) -> None:
         self.robot = robot
+        # The connected robot is an explicit id. Env and config cannot retarget
+        # a recorder that already holds that robot.
+        self.resolved = resolve_robot_id(robot.spec.id)
         self.repo_id = repo_id
         self.fps = fps
         self._episodes: List[Episode] = []
@@ -247,4 +251,11 @@ class Recorder:
         """
         from .writer import write_dataset
 
-        return write_dataset(self._episodes, path, self.repo_id, self.fps, self.tasks)
+        return write_dataset(
+            self._episodes,
+            path,
+            self.repo_id,
+            self.fps,
+            self.tasks,
+            robot_type=self.resolved.robot_id,
+        )

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ohho.config import ConfigError, default_home, load_robot_profile
+from ohho.plugins import DoctorReport
 from ohho.registry import RobotSpec
 
 from .spec import booster_t2_spec
@@ -48,10 +50,27 @@ class BoosterPlugin:
         spec: RobotSpec,
         uri: str | None = None,
         read_only: bool = True,
-    ) -> None:
-        """Doctor dispatch is later. Listing plugins does not call this."""
-        del spec, uri, read_only
-        return None
+    ) -> DoctorReport:
+        """Read-only checks: SDK, reachability, model, firmware, interface.
+
+        ``read_only=False`` is ignored. This hook never commands the robot.
+        The transport URI and network interface come from the arguments and
+        from the resolved robot's profile.
+        """
+        del read_only
+        from .doctor import diagnose
+
+        address = uri if isinstance(uri, str) and uri.strip() else None
+        interface = None
+        try:
+            profile = load_robot_profile(spec.id, home=default_home())
+        except ConfigError:
+            profile = None
+        if profile is not None:
+            if address is None and profile.transport:
+                address = profile.transport
+            interface = profile.network_interface
+        return diagnose(address, network_interface=interface)
 
 
 def plugin() -> BoosterPlugin:

@@ -354,7 +354,7 @@ class TestRos2ExtraCheck(unittest.TestCase):
             if importlib.util.find_spec("rclpy") is not None:
                 self.skipTest("rclpy is installed in this environment")
 
-            server = SimServe(backend="ros2")
+            server = SimServe(backend="ros2", robot="omnibot")
             with self.assertRaises(SimServeUnavailable) as ctx:
                 asyncio.run(server.start())
             self.assertIn("[ros2]", str(ctx.exception))
@@ -371,7 +371,7 @@ class TestWebsocketsExtraCheck(unittest.TestCase):
 
     @unittest.skipIf(_has_websockets(), "websockets is installed")
     def test_sim_unavailable_without_websockets(self):
-        server = SimServe(backend="sim")
+        server = SimServe(backend="sim", robot="omnibot")
         with self.assertRaises(SimServeUnavailable) as ctx:
             asyncio.run(server.start())
         self.assertIn("websockets", str(ctx.exception))
