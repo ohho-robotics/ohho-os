@@ -1,0 +1,147 @@
+name: Shield SBOM + vuln scan
+
+# OHH-63: syft SBOM + osv-scanner / pip-audit; fail on CRITICAL; SBOM artifacts + release assets.
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shield:
+    name: SBOM and dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ohho-os (representative extras for SBOM / audit)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,yaml,serial,serve,data,sim-serve,agent]"
+          python -m pip freeze > requirements-shield-frozen.txt
+
+      - name: Generate CycloneDX SBOM (syft)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-release-assets: false
+
+      - name: Generate SPDX SBOM (syft)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-release-assets: false
+
+      - name: Prepare SBOM aliases
+        run: |
+          # Keep sbom.cyclonedx.json as an alias alongside sbom.cdx.json
+          cp sbom.cdx.json sbom.cyclonedx.json
+
+      - name: Install osv-scanner
+        run: |
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 \
+            -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: OSV scan (CycloneDX SBOM)
+        run: |
+          set +e
+          osv-scanner scan \
+            -f json \
+            --output-file osv-sbom.json \
+            -L sbom.cdx.json
+          code=$?
+          set -e
+          # 0 = no vulns, 1 = vulns found (gated downstream by vuln_gate.py)
+          if [ "$code" -eq 128 ]; then
+            echo "No packages found in SBOM; writing empty OSV results."
+            echo '{"results":[]}' > osv-sbom.json
+          elif [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+            exit "$code"
+          fi
+
+      - name: OSV scan (repository manifests / lockfiles)
+        run: |
+          set +e
+          osv-scanner scan \
+            -f json \
+            --output-file osv-repo.json \
+            --recursive \
+            --allow-no-lockfiles \
+            .
+          code=$?
+          set -e
+          # 0 = no vulns, 1 = vulns found (gated downstream by vuln_gate.py)
+          if [ "$code" -eq 128 ]; then
+            echo "No lockfiles in tree; writing empty OSV results."
+            echo '{"results":[]}' > osv-repo.json
+          elif [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+            exit "$code"
+          fi
+
+      - name: pip-audit (installed CI venv)
+        run: |
+          python -m pip install pip-audit
+          # Audit the active venv (not requirements-shield-frozen.txt) so editable
+          # ohho-os and local paths are not re-resolved by pip-audit.
+          pip-audit --format json -o pip-audit.json || true
+          if [ ! -f pip-audit.json ]; then
+            echo '{"dependencies":[]}' > pip-audit.json
+          fi
+
+      - name: Fail on CRITICAL vulnerabilities
+        run: |
+          python scripts/vuln_gate.py \
+            --osv osv-sbom.json \
+            --osv osv-repo.json \
+            --pip-audit pip-audit.json
+
+      - name: Upload scan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shield-sbom-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            sbom.cdx.json
+            sbom.cyclonedx.json
+            sbom.spdx.json
+            osv-sbom.json
+            osv-repo.json
+            pip-audit.json
+            requirements-shield-frozen.txt
+
+  release-sbom:
+    name: Attach SBOM to GitHub Release
+    needs: shield
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: shield-sbom-${{ github.run_id }}
+
+      - name: Upload SBOM files to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sbom.cdx.json
+            sbom.cyclonedx.json
+            sbom.spdx.json
