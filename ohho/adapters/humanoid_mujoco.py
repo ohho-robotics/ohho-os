@@ -139,6 +139,8 @@ class HumanoidMujocoTransport(BaseTransport):
         self.last_tau: tuple[float, ...] = ()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._renderer: Any = None
+        self._renderer_failed = False
 
     @property
     def mode(self) -> HumanoidMode:
@@ -236,6 +238,7 @@ class HumanoidMujocoTransport(BaseTransport):
 
     def disconnect(self) -> None:
         self.stop_sim()
+        self._close_renderer()
         self._state = ConnectionState.DISCONNECTED
         self._emit_status(self.status())
 
@@ -338,6 +341,57 @@ class HumanoidMujocoTransport(BaseTransport):
         self._require_model()
         self._mj.mj_forward(self._model, self._data)
         return self._snapshot()
+
+    def get_camera_frame(self) -> Any:
+        """RGB frame from a MuJoCo camera, or None when the model has none.
+
+        A camera whose name contains ``head`` is preferred. A model with no
+        cameras, or a renderer that cannot start, returns None so the episode
+        simply omits ``observation.images.head``.
+        """
+        if self._model is None or int(self._model.ncam) < 1:
+            return None
+        renderer = self._ensure_renderer()
+        if renderer is None:
+            return None
+        try:
+            renderer.update_scene(self._data, camera=self._camera_id())
+            return renderer.render()
+        except Exception:
+            return None
+
+    def _camera_id(self) -> int:
+        mj = self._mj
+        model = self._model
+        for index in range(int(model.ncam)):
+            name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_CAMERA, index) or ""
+            if "head" in name.lower():
+                return index
+        return 0
+
+    def _ensure_renderer(self) -> Any:
+        if self._renderer_failed:
+            return None
+        if self._renderer is not None:
+            return self._renderer
+        try:
+            self._renderer = self._mj.Renderer(self._model, height=120, width=160)
+        except Exception:
+            self._renderer_failed = True
+            self._renderer = None
+        return self._renderer
+
+    def _close_renderer(self) -> None:
+        renderer = self._renderer
+        self._renderer = None
+        if renderer is None:
+            return
+        close = getattr(renderer, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                return
 
     def step(self, dt: float | None = None) -> Telemetry:
         """Advance one model step, or ``round(dt / timestep)`` model steps.

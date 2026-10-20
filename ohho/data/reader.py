@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -19,12 +19,16 @@ class DatasetInfo:
     """Contents of ``meta/info.json``."""
 
     codebase_version: str = "2.0"
+    robot_type: str = "omnibot"
     repo_id: str = ""
     fps: float = 10.0
     total_episodes: int = 0
     total_frames: int = 0
+    total_videos: int = 0
+    video_path: Optional[str] = None
     features: Dict[str, Any] = field(default_factory=dict)
     tasks: List[str] = field(default_factory=list)
+    arm_action: Optional[str] = None
 
 
 @dataclass
@@ -38,6 +42,7 @@ class DatasetFrame:
     episode_index: int
     task_index: int
     next_done: bool
+    action_raw: Optional[List[float]] = None
 
 
 class DatasetReader:
@@ -57,12 +62,16 @@ class DatasetReader:
             d = json.load(f)
         return DatasetInfo(
             codebase_version=d.get("codebase_version", "2.0"),
+            robot_type=d.get("robot_type", "omnibot"),
             repo_id=d.get("repo_id", ""),
             fps=d.get("fps", 10.0),
             total_episodes=d.get("total_episodes", 0),
             total_frames=d.get("total_frames", 0),
+            total_videos=d.get("total_videos", 0),
+            video_path=d.get("video_path"),
             features=d.get("features", {}),
             tasks=d.get("tasks", []),
+            arm_action=d.get("arm_action"),
         )
 
     def _load_episodes(self) -> List[dict]:
@@ -86,6 +95,36 @@ class DatasetReader:
     @property
     def frame_count(self) -> int:
         return self.info.total_frames
+
+    @property
+    def robot_type(self) -> str:
+        return self.info.robot_type
+
+    @property
+    def has_videos(self) -> bool:
+        return bool(self.info.total_videos > 0 or self.info.video_path)
+
+    @property
+    def video_keys(self) -> List[str]:
+        return [
+            k
+            for k, v in self.info.features.items()
+            if isinstance(v, dict) and v.get("dtype") == "video"
+        ]
+
+    def get_video_path(
+        self, episode_index: int, video_key: str = "observation.images.front"
+    ) -> Path:
+        """Resolve the path to an episode's MP4 video."""
+        chunk = episode_index // 1000
+        template = (
+            self.info.video_path
+            or "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+        )
+        rel = template.format(
+            episode_chunk=chunk, video_key=video_key, episode_index=episode_index
+        )
+        return self.root / rel
 
     @property
     def state_dim(self) -> int:
@@ -123,6 +162,7 @@ class DatasetReader:
 
         table = pq.read_table(path)
         frames = []
+        has_raw = "action_raw" in table.column_names
         for i in range(table.num_rows):
             row = table.slice(i, 1).to_pydict()
             frames.append(
@@ -134,6 +174,7 @@ class DatasetReader:
                     episode_index=row["episode_index"][0],
                     task_index=row["task_index"][0],
                     next_done=row["next.done"][0],
+                    action_raw=row["action_raw"][0] if has_raw else None,
                 )
             )
         return frames
@@ -154,6 +195,7 @@ class DatasetReader:
                         episode_index=d["episode_index"],
                         task_index=d["task_index"],
                         next_done=d["next.done"],
+                        action_raw=d.get("action_raw"),
                     )
                 )
         return frames
@@ -172,21 +214,41 @@ class DatasetReader:
         return out
 
     def stats(self) -> Dict[str, Dict[str, float]]:
-        """Per-dimension min/max/mean for observation.state and action."""
+        """Per-dimension min/max/mean for observation.state, action, and action_raw.
+
+        Surfaces both positional keys (``dim0_min``) and named feature keys
+        (``base_vx_min``, ``roll_mean``) so callers can access stats by feature name.
+        """
         frames = self.all_frames()
         if not frames:
             return {}
         n_state = len(frames[0].observation_state)
         n_action = len(frames[0].action)
-        result: Dict[str, Dict[str, float]] = {}
-        for key, n, getter in [
+
+        targets = [
             ("observation.state", n_state, lambda f: f.observation_state),
             ("action", n_action, lambda f: f.action),
-        ]:
+        ]
+        if any(f.action_raw is not None for f in frames):
+            n_raw = len(frames[0].action_raw) if frames[0].action_raw else 0
+            targets.append(("action_raw", n_raw, lambda f: f.action_raw or f.action))
+
+        result: Dict[str, Dict[str, float]] = {}
+        for key, n, getter in targets:
             cols = [[getter(f)[i] for f in frames] for i in range(n)]
-            result[key] = {f"dim{i}_min": min(c) for i, c in enumerate(cols)}
-            result[key].update({f"dim{i}_max": max(c) for i, c in enumerate(cols)})
-            result[key].update(
-                {f"dim{i}_mean": sum(c) / len(c) for i, c in enumerate(cols)}
-            )
+            names = self.info.features.get(key, {}).get("names", [])
+            sub_stats: Dict[str, float] = {}
+            for i, c in enumerate(cols):
+                c_min = float(min(c))
+                c_max = float(max(c))
+                c_mean = float(sum(c) / len(c))
+                sub_stats[f"dim{i}_min"] = c_min
+                sub_stats[f"dim{i}_max"] = c_max
+                sub_stats[f"dim{i}_mean"] = c_mean
+                if i < len(names):
+                    name = names[i]
+                    sub_stats[f"{name}_min"] = c_min
+                    sub_stats[f"{name}_max"] = c_max
+                    sub_stats[f"{name}_mean"] = c_mean
+            result[key] = sub_stats
         return result

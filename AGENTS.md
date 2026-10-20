@@ -56,7 +56,7 @@
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
 | **Hardware adapters** | ✅ M1 software complete — `serial://` (Yahboom base) + `feetech://` (SO-101 arm) + `composite` (base+arm merge for mobile-manipulators) + `dds://` (Unitree Go2 with real state polling) all built and mock-tested. **On-robot bring-up still pending** (hardware-gated). DJI/others not built. |
 | Agent loop | ✅ **real brain** — `HarnessBrain` wires `agent_engine.AgentHarness` (perceive→reason→act→reflect). `ToolRegistry` built from robot capabilities. `ClaudeToolCallingReasoner` over `ReasoningRouter` (cloud Claude when `ANTHROPIC_API_KEY` + `[agent]` extra, echo fallback otherwise). `ScriptedBrain` remains the no-dep fallback. |
-| Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.0), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. |
+| Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.1), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. **OHH-340** records a humanoid episode from sim teleop; state and action names come from `joint_groups`. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, Claude-vision `VlmPerceptor`). CLI `ohho look`, `ohho memory` |
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 / OHH-336** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, plus `modes.request` for a declared `humanoid.posture` value; 300ms silence or deadman false zeros velocity and leaves the mode; a robot backend on a non-sim URI requires the arming phrase and `OHHO_ARM_HARDWARE=1` already in the environment; backends: `sim`, `robot`, and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
@@ -180,7 +180,7 @@ sdk/
 │   ├── robot.py          # Robot (RAL) — connect/drive/move_joints/telemetry/emergency_stop/has/disconnect; connect() shortcut
 │   ├── agent.py          # Agent + ScriptedBrain (fallback); _default_brain() lazily loads HarnessBrain
 │   ├── brains.py         # HarnessBrain — wires agent_engine (ToolRegistry from caps, RobotPerceptor, ClaudeToolCallingReasoner)
-│   ├── data/             # ohho.data — Recorder (capture state+action), LeRobot v2.0 writer + reader
+│   ├── data/             # ohho.data — Recorder, LeRobot v2.1 writer, humanoid joint-group episodes
 │   │   ├── __init__.py   # exports Recorder, Episode
 │   │   ├── recorder.py   # Recorder — wraps Robot, intercepts drive/move_joints, captures frames
 │   │   ├── writer.py     # write_dataset — LeRobot v2.0 (Parquet via pyarrow, JSON Lines fallback)
