@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 from typing import Any
@@ -82,15 +83,26 @@ class TestNotBuiltBackends(unittest.TestCase):
         self.assertNotIn("isaacsim", sys.modules)
 
     def test_mujoco_not_built(self):
-        with (
-            redirect_stdout(io.StringIO()) as stdout,
-            redirect_stderr(io.StringIO()) as stderr,
-        ):
-            code = main(["sim-serve", "--backend", "mujoco"])
-            self.assertNotEqual(code, 0)
-            output = stdout.getvalue() + stderr.getvalue()
-            self.assertIn("not built", output)
-        self.assertNotIn("mujoco", sys.modules)
+        # A fresh interpreter: the humanoid-mujoco tests import MuJoCo in this
+        # process, and that must not hide a sim-serve import.
+        script = (
+            "import sys\n"
+            "from ohho.cli import main\n"
+            "code = main(['sim-serve', '--backend', 'mujoco'])\n"
+            "imported = 'mujoco' in sys.modules\n"
+            "print('IMPORTED', imported)\n"
+            "raise SystemExit(0 if code != 0 and not imported else 1)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        output = proc.stdout + proc.stderr
+        self.assertIn("not built", output)
+        self.assertIn("IMPORTED False", output)
+        self.assertEqual(proc.returncode, 0)
 
 
 @unittest.skipUnless(

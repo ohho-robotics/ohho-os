@@ -43,6 +43,13 @@ dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0"]  # serve policies over REST or WebSocket
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
+humanoid-sim = [
+  "mujoco>=3.1",
+  "numpy>=1.24",
+  "onnx>=1.15",
+  "onnxruntime>=1.16",
+  "torch>=2.1",
+]                                            # humanoid-mujoco backend, ONNX and TorchScript policies, CPU
 ros2 = []                                    # rclpy ships with your ROS 2 distro — source it, then install this extra
 dev = ["pytest>=7", "coverage>=7"]
 all = [
@@ -53,6 +60,9 @@ all = [
   "anthropic>=0.40",
   "pyarrow>=14.0",
   "torch>=2.1",
+  "mujoco>=3.1",
+  "onnx>=1.15",
+  "onnxruntime>=1.16",
   "cyclonedds>=0.10",
   "pymavlink>=2.4",
   "fastapi>=0.110",
@@ -66,6 +76,9 @@ Source = "https://github.com/ohho-robotics/ohho-sdk"
 
 [project.scripts]
 ohho = "ohho.cli:main"
+
+[project.entry-points."ohho.robots"]
+builtin = "ohho.robots.builtin:plugin"
 
 [tool.setuptools.packages.find]
 include = ["ohho*"]

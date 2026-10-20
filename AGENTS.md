@@ -48,6 +48,8 @@
 | Robot Abstraction Layer (`Robot`) | ✅ working |
 | Capability model + registry | ✅ working (OmniBot, Unitree Go2, generic sim) |
 | RobotSpec v2 | ✅ **OHH-309** — additive `robot_class`, joint groups, per-class limits, assets, `ci_sim`, `source`, `capability_params`. Safety caps unchanged. ADR `docs/architecture/robot-plugins.md` is proposed, awaiting Varun's review. |
+| Robot plugins (`ohho.robots`) | ✅ **OHH-310** — `RobotPlugin` in `ohho/plugins.py`. Built-ins (sim, omnibot, unitree-go2) load through the `ohho.robots` entry point; a source checkout without a reinstall falls back to `ohho.robots.builtin`. `ohho list --plugins` shows each plugin, its specs and any load error. SafetyGate profile lookup is unchanged. |
+| Transport + sim registries | ✅ **OHH-311** — `resolve_transport` asks `RobotPlugin.transports()` first, then the existing scheme dict (entries unchanged). `sim://` and auto use `RobotSpec.sim_backend` when set (`kinematic` and `humanoid-mujoco` are the built-in backends); an empty name keeps today's simulator. Unknown schemes list each plugin's schemes. `dds://` stays Unitree. |
 | Runtime port + **native** backend | ✅ working (threaded scheduler, pub/sub, timers, params) |
 | **ROS 2** runtime backend | ✅ **M4 complete** — `Ros2Runtime` (rclpy node: timers, pub/sub via topics, params via node params) + `Ros2Transport` (bridges /cmd_vel, /odom, /arm/joint_states). `get_runtime("auto")` prefers ros2 when rclpy present. `ros2://` scheme registered. Fully testable with `FakeRos2Node` (no ROS 2 needed). |
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
@@ -61,9 +63,10 @@
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
 | **Humanoid telemetry** | ✅ **OHH-327** — `Telemetry.custom["humanoid"]` on `ohho.telemetry.v1`: mode, vendor mode (logs only), fall state, base orientation, per-group joints, planar odom shadowed onto `Telemetry.odom`, battery, experimental. Unknown or missing fall state is not upright. |
+| **Humanoid MuJoCo sim** | ✅ **OHH-329** — `humanoid-mujoco` sim backend. A plugin supplies the MJCF, joint order, PD gains, observation layout and an ONNX or TorchScript checkpoint (default 50 Hz). `drive` stores a body velocity; the policy writes joint targets; PD runs every model step (`tau = kp (q_target - q) - kd dq`). `prepare`, `damp` and `custom` run with no policy. Protocol stays `simulated`, so SafetyGate is unchanged. Extra `humanoid-sim`. |
 | CLI (`ohho`) | ✅ `doctor list version connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → 461 tests, skipped=7. Local-only errors (do not skip in CI): `test_demo_drive` importing `tests.test_ros2`, and two self-test cases when the local `cv2` install is broken. |
-| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → 517 tests, skipped=7. Local-only errors (do not skip in CI): `test_demo_drive` importing `tests.test_ros2`, and two self-test cases when the local `cv2` install is broken. |
+| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run; other cells skip them when the packages are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
 (`yahboom`, `feetech`, `composite`, `unitree`) are built and unit-tested against
@@ -159,7 +162,7 @@ sdk/
 │   │   ├── native.py     # NativeRuntime — threaded scheduler
 │   │   └── ros2.py       # Ros2Runtime — rclpy node (timers, pub/sub, params); node_factory injectable for tests
 │   ├── adapters/
-│   │   ├── __init__.py        # resolve_transport(uri, spec, runtime); available_adapters(); scheme map; composite auto-compose
+│   │   ├── __init__.py        # resolve_transport: plugin registries, then scheme dict; composite auto-compose
 │   │   ├── errors.py          # AdapterUnavailable
 │   │   ├── sim.py             # SimTransport — holonomic physics + joint servoing; step(dt) deterministic
 │   │   ├── _yahboom_proto.py  # vendored Yahboom packet codec (pure stdlib): encode + parse_stream
@@ -167,9 +170,12 @@ sdk/
 │   │   ├── feetech.py         # FeetechTransport — feetech:// (SO-101 arm); lerobot lazy; rad↔tick; torque; reader thread
 │   │   ├── composite.py       # CompositeTransport — merges base + arm into one Transport (mobile-manipulators)
 │   │   ├── ros2.py            # Ros2Transport — ros2:// (bridges /cmd_vel, /odom, /joint_states); msg_factory injectable
-│   │   └── unitree.py         # UnitreeDdsTransport — dds:// (Go2); SDK lazy; state polling thread; state_factory injectable
+│   │   ├── unitree.py         # UnitreeDdsTransport — dds:// (Go2); SDK lazy; state polling thread; state_factory injectable
+│   │   └── humanoid_mujoco.py # HumanoidMujocoTransport — any plugin MJCF, policy, then PD; mujoco imported on connect
 │   ├── humanoid.py       # generic humanoid modes and Robot methods (posture, gaze, hands, joints)
 │   ├── humanoid_telemetry.py  # custom["humanoid"] block (ohho.telemetry.v1): validator, JSON, odom shadow
+│   ├── humanoid_sim.py   # HumanoidSimConfig, observation layout, bind_sim_config (stdlib; no mujoco import)
+│   ├── policy_runner.py  # LocomotionPolicy — ONNX or TorchScript on CPU; runtime imported on load
 │   ├── robot.py          # Robot (RAL) — connect/drive/move_joints/telemetry/emergency_stop/has/disconnect; connect() shortcut
 │   ├── agent.py          # Agent + ScriptedBrain (fallback); _default_brain() lazily loads HarnessBrain
 │   ├── brains.py         # HarnessBrain — wires agent_engine (ToolRegistry from caps, RobotPerceptor, ClaudeToolCallingReasoner)
@@ -191,8 +197,11 @@ sdk/
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── cli.py            # argparse: doctor/list(--plugins)/version/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
 │   └── robots/
+│       ├── __init__.py   # package for the built-in plugin and example manifests
+│       ├── builtin.py    # built-in plugin (sim, omnibot, unitree-go2); vendor SDKs stay lazy
 │       └── example.json  # example manifest (nested dof/limits) for load_manifest()
 ├── docs/
 │   ├── architecture/
@@ -202,7 +211,7 @@ sdk/
 ├── scripts/
 │   ├── check_classifiers.py
 │   └── sim_loop.py       # one-liner reproducible sim loop runner
-└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_selftest.py
+└── tests/                # unittest suite including test_humanoid_mujoco.py and tests/fixtures/humanoid (small MJCF, no meshes)
 ```
 
 ---
@@ -245,11 +254,24 @@ onto `Telemetry.odom`), `battery` (fraction, voltage) and `experimental`.
 **RobotSpec (`ohho/registry.py`, v2 in `ohho/robot_spec.py`):** existing fields
 `id, name, category, capabilities(tuple), adapter, dof_base, dof_arm, max_lin,
 max_ang, joint_names(tuple)`, `.has(cap)`, plus `robot_class`, `joint_groups`,
-`limits`, `assets`, `ci_sim`, `source`, `capability_params`. `category` still
+`limits`, `assets`, `ci_sim`, `source`, `capability_params`, `sim_backend`
+(empty keeps today's `sim://`). `category` still
 loads; it maps onto `robot_class`. Built-ins: `omnibot` (mobile manipulator,
 6-DOF arm, max_lin 0.2), `unitree-go2` (quadruped, max_lin 1.5), `sim`
 (mobile base, generic holonomic). Safety caps are unchanged. ADR:
 `docs/architecture/robot-plugins.md`.
+
+**Robot plugins (`ohho/plugins.py`):** `RobotPlugin` declares `specs()`,
+`transports()` (scheme → factory), `sim_backends()`, `safety_policy(spec)`
+(`None` = class default; `SafetyGate` does not read it yet), `descriptor(spec)`
+and `doctor(spec, uri, read_only=True)`. Discovery uses
+`importlib.metadata.entry_points(group="ohho.robots")`. ohho-os registers
+`builtin = ohho.robots.builtin:plugin`. Plugins must not import a vendor SDK
+at module import. `ohho list --plugins` prints each plugin, its specs and any
+load error. A duplicate robot id, transport scheme or sim backend is a load
+error naming both plugins. `resolve_transport` uses the factories from plugins
+that loaded, then the scheme dict. The built-in plugin's `descriptor` hook
+returns ``None``; RobotDescriptor v1 is `ohho.descriptor`.
 
 **Capabilities (`ohho/capabilities.py`, parameters in `ohho/capability_params.py`):**
 `base.drive`, `base.holonomic_drive`, `legged.pose`, `aerial`,
