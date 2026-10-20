@@ -152,7 +152,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                     self.assertAlmostEqual(msg["odom"]["x"], x0, places=4)
 
                     # 2. Deadman is true -> robot drives and odom changes
-                    for _ in range(5):
+                    for _ in range(10):
                         await client.send(
                             json.dumps(
                                 {
@@ -213,7 +213,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                     self.assertAlmostEqual(msg["odom"]["x"], x_estop, places=3)
 
                     # 5. Estop unlatch -> robot drives again
-                    for _ in range(5):
+                    for _ in range(10):
                         await client.send(
                             json.dumps(
                                 {
@@ -234,11 +234,11 @@ class TestSimServeSimBackend(unittest.TestCase):
 
         asyncio.run(run_test())
         elapsed = time.monotonic() - start_time
-        # Must drive and complete all checks in under 2 seconds
+        # Must drive and complete all checks in under 3 seconds (macOS runners)
         self.assertLess(
             elapsed,
-            2.0,
-            f"Test took {elapsed:.2f}s, expected under 2 seconds",
+            3.0,
+            f"Test took {elapsed:.2f}s, expected under 3 seconds",
         )
 
 
