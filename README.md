@@ -39,6 +39,10 @@ then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is
 green on `main`. Tag `v1.1.2` published `ohho-os` 1.1.2 to PyPI.
 
+## Protocol pin (not yet tagged)
+
+`protocolVersion` `1.0.0` is not in this commit (`85db848268168fa27b4ebb1b5992220b3bfacfcd`). Package version stays `1.1.3`. Do not push a `v*` tag for that pin: [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes PyPI on `v*` when the tag matches `pyproject.toml`. The paperwork name is `protocol-v1.0.0`. `ohho.telemetry.v1` and `RobotDescriptor` live in the ohho-sdk npm repository, also not yet tagged. Draft: [CHANGELOG.md](CHANGELOG.md). Human commands: [docs/releases/protocol-tag-commands.md](docs/releases/protocol-tag-commands.md).
+
 ## Tests
 
 ```bash
