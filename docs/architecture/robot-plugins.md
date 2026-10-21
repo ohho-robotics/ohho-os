@@ -24,8 +24,10 @@ plugins, extract safety policies, or edit the open drone branches.
    parameters, transports (URI schemes), sim backends, a safety policy (or uses
    its class default), a descriptor for the console and VR, asset locations and
    an optional doctor. Plugins are found through the Python entry-point group
-   `ohho.robots`. Built-ins use the same path once C-02 lands. Until then they
-   stay registered in `ohho/registry.py` with `source="builtin"`.
+   `ohho.robots`. Built-ins use that path (C-02). Spec data stays in
+   `ohho/registry.py` and `ohho.robots.builtin` registers it, with
+   `source="builtin"`. A checkout that has not been reinstalled loads the same
+   module when the entry point is absent.
 
 3. **Behaviour asks for capabilities, never for robot ids.**
    `robot.has("humanoid.locomotion")`, not `if robot_id == "booster-t2"`.
@@ -200,6 +202,13 @@ leave both a field and a property of the same name:
 - Old manifests and `RobotSpec(...)` calls keep working. New fields have defaults.
 - `example.json` still loads. Built-in `max_lin` / `max_ang` are unchanged.
 - Safety caps, watchdogs, arming and the e-stop path are unchanged.
-- Plugin discovery, per-class `SafetyPolicy`, the robot-id resolver and the CI
-  matrix are later issues (C-02, C-05, C-06, C-08). They should follow this
-  ADR rather than grow more fields on the flat spec.
+- Plugin discovery is C-02 (`ohho/plugins.py`, group `ohho.robots`).
+  C-03 (OHH-311) asks those plugins for a transport scheme before the scheme
+  dict in `ohho/adapters/__init__.py`. The dict and its entries stay, so a
+  scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
+  default) selects a plugin sim backend for `sim://` and for auto; an empty
+  name keeps today's simulator return. `dds://` stays the Unitree scheme.
+  Per-class `SafetyPolicy`, the robot-id resolver and the CI matrix are later
+  issues (C-05, C-06, C-08). They should follow this ADR rather than grow more
+  fields on the flat spec. `SafetyGate` profile lookup stays as it is until
+  C-05.

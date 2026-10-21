@@ -68,6 +68,9 @@ Source = "https://github.com/ohho-robotics/ohho-os"
 [project.scripts]
 ohho = "ohho.cli:main"
 
+[project.entry-points."ohho.robots"]
+builtin = "ohho.robots.builtin:plugin"
+
 [tool.setuptools.packages.find]
 include = ["ohho*"]
 
