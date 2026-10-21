@@ -109,6 +109,27 @@ class ServiceBase:
         return self._grace_s
 
     @property
+    def pid(self) -> int | None:
+        """OS pid when this service is its own process.
+
+        In-process services return None. The supervisor does not schedule
+        the host process in their place.
+        """
+        return None
+
+    def request_memory_lock(self) -> bool:
+        """Ask this service to ``mlockall`` before it runs.
+
+        The default does not lock and returns False. A service that locks
+        its own process returns True.
+        """
+        return False
+
+    def memory_lock_report(self) -> str | None:
+        """``ok``, a refusal string, or None while the lock result is unknown."""
+        return None
+
+    @property
     def readiness_timeout_s(self) -> float:
         return self._readiness_timeout_s
 

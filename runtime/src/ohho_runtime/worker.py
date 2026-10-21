@@ -6,8 +6,9 @@ The process installs a SIGTERM handler, optionally writes a started file, then
 sends ``ready`` and ``beat`` lines on the Unix socket from
 ``OHHO_RUNTIME_HEARTBEAT_SOCK``. SIGTERM sets the stop flag and the process
 exits. ``OHHO_RUNTIME_IGNORE_SIGTERM=1`` ignores SIGTERM so a parent can test
-grace-period escalation. This module does not import ``ohho`` and does not
-command a robot.
+grace-period escalation. ``OHHO_RUNTIME_MLOCKALL=1`` locks this process first;
+a refusal is logged and the process still starts. This module does not import
+``ohho`` and does not command a robot.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from ohho_runtime.heartbeat import (
     SOCK_ENV,
     STARTED_ENV,
 )
+from ohho_runtime.os_sched import lock_memory_if_requested
 
 
 def _connect(path: str) -> socket.socket:
@@ -50,6 +52,7 @@ def _send(sock: socket.socket, line: bytes) -> None:
 
 def main() -> None:
     """Run until SIGTERM, unless the ignore flag is set."""
+    lock_memory_if_requested()
     stop = threading.Event()
 
     def _on_term(_signum: int, _frame: object = None) -> None:

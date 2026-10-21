@@ -26,6 +26,7 @@ from ohho_runtime.heartbeat import (
     split_lines,
     unix_sockets_available,
 )
+from ohho_runtime.os_sched import MLOCK_ENV, MLOCK_STATUS_ENV
 from ohho_runtime.service.base import ServiceBase
 from ohho_runtime.service.lifecycle import (
     LEGAL_TRANSITIONS,
@@ -265,6 +266,37 @@ class SubprocessService(ServiceBase):
         self._stderr_path: Path | None = None
         self._stderr_fh: BinaryIO | None = None
         self._stderr_cache = ""
+        self._lock_memory = False
+        self._mlock_status: Path | None = None
+
+    @property
+    def pid(self) -> int | None:
+        """Child pid after start, otherwise None."""
+        proc = self._proc
+        if proc is None:
+            return None
+        return proc.pid
+
+    @property
+    def memory_lock_requested(self) -> bool:
+        """True after :meth:`request_memory_lock`."""
+        return self._lock_memory
+
+    def request_memory_lock(self) -> bool:
+        """Lock the child when it starts. The worker reports the result."""
+        self._lock_memory = True
+        return True
+
+    def memory_lock_report(self) -> str | None:
+        """Child ``mlockall`` result, or None until the worker writes it."""
+        path = self._mlock_status
+        if path is None or not path.is_file():
+            return None
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return text or None
 
     @property
     def beats(self) -> int:
@@ -306,6 +338,10 @@ class SubprocessService(ServiceBase):
             env = child_env(self._extra)
             env[SOCK_ENV] = self._server.path
             env.setdefault(INTERVAL_ENV, "0.05")
+            if self._lock_memory and self._dir is not None:
+                self._mlock_status = self._dir / "mlock.txt"
+                env[MLOCK_ENV] = "1"
+                env[MLOCK_STATUS_ENV] = str(self._mlock_status)
             self._stderr_path = self._dir / "stderr.txt"
             self._stderr_fh = self._stderr_path.open("wb", buffering=0)
             if os.name == "posix":
