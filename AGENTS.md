@@ -5,13 +5,13 @@
 > with no prior context can understand what exists, why it's built this way, and
 > exactly what to do next. Keep it up to date as milestones land.
 
-> **This checkout is the ohho-sdk tree.** The Python package is at the
-> repository root. Paths written below as `sdk/` refer to that root
-> (`tests/`, not `sdk/tests/`). The TypeScript workspace is in `ts/` and
-> is unchanged; `tsc` fails there. The licence is Apache-2.0 (OHH-18).
+> **This checkout is ohho-os** (Python `ohho-os` at the repository root).
+> Paths written below as `sdk/` refer to that root (`tests/`, not `sdk/tests/`).
+> The TypeScript SDK moved to [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk);
+> `ts/README.md` points there. The licence is Apache-2.0 (OHH-18).
 
 - **Package:** `ohho-os` (imports as `ohho`) — repository root of
-  [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
+  [ohho-os](https://github.com/ohho-robotics/ohho-os).
 - **What it is:** the open-source, robot-agnostic engine that powers the OhhO
   platform. One API controls any robot, **with or without ROS**, and carries the
   whole stack from perception to training.
@@ -56,7 +56,7 @@
 | Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.0), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, Claude-vision `VlmPerceptor`). CLI `ohho look`, `ohho memory` |
-| **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
+| **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve`. Default port **8790** (8765 is OmniBot's Foxglove bridge). |
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
@@ -195,7 +195,8 @@ sdk/
 │   ├── architecture/
 │   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   └── unitree.md        # Go2 DDS adapter — sim-tested only; hardware OHH-135
 ├── scripts/
 │   ├── check_classifiers.py
 │   └── sim_loop.py       # one-liner reproducible sim loop runner
