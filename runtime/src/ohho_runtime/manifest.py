@@ -372,14 +372,54 @@ def make_service(
     )
 
 
+def _optional_text(value: object, what: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ManifestError(f"{what} must be a string")
+    return value
+
+
+def _manifest_log_level(value: object) -> str:
+    text = _optional_text(value, "log_level")
+    if not text.strip():
+        return ""
+    from ohho_runtime.log import normalize_level
+
+    try:
+        return normalize_level(text)
+    except ValueError as exc:
+        raise ManifestError(str(exc)) from None
+
+
+def _manifest_log_format(value: object) -> str:
+    text = _optional_text(value, "log_format")
+    if not text.strip():
+        return ""
+    from ohho_runtime.log import normalize_format
+
+    try:
+        return normalize_format(text, allow_empty=True)
+    except ValueError as exc:
+        raise ManifestError(str(exc)) from None
+
+
 @dataclass(frozen=True)
 class RuntimeManifest:
-    """Validated service set. Constructing it loads and checks the set."""
+    """Validated service set. Constructing it loads and checks the set.
+
+    ``log_level`` and ``log_format`` are optional. Empty means the runtime
+    default (``INFO``, JSON lines), still overridable by the environment.
+    """
 
     services: tuple[ServiceSpec, ...] = ()
+    log_level: str = ""
+    log_format: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "services", _validate_and_order(self.services))
+        object.__setattr__(self, "log_level", _manifest_log_level(self.log_level))
+        object.__setattr__(self, "log_format", _manifest_log_format(self.log_format))
 
     def roles(self) -> tuple[str, ...]:
         """Service roles in start order. The watchdog is first when present."""
@@ -393,13 +433,23 @@ class RuntimeManifest:
         raise ManifestError(f"runtime manifest has no service {role!r}")
 
 
-def load_manifest(services: Sequence[ServiceSpec]) -> RuntimeManifest:
+def load_manifest(
+    services: Sequence[ServiceSpec],
+    *,
+    log_level: str = "",
+    log_format: str = "",
+) -> RuntimeManifest:
     """Validate ``services`` and return a manifest.
 
     Unknown QoS profile names and dependency cycles raise
-    :class:`ManifestError`.
+    :class:`ManifestError`. ``log_level`` and ``log_format`` are optional
+    observability settings; they do not start a service.
     """
-    return RuntimeManifest(services=tuple(services))
+    return RuntimeManifest(
+        services=tuple(services),
+        log_level=log_level,
+        log_format=log_format,
+    )
 
 
 def with_services(manifest: RuntimeManifest, *services: ServiceSpec) -> RuntimeManifest:
@@ -407,10 +457,15 @@ def with_services(manifest: RuntimeManifest, *services: ServiceSpec) -> RuntimeM
 
     A plugin hook can start from the class default and add a service
     without dropping transport, the safety watchdog, or telemetry.
+    Log settings are copied with the services.
     """
     if not isinstance(manifest, RuntimeManifest):
         raise TypeError("manifest must be a RuntimeManifest")
-    return load_manifest((*manifest.services, *services))
+    return load_manifest(
+        (*manifest.services, *services),
+        log_level=manifest.log_level,
+        log_format=manifest.log_format,
+    )
 
 
 def _validate_and_order(services: object) -> tuple[ServiceSpec, ...]:
@@ -520,7 +575,11 @@ def _apply_aerial_gate(manifest: RuntimeManifest, spec: RobotSpec) -> RuntimeMan
             services.append(service)
     if not changed:
         return manifest
-    return RuntimeManifest(services=tuple(services))
+    return RuntimeManifest(
+        services=tuple(services),
+        log_level=manifest.log_level,
+        log_format=manifest.log_format,
+    )
 
 
 def _call(target: Any) -> PythonCallable:
@@ -718,7 +777,15 @@ def _load_plugin_objects() -> tuple[object, ...]:
         is_builtin = getattr(entry, "value", None) == BUILTIN_ENTRY_VALUE
         try:
             loaded_objects.append(_materialize(entry.load()))
-        except Exception:
+        except Exception as exc:
+            from ohho_runtime.log import note_exception
+
+            note_exception(
+                exc,
+                service="manifest",
+                event="plugin_load_failed",
+                message=f"plugin {getattr(entry, 'name', '')} failed to load",
+            )
             if is_builtin:
                 raise
             continue

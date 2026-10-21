@@ -90,6 +90,107 @@ services keep running.
 whether that finished within `grace_s`. Events are appended to
 `supervisor.events`.
 
+## Logging
+
+`ohho_runtime.log.RuntimeLog` writes one record per event for the supervisor
+and for every supervised service. Each record has these fields:
+
+| Field | Meaning |
+|---|---|
+| `timestamp` | UTC time, `YYYY-MM-DDTHH:MM:SS.ffffffZ` |
+| `level` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `service` | Service role, or `supervisor` for supervisor events |
+| `event` | Stable event name (`service_start`, `heartbeat_miss`, ...) |
+| `robot_class` | Robot class value, for example `mobile_base` |
+| `run_id` | Id of this runtime run |
+
+The default format is JSON Lines (one JSON object per line). Development
+mode is plain text (`service=... event=... robot_class=... run_id=...`).
+
+The level and format come from the manifest, and the environment overrides
+them when the variable is set:
+
+| Source | Level | Format | Run id |
+|---|---|---|---|
+| Manifest | `log_level` on `load_manifest` / `RuntimeManifest` | `log_format` (`json` or `text`; `human` is text) | |
+| Environment | `OHHO_RUNTIME_LOG_LEVEL` | `OHHO_RUNTIME_LOG_FORMAT` (`json` or `text`) | `OHHO_RUNTIME_RUN_ID` |
+| Default | `INFO` | `json` | generated |
+
+```python
+from ohho_runtime.manifest import load_manifest
+
+manifest = load_manifest(services, log_level="DEBUG", log_format="text")
+```
+
+A caught exception in runtime code is re-raised, or passed to
+`note_exception`, which writes the record (including `exc_type`) and
+increments `ohho_runtime_exceptions_total`. `runtime/tests/test_no_swallow.py`
+scans `runtime/src` and fails on a bare `except:` or an
+`except Exception: pass`.
+
+## Metrics
+
+`ohho_runtime.metrics` renders Prometheus text. No extra dependency is
+required. `Registry.render()` is the text a scrape would return; tests use
+it directly.
+
+`GET /metrics` is served by `MetricsEndpoint`. It binds `127.0.0.1` and
+port **9470** unless configured otherwise. It stays off until enabled, so
+importing the runtime does not open a socket.
+
+| Control | Effect |
+|---|---|
+| `OHHO_RUNTIME_METRICS=1` | enable (`0`, `false`, `off` disable) |
+| `OHHO_RUNTIME_METRICS_HOST` | bind address (default `127.0.0.1`) |
+| `OHHO_RUNTIME_METRICS_PORT` | port (default `9470`; `0` asks the OS) |
+| `Supervisor(..., metrics_enabled=True)` | enable for that supervisor |
+
+An explicit `metrics_enabled` / host / port argument wins over the
+environment. The supervisor starts the endpoint in `start()` and stops it
+in `shutdown()`.
+
+Scrape the loopback endpoint:
+
+```bash
+export OHHO_RUNTIME_METRICS=1
+export OHHO_RUNTIME_METRICS_PORT=9470
+curl -s http://127.0.0.1:9470/metrics
+```
+
+Prometheus job:
+
+```yaml
+scrape_configs:
+  - job_name: ohho-runtime
+    static_configs:
+      - targets: ["127.0.0.1:9470"]
+```
+
+`Supervisor.observe_loop(role, timer)` publishes the `LoopTimer` that role
+owns. Cycle time is `ohho_runtime_loop_cycle_seconds` with a `quantile`
+label of `0.5`, `0.95`, or `0.99`.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `ohho_runtime_service_state` | gauge | `service`, `state`, `robot_class`, `run_id` | `1` for the current lifecycle state |
+| `ohho_runtime_service_restarts_total` | counter | `service`, `robot_class`, `run_id` | restarts so far |
+| `ohho_runtime_heartbeat_age_seconds` | gauge | `service`, `robot_class`, `run_id` | seconds since the last heartbeat |
+| `ohho_runtime_heartbeat_misses_total` | counter | `service`, `robot_class`, `run_id` | liveness deadlines committed to failed |
+| `ohho_runtime_heartbeat_beats_total` | counter | `service`, `robot_class`, `run_id` | beats a subprocess heartbeat server accepted |
+| `ohho_runtime_start_duration_seconds` | gauge | `service`, `robot_class`, `run_id` | last start duration |
+| `ohho_runtime_stop_duration_seconds` | gauge | `service`, `robot_class`, `run_id` | last stop duration |
+| `ohho_runtime_loop_cycle_seconds` | gauge | `service`, `quantile`, `robot_class`, `run_id` | LoopTimer cycle time at p50, p95, p99 |
+| `ohho_runtime_loop_jitter_seconds` | gauge | `service`, `robot_class`, `run_id` | LoopTimer inter-start jitter |
+| `ohho_runtime_loop_deadline_misses_total` | counter | `service`, `robot_class`, `run_id` | LoopTimer deadline misses |
+| `ohho_runtime_loop_samples` | gauge | `service`, `robot_class`, `run_id` | LoopTimer samples in the report |
+| `ohho_runtime_loop_lateness_seconds` | gauge | `service`, `robot_class`, `run_id` | latest LoopTimer lateness |
+| `ohho_runtime_exceptions_total` | counter | `service`, `event`, `exc_type`, `robot_class`, `run_id` | caught exceptions that were logged |
+| `ohho_runtime_do_not_operate` | gauge | `robot_class`, `run_id` | `1` while the latch is set |
+| `ohho_runtime_allows_motion` | gauge | `robot_class`, `run_id` | `1` when the supervisor allows motion |
+| `ohho_runtime_supervisor_state` | gauge | `state`, `robot_class`, `run_id` | `1` for the current supervisor state |
+
+The content type is `text/plain; version=0.0.4; charset=utf-8`.
+
 ## Tests
 
 From the repository root, after `pip install -e .` and

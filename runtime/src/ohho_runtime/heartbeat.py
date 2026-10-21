@@ -11,6 +11,8 @@ import socket
 import tempfile
 from pathlib import Path
 
+from ohho_runtime.log import note_exception
+
 SOCK_ENV = "OHHO_RUNTIME_HEARTBEAT_SOCK"
 INTERVAL_ENV = "OHHO_RUNTIME_HEARTBEAT_INTERVAL"
 IGNORE_TERM_ENV = "OHHO_RUNTIME_IGNORE_SIGTERM"
@@ -45,14 +47,30 @@ def unix_sockets_available() -> bool:
             ok = True
         finally:
             probe.close()
-    except OSError:
+    except OSError as exc:
+        note_exception(
+            exc,
+            service="heartbeat",
+            event="socket_probe_failed",
+            level="DEBUG",
+        )
         ok = False
     try:
         os.unlink(path)
-    except OSError:
-        pass
+    except OSError as exc:
+        note_exception(
+            exc,
+            service="heartbeat",
+            event="socket_probe_unlink_failed",
+            level="DEBUG",
+        )
     try:
         Path(directory).rmdir()
-    except OSError:
-        pass
+    except OSError as exc:
+        note_exception(
+            exc,
+            service="heartbeat",
+            event="socket_probe_rmdir_failed",
+            level="DEBUG",
+        )
     return ok

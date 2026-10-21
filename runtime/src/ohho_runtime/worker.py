@@ -28,6 +28,7 @@ from ohho_runtime.heartbeat import (
     SOCK_ENV,
     STARTED_ENV,
 )
+from ohho_runtime.log import note_exception
 
 
 def _connect(path: str) -> socket.socket:
@@ -37,7 +38,13 @@ def _connect(path: str) -> socket.socket:
         try:
             sock.connect(path)
             return sock
-        except OSError:
+        except OSError as exc:
+            note_exception(
+                exc,
+                service="worker",
+                event="heartbeat_connect_failed",
+                level="DEBUG",
+            )
             if time.monotonic() >= deadline:
                 sock.close()
                 raise
@@ -81,7 +88,13 @@ def main() -> None:
             if sock is not None:
                 try:
                     _send(sock, BEAT_LINE)
-                except OSError:
+                except OSError as exc:
+                    note_exception(
+                        exc,
+                        service="worker",
+                        event="heartbeat_send_failed",
+                        level="WARNING",
+                    )
                     break
             if stop.wait(interval):
                 break

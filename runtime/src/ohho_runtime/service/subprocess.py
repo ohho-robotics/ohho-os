@@ -26,6 +26,7 @@ from ohho_runtime.heartbeat import (
     split_lines,
     unix_sockets_available,
 )
+from ohho_runtime.log import note_exception
 from ohho_runtime.service.base import ServiceBase
 from ohho_runtime.service.lifecycle import (
     LEGAL_TRANSITIONS,
@@ -120,12 +121,22 @@ def stop_child(proc: ChildProcess, *, grace_s: float) -> ShutdownRecord:
     _request_stop(proc)
     try:
         proc.wait(timeout=grace_s)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        note_exception(
+            exc,
+            service="subprocess",
+            event="stop_grace_exceeded",
+            level="WARNING",
+        )
         proc.kill()
         try:
             proc.wait(timeout=grace_s)
-        except subprocess.TimeoutExpired:
-            pass
+        except subprocess.TimeoutExpired as hung:
+            note_exception(
+                hung,
+                service="subprocess",
+                event="stop_kill_timeout",
+            )
         return ShutdownRecord(
             action="sigkill",
             forced=True,
@@ -184,16 +195,40 @@ class HeartbeatServer:
             if conn is None:
                 try:
                     conn, _addr = self._sock.accept()
-                except socket.timeout:
+                except socket.timeout as exc:
+                    note_exception(
+                        exc,
+                        service="subprocess",
+                        event="heartbeat_accept_wait",
+                        level="DEBUG",
+                    )
                     continue
-                except OSError:
+                except OSError as exc:
+                    note_exception(
+                        exc,
+                        service="subprocess",
+                        event="heartbeat_accept_failed",
+                        level="WARNING",
+                    )
                     break
                 conn.settimeout(0.2)
             try:
                 chunk = conn.recv(256)
-            except socket.timeout:
+            except socket.timeout as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="heartbeat_recv_wait",
+                    level="DEBUG",
+                )
                 continue
-            except OSError:
+            except OSError as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="heartbeat_recv_failed",
+                    level="WARNING",
+                )
                 break
             if not chunk:
                 conn.close()
@@ -206,8 +241,13 @@ class HeartbeatServer:
         if conn is not None:
             try:
                 conn.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="heartbeat_conn_close_failed",
+                    level="DEBUG",
+                )
 
     def _dispatch(self, line: bytes) -> None:
         if line == READY_LINE:
@@ -221,13 +261,23 @@ class HeartbeatServer:
         self._stop.set()
         try:
             self._sock.close()
-        except OSError:
-            pass
+        except OSError as exc:
+            note_exception(
+                exc,
+                service="subprocess",
+                event="heartbeat_socket_close_failed",
+                level="DEBUG",
+            )
         self._thread.join(timeout=1.0)
         try:
             os.unlink(self.path)
-        except OSError:
-            pass
+        except OSError as exc:
+            note_exception(
+                exc,
+                service="subprocess",
+                event="heartbeat_socket_unlink_failed",
+                level="DEBUG",
+            )
 
 
 class SubprocessService(ServiceBase):
@@ -280,14 +330,25 @@ class SubprocessService(ServiceBase):
         if handle is not None:
             try:
                 handle.flush()
-            except OSError:
-                pass
+            except OSError as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="stderr_flush_failed",
+                    level="DEBUG",
+                )
         path = self._stderr_path
         if path is None or not path.is_file():
             return
         try:
             self._stderr_cache = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            note_exception(
+                exc,
+                service="subprocess",
+                event="stderr_read_failed",
+                level="WARNING",
+            )
             return
 
     def on_start(self) -> None:
@@ -346,8 +407,12 @@ class SubprocessService(ServiceBase):
             try:
                 self.stop()
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="close_stop_failed",
+                )
         self._kill_quiet()
 
     def _kill_quiet(self) -> None:
@@ -357,8 +422,12 @@ class SubprocessService(ServiceBase):
             try:
                 proc.kill()
                 proc.wait(timeout=2.0)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="child_kill_failed",
+                )
         server = self._server
         self._server = None
         if server is not None:
@@ -368,8 +437,13 @@ class SubprocessService(ServiceBase):
         if handle is not None:
             try:
                 handle.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="stderr_close_failed",
+                    level="DEBUG",
+                )
         self._capture_stderr()
         directory = self._dir
         self._dir = None
@@ -378,8 +452,18 @@ class SubprocessService(ServiceBase):
                 for child in directory.iterdir():
                     try:
                         child.unlink()
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        note_exception(
+                            exc,
+                            service="subprocess",
+                            event="runtime_file_unlink_failed",
+                            level="DEBUG",
+                        )
                 directory.rmdir()
-            except OSError:
-                pass
+            except OSError as exc:
+                note_exception(
+                    exc,
+                    service="subprocess",
+                    event="runtime_dir_cleanup_failed",
+                    level="DEBUG",
+                )
