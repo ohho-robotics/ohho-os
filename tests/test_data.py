@@ -160,7 +160,7 @@ class TestWriterReader(unittest.TestCase):
             path = rec.save(tmp)
             with open(os.path.join(path, "meta", "info.json")) as f:
                 info = json.load(f)
-            self.assertEqual(info["codebase_version"], "2.0")
+            self.assertEqual(info["codebase_version"], "v2.1")
             self.assertEqual(info["fps"], 30.0)
             self.assertEqual(info["total_episodes"], 1)
             self.assertEqual(info["total_frames"], 1)

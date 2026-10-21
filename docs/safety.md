@@ -25,7 +25,7 @@ bot.arm()            # re-arm before motion is accepted again
 ```
 
 From the CLI, every command that takes a robot (`connect`, `drive`, `agent`,
-`nav`, `look`, `market run`) accepts:
+`nav`, `look`, `skills run`) accepts:
 
 | Flag | Effect |
 |---|---|
