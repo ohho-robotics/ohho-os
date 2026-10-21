@@ -1,6 +1,7 @@
 import unittest
 
 from ohho.adapters.errors import AdapterUnavailable
+from ohho.schema import ConnectionState
 from ohho.adapters.feetech import (
     DEFAULT_JOINT_MAX,
     DEFAULT_JOINT_MIN,
@@ -63,6 +64,17 @@ class FakeFeetechBus:
             self.present.update(values)
         elif key == "Torque_Enable":
             self.torque.update(values)
+
+
+class FakeClock:
+    def __init__(self, start: float = 2000.0) -> None:
+        self.t = start
+
+    def now(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
 
 
 _OMNIBOT_JOINTS = (
@@ -201,6 +213,47 @@ class TestFeetechAdapter(unittest.TestCase):
             self.assertIsNone(d6["position"])
             self.assertIsNone(d6["voltage"])
             self.assertIsNone(d6["temperature"])
+        finally:
+            tp.disconnect()
+
+    def test_link_loss_disables_torque(self):
+        bus = FakeFeetechBus()
+        tp = _transport(bus)
+        tp.connect()
+        try:
+            tp._on_link_lost()
+            self.assertEqual(tp.status().state, ConnectionState.RECONNECTING)
+            self.assertEqual(set(bus.torque.values()), {0})
+            self.assertFalse(bus.connected)
+        finally:
+            tp.disconnect()
+
+    def test_reconnect_opens_fresh_bus(self):
+        clock = FakeClock()
+        opened: list[FakeFeetechBus] = []
+
+        def factory() -> FakeFeetechBus:
+            b = FakeFeetechBus()
+            opened.append(b)
+            return b
+
+        tp = FeetechTransport(
+            get_spec("omnibot"),
+            "/dev/fakeACM",
+            bus_factory=factory,
+            telemetry_timeout_s=0.05,
+            reconnect_interval_s=0.02,
+            monotonic=clock.now,
+        )
+        tp.connect()
+        try:
+            self.assertEqual(len(opened), 1)
+            tp._on_link_lost()
+            clock.advance(0.03)
+            tp._try_reconnect()
+            self.assertEqual(len(opened), 2)
+            self.assertTrue(opened[1].connected)
+            self.assertEqual(tp.status().state, ConnectionState.CONNECTED)
         finally:
             tp.disconnect()
 
