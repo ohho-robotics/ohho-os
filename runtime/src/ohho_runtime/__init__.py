@@ -2,6 +2,7 @@
 
 This package is not the executor port in ``ohho.runtime``.
 Service manifests live in :mod:`ohho_runtime.manifest`.
+The supervisor lives in :mod:`ohho_runtime.supervisor`.
 """
 
 from __future__ import annotations
