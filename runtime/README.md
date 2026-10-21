@@ -6,6 +6,33 @@ Onboard service lifecycle for OhhO OS. This is the `ohho-runtime` distribution
 `ohho_runtime` depends on public `ohho` APIs. `ohho` does not import
 `ohho_runtime`.
 
+## Runtime manifest
+
+`ohho_runtime.manifest.RuntimeManifest` is the service set for one robot.
+Each service has a role, an entry (Python callable, console script, or
+ROS 2 launch/node), dependencies, criticality (`critical`, `degradable`,
+`optional`), readiness and liveness timeouts, a restart policy (`never` or
+`on-failure` with `max_restarts`, `window_s`, and backoff), a loop rate,
+named QoS profiles, and an optional scheduling hint.
+
+Unknown QoS profile names and dependency cycles are rejected when the
+manifest is loaded. The named profiles are `command`, `state`, `telemetry`,
+and `sensor`.
+
+`class_default_manifest(robot_class)` covers every robot class: transport,
+the safety watchdog, telemetry, and the teleop gateway. Aerial adds
+`autopilot_heartbeat`. Humanoid adds `mode_monitor`.
+
+`resolve_manifest(spec)` uses a plugin `services(spec)` hook when that
+method exists and returns a manifest. `None`, or a plugin with no such
+method, keeps the class default. The hook is optional. It is discovered
+with `getattr`, so existing plugins stay valid. A returned manifest may
+add services. It may not drop transport, the safety watchdog, or telemetry.
+
+The manifest does not start processes, connect to a robot, or arm. Call
+`resolve_manifest` for a spec: an aerial spec that is experimental, or not
+flight-ready, comes back with motion services marked do-not-operate.
+
 ## Service API
 
 `ohho_runtime.service` is a lifecycle state machine:
