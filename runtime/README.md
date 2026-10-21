@@ -191,6 +191,109 @@ label of `0.5`, `0.95`, or `0.99`.
 
 The content type is `text/plain; version=0.0.4; charset=utf-8`.
 
+## Operator CLI
+
+`ohho-runtime` is the operator command. `up` runs in the foreground and
+supervises a manifest in dev mode: in-process services, no hardware, and
+no arming. The other commands talk to that process over a loopback TCP
+socket (`127.0.0.1`, or `::1` when `--host ::1` is set). The socket is
+never bound to any other address.
+
+```bash
+ohho-runtime up --class mobile_base
+ohho-runtime status
+ohho-runtime status --json
+ohho-runtime health
+ohho-runtime health --json
+ohho-runtime logs --service transport --level info
+ohho-runtime restart transport
+ohho-runtime down
+```
+
+`up --class` uses the class default manifest. `up --manifest FILE` loads
+the JSON manifest below. `up` writes a state file so the other commands
+can find the socket. The default path is `~/.ohho/runtime/control.json`.
+`--state` selects another file, which is how tests avoid sharing one
+supervisor. Ctrl+C on `up` stops the supervisor and removes the state file.
+`down` does the same. `down` does not signal the process by pid.
+
+`status` prints each service's lifecycle state, restart count, and
+heartbeat age. `health` exits `0` when every critical service is `ok` and
+do-not-operate is clear, and exits non-zero otherwise. A failed degradable
+or optional service does not, on its own, fail `health`. `--json` on
+`status` and `health` prints one JSON object with `services`, `healthy`,
+and `unhealthy`. `logs` prints structured log lines. `--service` keeps one
+service. `--level` is a minimum (`info` includes `info` and above).
+`--follow` keeps printing new lines until interrupted. `restart SERVICE`
+restarts that service through the supervisor. A `never` policy is refused.
+A service that restarts only while disarmed is refused when the robot is
+not disarmed. Restart does not arm and does not clear do-not-operate.
+
+Dev mode refreshes liveness for services that are already ready. Those
+services run on the supervisor thread and do not have a loop of their own.
+A service that failed to start is left failed.
+
+`up` does not serve `/metrics` unless `--metrics` is set. With that flag
+the existing endpoint binds `127.0.0.1`.
+
+The `ohho` CLI builds its subcommands in-tree and does not load an entry
+point for external commands. This package therefore does not register an
+`ohho runtime` alias.
+
+### Manifest file
+
+`robot_class` is required. `log_level` and `log_format` are optional.
+Each service names an entry the runtime already ships: `sim.ready`,
+`sim.fail`, `entries.safety_watchdog`, `entries.transport`,
+`entries.telemetry`, `entries.teleop_gateway`,
+`entries.autopilot_heartbeat`, or `entries.mode_monitor`. `sim.ready` and
+`sim.fail` are in-process stand-ins. They do not connect to a robot.
+`restart` is `"never"` or an `on-failure` object. Loading the file does
+not start a process.
+
+```json
+{
+  "robot_class": "mobile_base",
+  "log_level": "INFO",
+  "log_format": "json",
+  "services": [
+    {
+      "role": "safety_watchdog",
+      "entry": "sim.ready",
+      "restart": "never",
+      "loop_hz": 20,
+      "liveness_timeout_s": 30,
+      "qos": ["state"]
+    },
+    {
+      "role": "transport",
+      "entry": "sim.ready",
+      "depends_on": ["safety_watchdog"],
+      "commands_motion": true,
+      "restart": {
+        "kind": "on-failure",
+        "max_restarts": 3,
+        "window_s": 60,
+        "backoff_s": 0.5,
+        "only_while_disarmed": true
+      },
+      "loop_hz": 50,
+      "liveness_timeout_s": 30,
+      "qos": ["command", "state"]
+    },
+    {
+      "role": "telemetry",
+      "entry": "sim.ready",
+      "depends_on": ["transport"],
+      "restart": "never",
+      "loop_hz": 20,
+      "liveness_timeout_s": 30,
+      "qos": ["telemetry"]
+    }
+  ]
+}
+```
+
 ## Tests
 
 From the repository root, after `pip install -e .` and
