@@ -178,6 +178,44 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ```
    Both exit non-zero and print `not built`.
 
+## Simulation Demo (OHH-134)
+
+**SIMULATION ONLY -- NOT TESTED ON PHYSICAL ROBOT HARDWARE.**
+All quadruped behaviors execute in MuJoCo simulation via local DDS loopback
+(`dds://lo?domain=1`) or in-process simulation (`sim://`). Real hardware
+bring-up is tracked as **Vision** until a physical Unitree Go2 EDU is available
+and an operator is physically present (**OHH-135**).
+
+`ohho sim-demo` executes the complete 6-shot demo sequence (typed goal -> agent
+-> Go2 in MuJoCo) and generates an evaluation report conforming to
+[`evals/schemas/sim_demo_schema.json`](evals/schemas/sim_demo_schema.json):
+
+```bash
+# Print OBS recording cues and the 60-90s shot list checklist:
+ohho sim-demo --check-overlays
+
+# Run the live demo against the MuJoCo sport shim (domain 1, interface lo):
+ohho sim-demo --transport dds://lo?domain=1 --out evals/logs/demo-run.json
+
+# Offline / automated CI execution (simulated loopback, fast execution):
+python scripts/sim_demo_harness.py --sim --fast
+```
+
+### The 6-Shot Demo Sequence (~85s target)
+1. **Shot 1 -- Doctor & Readiness (`0:00 - 0:10`)**: `ohho doctor` probes runtimes, adapters, and `unitree-go2` capabilities.
+2. **Shot 2 -- Sim & Sport Shim (`0:10 - 0:22`)**: Connects over DDS loopback (`dds://lo?domain=1`) to local MuJoCo sport shim; SafetyGate arms on loopback.
+3. **Shot 3 -- Typed Goal (`0:22 - 0:34`)**: Prompts: `"Stand up, drive forward 0.3 m, then stop and lie down."`
+4. **Shot 4 -- Tool-Call Stream (`0:34 - 0:54`)**: Streams tool calls (`stand_up`, `drive`, `stop`, `lie_down`) with live odometry feedback in MuJoCo.
+5. **Shot 5 -- SafetyGate Invariants (`0:54 - 1:12`)**: Demonstrates velocity ceiling clamp (2.0 m/s -> 0.5 m/s), dangerous command refusal (`backflip` denied), and latched E-Stop.
+6. **Shot 6 -- Honest End-Card (`1:12 - 1:25`)**: Full-screen graphic end card declaring simulation-only status, OHH-135 hardware gate, and repository links.
+
+### How Varun Records the 60--90s Video Clip
+- **Screen Layout**: 1920x1080 @ 60 FPS in OBS Studio. Left 50% Terminal (font size ~18pt), Right 50% MuJoCo Simulation Window.
+- **Top-right Watermark**: `SIMULATION ONLY -- NOT TESTED ON HARDWARE`.
+- **Terminal 1 (`ohho-quadruped`)**: `python sim/run_go2.py --scene flat` and `python -m ohho_go2.sport_shim --domain 1 --iface lo`.
+- **Terminal 2 (`ohho-os`)**: `ohho sim-demo --transport dds://lo?domain=1 --out evals/logs/demo-run.json`.
+- Full recording checklist and link instructions: see [`docs/sim-demo.md`](docs/sim-demo.md).
+
 ## Hardware Bring-Up Self-Test (`selftest`)
 
 `ohho selftest` evaluates hardware health across 5 core subsystems (serial link, 4-wheel spin with encoder feedback, IMU publishing rate, STS3215 arm servos, and camera frame streaming) and outputs a dated JSON report (`selftest-YYYYMMDD-HHMMSS.json`).
