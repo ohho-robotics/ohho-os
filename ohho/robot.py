@@ -14,7 +14,7 @@ from . import capabilities as caps
 from .adapters import resolve_transport
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
-from .safety import SafetyGate, resolve_config
+from .safety import SafetyGate, normalize_action, resolve_config
 from .schema import Telemetry, TransportStatus, Velocity, clamp
 from .transport import Transport
 
@@ -132,6 +132,46 @@ class Robot:
     def release_stop(self) -> "Robot":
         self._t.release_stop()
         return self
+
+    def _send_legged_mode(self, name: str, **params: float) -> "Robot":
+        if not self.has(caps.LEGGED_POSE):
+            return self
+        action = normalize_action(name)
+        if isinstance(self._t, SafetyGate):
+            if action == "euler":
+                self._t.command(
+                    "euler",
+                    float(params.get("roll", 0.0)),
+                    float(params.get("pitch", 0.0)),
+                    float(params.get("yaw", 0.0)),
+                )
+            else:
+                self._t.command(action)
+        else:
+            self._t.send_mode(name, **params)
+        return self
+
+    def stand(self) -> "Robot":
+        """Stand up (quadruped). No-op unless ``legged.pose`` is supported."""
+        return self._send_legged_mode("stand_up")
+
+    def lie_down(self) -> "Robot":
+        """Lie down / stand down. No-op unless ``legged.pose`` is supported."""
+        return self._send_legged_mode("stand_down")
+
+    def sit(self) -> "Robot":
+        """Sit. No-op unless ``legged.pose`` is supported."""
+        return self._send_legged_mode("sit")
+
+    def recover(self) -> "Robot":
+        """Recovery stand from prone. No-op unless ``legged.pose`` is supported."""
+        return self._send_legged_mode("recovery_stand")
+
+    def set_body_pose(self, roll: float, pitch: float, yaw: float) -> "Robot":
+        """Set body orientation (sport ``Euler``). No-op unless ``legged.pose``."""
+        return self._send_legged_mode(
+            "euler", roll=float(roll), pitch=float(pitch), yaw=float(yaw)
+        )
 
     # ── state ─────────────────────────────────────────────────────────────────
     def telemetry(self) -> Telemetry:

@@ -177,6 +177,10 @@ def _cmd_drive(args) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     try:
+        legged_sim = bot.spec.id == "unitree-go2" and bot.simulated
+        if legged_sim:
+            bot.stand()
+            time.sleep(0.05)
         print(
             f"driving {bot.spec.id}: vx={args.vx} vy={args.vy} w={args.w} for {args.seconds:.0f}s"
         )
@@ -207,6 +211,9 @@ def _cmd_drive(args) -> int:
             print(
                 f"final odom: x={t.odom.x:.3f} y={t.odom.y:.3f} theta={t.odom.theta:.3f}"
             )
+        if legged_sim:
+            bot.lie_down()
+            time.sleep(0.05)
     finally:
         bot.disconnect()
     return 0
