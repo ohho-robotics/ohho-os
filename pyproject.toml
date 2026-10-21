@@ -63,7 +63,7 @@ all = [
 
 [project.urls]
 Homepage = "https://ohho-robotics.com"
-Source = "https://github.com/ohho-robotics/ohho-sdk"
+Source = "https://github.com/ohho-robotics/ohho-os"
 
 [project.scripts]
 ohho = "ohho.cli:main"

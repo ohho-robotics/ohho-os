@@ -52,6 +52,12 @@ def _cmd_doctor(args) -> int:
     print(
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
+    from .mcp_tools import SIM_TOOL_NAMES
+
+    print(
+        f"  mcp         : stdio (built-in) — sim tools: {', '.join(SIM_TOOL_NAMES)}; "
+        "clients: ohho mcp connect --list"
+    )
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
     return 0
 
@@ -459,6 +465,65 @@ def _cmd_memory(args) -> int:
     return 1
 
 
+def _cmd_mcp_serve(args) -> int:
+    from .mcp_server import run_stdio
+    from .mcp_tools import RobotSession
+
+    transport = "sim://" if args.sim else (args.transport or "sim://")
+    session = RobotSession(
+        robot_id=args.robot, transport=transport, runtime=args.runtime
+    )
+    if args.preconnect:
+        try:
+            session.connect()
+        except UnknownRobot as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    return run_stdio(session=session)
+
+
+def _cmd_mcp_connect(args) -> int:
+    import shutil
+
+    from .mcp_connect import connect_clients
+
+    return connect_clients(
+        list(args.clients or []),
+        list_only=args.list_clients,
+        dry_run=args.dry_run,
+        print_config=args.print_config,
+        remove=args.remove,
+        hosted=args.hosted,
+        which=shutil.which,
+    )
+
+
+def _cmd_mcp(args) -> int:
+    if getattr(args, "mcp_command", None) == "connect":
+        return _cmd_mcp_connect(args)
+    return _cmd_mcp_serve(args)
+
+
+def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--robot", default="omnibot", help="default robot id for tools")
+    parser.add_argument(
+        "--transport",
+        default="",
+        help="default transport URI when not using --sim (e.g. serial:///dev/ttyUSB0)",
+    )
+    parser.add_argument("--runtime", default="native", help="native | ros2 | auto")
+    parser.add_argument(
+        "--sim",
+        action="store_true",
+        help="default to sim:// transport (safe for CI and headless)",
+    )
+    parser.add_argument(
+        "--preconnect",
+        action="store_true",
+        help="connect before serving (uses --robot and transport)",
+    )
+
+
 def _cmd_selftest(args) -> int:
     from .selftest import default_report_path, format_report_text, run_selftest
 
@@ -763,6 +828,67 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow exit code 0 when all checks are skipped in hardware mode",
     )
     st.set_defaults(func=_cmd_selftest)
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="MCP stdio server (serve) and AI-client config (connect)",
+    )
+    mcp_sub = mcp.add_subparsers(dest="mcp_command")
+    serve_help = "run the stdio MCP server (sim:// tools: connect, drive, telemetry, nav_goto, look)"
+    serve = mcp_sub.add_parser("serve", help=serve_help, description=serve_help)
+    _add_mcp_serve_args(serve)
+    # `ohho mcp --sim` keeps working: the same flags live on the parent parser.
+    _add_mcp_serve_args(mcp)
+    connect = mcp_sub.add_parser(
+        "connect",
+        help="merge the local ohho MCP server into an AI client's config",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  ohho mcp connect --list\n"
+            "  ohho mcp connect --client cursor\n"
+            "  ohho mcp connect --client claude-code --client codex\n"
+            "  ohho mcp connect --client vscode --dry-run\n"
+            "  ohho mcp connect --client cursor --remove\n"
+            "\n"
+            "--hosted needs `ohho login` (OHH-273) and hosted MCP auth (OHH-274)."
+        ),
+    )
+    connect.add_argument(
+        "--client",
+        action="append",
+        dest="clients",
+        default=None,
+        help="client to configure (repeatable). See --list.",
+    )
+    connect.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_clients",
+        help="list supported clients and their config files",
+    )
+    connect.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the diff or CLI command and change nothing",
+    )
+    connect.add_argument(
+        "--print",
+        action="store_true",
+        dest="print_config",
+        help="print the config that would be written (or the CLI command)",
+    )
+    connect.add_argument(
+        "--remove",
+        action="store_true",
+        help="remove only the ohho entry",
+    )
+    connect.add_argument(
+        "--hosted",
+        action="store_true",
+        help="hosted MCP endpoint (not available yet; see OHH-273 and OHH-274)",
+    )
+    mcp.set_defaults(func=_cmd_mcp)
 
     return p
 
