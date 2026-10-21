@@ -27,6 +27,13 @@ the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
 
+Sign-in is optional. `ohho sim` and `ohho mcp serve` keep working with no
+account. `ohho login` uses the console device flow and stores a token in
+`~/.ohho/credentials.json` (mode `0600`, or a user-only ACL on Windows).
+`ohho whoami` prints the account; `ohho whoami --json` is the agent schema
+in [`docs/cli.md`](docs/cli.md). `OHHO_TOKEN` overrides the file and is never
+written to disk. The token is not printed.
+
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is

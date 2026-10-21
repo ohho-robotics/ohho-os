@@ -597,6 +597,54 @@ def _add_robot_args(
     )
 
 
+def _cmd_login(args) -> int:
+    from .auth import AuthError, login
+
+    try:
+        login(no_browser=bool(args.no_browser))
+    except AuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_whoami(args) -> int:
+    from .auth import AuthError, format_whoami, whoami
+
+    try:
+        account = whoami()
+    except AuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write(format_whoami(account, as_json=bool(args.json)))
+    if (
+        not account.signed_in
+        and account.detail
+        and account.error not in ("not_signed_in", "invalid_token")
+    ):
+        print(f"error: {account.detail}", file=sys.stderr)
+    return 0 if account.signed_in else 1
+
+
+def _cmd_logout(args) -> int:
+    from .auth import AuthError, logout
+
+    try:
+        result = logout()
+    except AuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if result.removed:
+        print("Signed out. Local credentials removed.")
+    else:
+        print("Signed out.")
+    if result.env_token:
+        print(
+            "OHHO_TOKEN is still set and takes precedence. It was not written to disk."
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -617,6 +665,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
+
+    login_p = sub.add_parser(
+        "login", help="sign in to the OhhO console with a device code"
+    )
+    login_p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the verification URL without opening a browser",
+    )
+    login_p.set_defaults(func=_cmd_login)
+
+    who_p = sub.add_parser("whoami", help="print the signed-in account")
+    who_p.add_argument(
+        "--json",
+        action="store_true",
+        help="print the account as JSON (see docs/cli.md)",
+    )
+    who_p.set_defaults(func=_cmd_whoami)
+
+    sub.add_parser("logout", help="delete local console credentials").set_defaults(
+        func=_cmd_logout
+    )
 
     c = sub.add_parser("connect", help="connect and print status + telemetry")
     _add_robot_args(c)
