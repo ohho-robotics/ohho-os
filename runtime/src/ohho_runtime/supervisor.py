@@ -19,6 +19,9 @@ change the safety gate.
 
 A ``never`` restart policy is not restarted and does not latch
 do-not-operate. Dependents of a terminal failure are not started.
+
+A non-zero exit, an unhandled exception, a heartbeat timeout that
+schedules a restart, or a restart limit writes one crash bundle.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from __future__ import annotations
 import inspect
 import math
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -35,6 +38,14 @@ from ohho.registry import RobotSpec
 from ohho.robot_spec import RobotClass
 
 from ohho_runtime.backoff import ExponentialBackoff
+from ohho_runtime.crash import (
+    DEFAULT_LOG_LIMIT,
+    LogHistory,
+    classify_crash,
+    read_exit_code,
+    read_failure_exception,
+    write_crash_bundle,
+)
 from ohho_runtime.log import (
     RuntimeLog,
     note_exception,
@@ -394,6 +405,7 @@ class Supervisor:
         metrics_enabled: bool | None = None,
         metrics_host: str | None = None,
         metrics_port: int | None = None,
+        crash_dir: str | None = None,
     ) -> None:
         if mode != "dev":
             raise SupervisorError(
@@ -427,6 +439,13 @@ class Supervisor:
                 log_format=resolve_log_format(manifest.log_format),
             )
         self._logger = logger
+        self._crash_dir = None if crash_dir is None else str(crash_dir)
+        attached = self._logger.history
+        if attached is None:
+            self._log_history: object = LogHistory()
+            self._logger.attach_history(self._log_history)
+        else:
+            self._log_history = attached
         self._endpoint = MetricsEndpoint(
             self._metrics,
             enabled=metrics_enabled,
@@ -819,7 +838,11 @@ class Supervisor:
                 and not run.terminal
                 and not run.failure_latched
             ):
-                self._handle_failure(run.spec.role, run.service.failure_reason)
+                self._handle_failure(
+                    run.spec.role,
+                    run.service.failure_reason,
+                    exc=read_failure_exception(run.service),
+                )
 
     def _restart_due(self) -> None:
         now = self._now()
@@ -922,7 +945,7 @@ class Supervisor:
                 logger=self._logger,
                 metrics=self._metrics,
             )
-            self._handle_failure(role, str(exc))
+            self._handle_failure(role, str(exc), exc=exc)
             return
         if service.state is LifecycleState.READY:
             self._log_ready(run)
@@ -935,7 +958,13 @@ class Supervisor:
         run.ready_open = True
         self._note("service_ready", run.spec.role)
 
-    def _handle_failure(self, role: str, detail: str) -> None:
+    def _handle_failure(
+        self,
+        role: str,
+        detail: str,
+        *,
+        exc: BaseException | None = None,
+    ) -> None:
         run = self._run(role)
         if run.terminal or run.failure_latched:
             return
@@ -943,11 +972,17 @@ class Supervisor:
         run.ready_open = False
         reason = detail or run.service.failure_reason or "failed"
         self._note("service_failed", role, reason)
+        outcome = self._apply_restart_policy(run, role)
+        self._write_crash_bundle(run, reason, exc=exc, outcome=outcome)
+
+    def _apply_restart_policy(self, run: _Run, role: str) -> str:
+        """Apply the manifest restart policy. Returns the outcome token."""
         policy = run.spec.restart
-        if policy.kind is not RestartKind.ON_FAILURE or run.backoff is None:
+        backoff = run.backoff
+        if policy.kind is not RestartKind.ON_FAILURE or backoff is None:
             run.terminal = True
             self._note("restart_refused", role, "restart policy is never")
-            return
+            return "restart_refused"
         if policy.only_while_disarmed and not self._disarmed:
             run.terminal = True
             self._note(
@@ -960,11 +995,11 @@ class Supervisor:
                     role,
                     "critical service cannot restart while the robot is not disarmed",
                 )
-            return
+            return "restart_refused"
         now = self._now()
         prior = [stamp for stamp in run.failure_times if stamp >= now - policy.window_s]
         if not prior:
-            run.backoff.reset()
+            backoff.reset()
         prior.append(now)
         run.failure_times = prior
         if len(prior) >= policy.max_restarts:
@@ -977,10 +1012,88 @@ class Supervisor:
             )
             if run.spec.criticality is Criticality.CRITICAL:
                 self._enter_dno(role, "critical service exceeded its restart limit")
-            return
-        delay = run.backoff.next_delay()
+            return "restart_limit"
+        delay = backoff.next_delay()
         run.restart_at = now + delay
         self._note("restart_scheduled", role, f"{delay}")
+        return "restart_scheduled"
+
+    def _write_crash_bundle(
+        self,
+        run: _Run,
+        detail: str,
+        *,
+        exc: BaseException | None,
+        outcome: str,
+    ) -> None:
+        """Write one bundle when this failure is a crash. Failures here are logged."""
+        try:
+            if exc is None:
+                exc = read_failure_exception(run.service)
+            exit_code = read_exit_code(run.service)
+            reason = classify_crash(
+                detail=detail,
+                exc=exc,
+                exit_code=exit_code,
+                outcome=outcome,
+            )
+            if reason is None:
+                return
+            role = run.spec.role
+            service_logs = _history_for(self._log_history, role, DEFAULT_LOG_LIMIT)
+            supervisor_logs = _history_for(
+                self._log_history,
+                "supervisor",
+                DEFAULT_LOG_LIMIT,
+            )
+            timer = self._loops.get(role)
+            loop = None if timer is None else loop_report(timer.stats())
+            try:
+                metrics_text = self.metrics_text()
+            except Exception as metrics_exc:
+                note_exception(
+                    metrics_exc,
+                    service="supervisor",
+                    event="crash_bundle_metrics_failed",
+                    logger=self._logger,
+                    metrics=self._metrics,
+                )
+                metrics_text = ""
+            states = []
+            for item in getattr(run.service, "history", ()):
+                states.append(str(getattr(item, "value", item)))
+            current = getattr(run.service, "state", "")
+            write_crash_bundle(
+                service=role,
+                run_id=self._run_id,
+                reason=reason,
+                state_dir=self._crash_dir,
+                manifest=self._manifest,
+                service_logs=service_logs,
+                supervisor_logs=supervisor_logs,
+                history=states,
+                state=str(getattr(current, "value", current)),
+                restarts=run.restarts,
+                restart_exhausted=run.terminal,
+                failure_reason=detail,
+                metrics_text=metrics_text,
+                exit_code=exit_code,
+                exc=exc,
+                detail=detail,
+                loop=loop,
+                robot_class=self._robot_class.value,
+                log_limit=DEFAULT_LOG_LIMIT,
+                logger=self._logger,
+                metrics=self._metrics,
+            )
+        except Exception as bundle_exc:
+            note_exception(
+                bundle_exc,
+                service="supervisor",
+                event="crash_bundle_failed",
+                logger=self._logger,
+                metrics=self._metrics,
+            )
 
     def _enter_dno(self, role: str, reason: str) -> None:
         if self._dno:
@@ -1016,6 +1129,18 @@ class Supervisor:
                 self._state = SupervisorState.STARTING
             return
         self._state = SupervisorState.RUNNING
+
+
+def _history_for(history: object, service: str, limit: int) -> list[dict[str, object]]:
+    method = getattr(history, "for_service", None)
+    if not callable(method):
+        return []
+    found = method(service, limit)
+    rows: list[dict[str, object]] = []
+    for item in found:
+        if isinstance(item, Mapping):
+            rows.append({str(key): value for key, value in item.items()})
+    return rows
 
 
 def _noop_hook(notice: DoNotOperateNotice) -> None:

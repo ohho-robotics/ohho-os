@@ -13,7 +13,9 @@ Each service has a role, an entry (Python callable, console script, or
 ROS 2 launch/node), dependencies, criticality (`critical`, `degradable`,
 `optional`), readiness and liveness timeouts, a restart policy (`never` or
 `on-failure` with `max_restarts`, `window_s`, and backoff), a loop rate,
-named QoS profiles, and an optional scheduling hint.
+named QoS profiles, and an optional scheduling hint. ``state_dir`` is where crash bundles
+are written. Empty keeps the default. ``OHHO_RUNTIME_STATE_DIR`` overrides
+the manifest value.
 
 Unknown QoS profile names and dependency cycles are rejected when the
 manifest is loaded. The named profiles are `command`, `state`, `telemetry`,
@@ -188,8 +190,55 @@ label of `0.5`, `0.95`, or `0.99`.
 | `ohho_runtime_do_not_operate` | gauge | `robot_class`, `run_id` | `1` while the latch is set |
 | `ohho_runtime_allows_motion` | gauge | `robot_class`, `run_id` | `1` when the supervisor allows motion |
 | `ohho_runtime_supervisor_state` | gauge | `state`, `robot_class`, `run_id` | `1` for the current supervisor state |
+| `ohho_runtime_crash_bundles_total` | counter | `service`, `reason`, `robot_class`, `run_id` | crash bundles written |
 
 The content type is `text/plain; version=0.0.4; charset=utf-8`.
+
+## Crash bundles
+
+A supervised service crash writes one diagnostics bundle. A crash is a
+non-zero exit, an unhandled exception, a heartbeat timeout that schedules
+a restart, or a restart limit. One failure writes one bundle.
+
+The directory is `{service}-{timestamp}-{run_id}` under `<state-dir>/crashes/`.
+`timestamp` is UTC `YYYYMMDDTHHMMSSffffffZ`. The run id is the supervisor
+run id.
+
+| Source | State directory |
+|---|---|
+| Explicit `state_dir` / `crash_dir` argument | wins |
+| `OHHO_RUNTIME_STATE_DIR` | overrides the manifest |
+| Manifest `state_dir` | used when the environment variable is unset |
+| Default | `~/.ohho/runtime` |
+
+```python
+from ohho_runtime import write_crash_bundle
+
+bundle = write_crash_bundle(service="telemetry", run_id="run-1")
+```
+
+`write_crash_bundle` is the on-demand API. The supervisor calls it on a
+crash. Each write logs `crash_bundle` and increments
+`ohho_runtime_crash_bundles_total`.
+
+At most 8 bundles are kept, and their combined size is at most 1 MiB.
+Older bundles are deleted. The bundle just written is kept even when it
+alone is larger than the size cap.
+
+| File | Contents |
+|---|---|
+| `bundle.json` | service, timestamp, run id, reason, robot class |
+| `logs-service.jsonl` | last 100 structured records for the service |
+| `logs-supervisor.jsonl` | last 100 structured records for the supervisor |
+| `state.json` | lifecycle history, current state, restart count |
+| `metrics.txt` | Prometheus snapshot |
+| `manifest.json` | resolved manifest, secret-looking values redacted |
+| `platform.json` | Python, platform, and package versions |
+| `failure.json` | reason, detail, exit code, exception type, traceback |
+| `loop.json` | LoopTimer stats when a loop is attached |
+
+`manifest.json` replaces credentials, tokens, and the arming phrase with
+`***`. The same redaction applies to log lines and the failure text.
 
 ## Tests
 
