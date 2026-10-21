@@ -57,6 +57,13 @@ def _cmd_doctor(args) -> int:
 
 
 def _cmd_list(args) -> int:
+    if getattr(args, "plugins", False):
+        from .plugins import format_plugin_report
+
+        # Register clean plugins first so ``ohho list`` and ``--plugins`` agree.
+        list_specs()
+        print(format_plugin_report())
+        return 0
     for s in list_specs():
         caps = ", ".join(s.capabilities) or "—"
         print(f"{s.id:<14} {s.name:<18} {s.category:<20} [{caps}]")
@@ -537,7 +544,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "doctor", help="show environment, runtimes, adapters and robots"
     ).set_defaults(func=_cmd_doctor)
-    sub.add_parser("list", help="list built-in robots").set_defaults(func=_cmd_list)
+    listed = sub.add_parser("list", help="list registered robots")
+    listed.add_argument(
+        "--plugins",
+        action="store_true",
+        help="show each robot plugin, its specs, and any load error",
+    )
+    listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
 
     c = sub.add_parser("connect", help="connect and print status + telemetry")
