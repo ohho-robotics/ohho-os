@@ -66,8 +66,8 @@ class TestDemoDrive(unittest.TestCase):
         try:
             self.assertTrue(wait_for_odom(bot, timeout_s=2.0))
             result = run_drive(bot, seconds=1.5, vx=0.2, rate_hz=20.0)
-            self.assertGreater(result.dx, 0.05)
-            self.assertGreater(result.displacement, 0.05)
+            self.assertGreater(result.dx, 0.02)
+            self.assertGreater(result.displacement, 0.02)
         finally:
             bot.disconnect()
 

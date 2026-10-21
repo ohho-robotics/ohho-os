@@ -1,15 +1,16 @@
 """LeRobot v2.1 dataset writer — Parquet + meta JSON.
 
-Writes episodes to disk in the standard LeRobot v2.1 layout::
+Writes episodes to disk in the LeRobot v2.1 layout (the format lerobot 0.3.x
+loads locally)::
 
     <root>/
       README.md           # Dataset card (Hugging Face / LeRobot metadata)
       meta/
-        info.json         # codebase_version, fps, features, dims, video_path
-        tasks.jsonl       # {task_index, task}
-        episodes.jsonl    # {episode_index, tasks, length}
-        episodes_stats.jsonl  # per-episode min/max/mean/std/count (v2.1)
-        stats.json        # min/max/mean per feature
+        info.json              # codebase_version v2.1, fps, features, dims, video_path
+        tasks.jsonl            # {task_index, task}
+        episodes.jsonl         # {episode_index, tasks, length}
+        episodes_stats.jsonl   # {episode_index, stats} per episode (min/max/mean/std/count)
+        stats.json             # global min/max/mean (kept for local readers)
       data/chunk-000/
         episode_000000.parquet   # or .jsonl without pyarrow
       videos/chunk-000/   # (optional) encoded MP4 per episode
@@ -42,6 +43,15 @@ DEFAULT_VIDEO_PATH = (
     "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 )
 DEFAULT_DATA_PATH = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+
+# Scalar columns LeRobotDatasetMetadata.create always merges into features.
+_SCALAR_FEATURES = {
+    "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+    "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+    "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+    "index": {"dtype": "int64", "shape": [1], "names": None},
+    "task_index": {"dtype": "int64", "shape": [1], "names": None},
+}
 
 
 def write_dataset(
@@ -206,6 +216,7 @@ def _write_info(
         }
 
     total_videos = len(episodes) if has_videos else 0
+    features.update(_SCALAR_FEATURES)
 
     info = {
         "codebase_version": CODEBASE_VERSION,
@@ -218,6 +229,7 @@ def _write_info(
         "total_videos": total_videos,
         "total_chunks": 1,
         "chunks_size": CHUNK_SIZE,
+        "splits": {"train": f"0:{len(episodes)}"},
         "data_path": DEFAULT_DATA_PATH,
         "video_path": DEFAULT_VIDEO_PATH if has_videos else None,
         "tasks": tasks,

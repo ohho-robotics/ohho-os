@@ -632,6 +632,28 @@ class TestSelftestHonestyBugbotRegressions(unittest.TestCase):
                 self.assertEqual(data["overall_status"], "FAIL")
                 self.assertEqual(data["summary"]["failed"], 1)
 
+    def test_cli_selftest_sim_exits_zero_even_if_report_mode_hardware(self):
+        """``--sim`` is authoritative for CI/smoke: never exit 3 on all-SKIP."""
+        all_skip_report = SelfTestReport(
+            timestamp="2026-10-03T12:00:00Z",
+            robot="omnibot",
+            mode="hardware",
+            overall_status="PASS",
+            summary={
+                "total": 5,
+                "passed": 0,
+                "failed": 0,
+                "skipped": 5,
+                "duration_s": 0.1,
+            },
+            checks={},
+        )
+        with patch("ohho.selftest.run_selftest", return_value=all_skip_report):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out_f = os.path.join(tmpdir, "sim-skip.json")
+                code = main(["selftest", "--sim", "--out", out_f])
+                self.assertEqual(code, 0)
+
     def test_finding_6_cli_hardware_all_skip_exits_code_3(self):
         all_skip_report = SelfTestReport(
             timestamp="2026-10-03T12:00:00Z",
