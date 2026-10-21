@@ -7,6 +7,7 @@ in-process with the simulator.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -86,7 +87,7 @@ def record_sim_episodes(
 
 
 def validate_schema(dataset_dir: str) -> bool:
-    """Validate LeRobot v2.0 dataset on-disk schema."""
+    """Validate LeRobot v2.1 dataset on-disk schema."""
     p = Path(dataset_dir).expanduser()
     info_file = p / "meta" / "info.json"
     tasks_file = p / "meta" / "tasks.jsonl"
@@ -129,8 +130,43 @@ def _lerobot_revision_from_info(info: Dict[str, Any]) -> str:
     return raw
 
 
+def _dataset_repo_id(dataset_dir: Path) -> str:
+    """Read ``meta/info.json`` repo_id. Fall back to the directory name."""
+    info_path = dataset_dir / "meta" / "info.json"
+    try:
+        with open(info_path, encoding="utf-8") as f:
+            repo_id = json.load(f).get("repo_id")
+        if isinstance(repo_id, str) and repo_id.strip():
+            return repo_id
+    except (OSError, json.JSONDecodeError):
+        pass
+    return dataset_dir.name
+
+
+def _env_flag(value: Optional[str]) -> bool:
+    return bool(value) and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# (module, attribute) pairs read once at import. Patch them so a process that
+# already imported huggingface_hub/datasets still stays offline for this load.
+_OFFLINE_FLAGS = (
+    ("huggingface_hub.constants", "HF_HUB_OFFLINE"),
+    ("datasets.config", "HF_DATASETS_OFFLINE"),
+)
+
+
+def _set_offline_flags(enabled: bool) -> None:
+    for mod_name, attr in _OFFLINE_FLAGS:
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, attr):
+            setattr(mod, attr, enabled)
+
+
 def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
-    """Attempt to load the dataset using Hugging Face's LeRobotDataset.
+    """Load a local dataset with lerobot's LeRobotDataset.
+
+    In lerobot 0.3.x ``root`` is the dataset directory itself. Loading is forced
+    offline so a missing file cannot fall through to the Hugging Face Hub.
 
     Loads from disk only: uses ``repo_id`` and codebase revision from ``meta/info.json``
     and sets ``HF_HUB_OFFLINE=1`` so a local validation failure cannot fall through to
@@ -140,6 +176,28 @@ def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
     or 0 frames are loaded, an exception is raised so the run exits non-zero.
     In mock mode (mock=True), failures are caught and False is returned.
     """
+    prev_env = {
+        key: os.environ.get(key) for key in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE")
+    }
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    _set_offline_flags(True)
+    try:
+        return _load_lerobot_dataset(dataset_dir, mock=mock)
+    finally:
+        # Flags imported during the load captured the forced-offline env.
+        was_offline = _env_flag(prev_env["HF_HUB_OFFLINE"]) or _env_flag(
+            prev_env["HF_DATASETS_OFFLINE"]
+        )
+        _set_offline_flags(was_offline)
+        for key, value in prev_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _load_lerobot_dataset(dataset_dir: str, mock: bool) -> bool:
     try:
         try:
             from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -161,17 +219,19 @@ def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
     if not info_path.is_file():
         raise FileNotFoundError(f"meta/info.json missing in {dataset_dir}")
 
-    import json
-
     with open(info_path, encoding="utf-8") as f:
         info = json.load(f)
-    repo_id = info.get("repo_id") or "local/dataset"
+    repo_id = _dataset_repo_id(p)
     revision = _lerobot_revision_from_info(info)
-
-    prev_offline = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
     try:
-        ds = LeRobotDataset(repo_id=repo_id, root=str(p), revision=revision)
+        # root is the dataset directory (lerobot 0.3.x). Do not retry with the
+        # parent: that misses the local files and queries the Hub as repo_id.
+        ds = LeRobotDataset(
+            repo_id=repo_id,
+            root=str(p),
+            revision=revision,
+            download_videos=False,
+        )
         if len(ds) > 0:
             return True
         raise ValueError(f"LeRobotDataset loaded 0 frames from {dataset_dir}")
@@ -181,11 +241,6 @@ def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
         raise RuntimeError(
             f"LeRobotDataset failed to load dataset at {dataset_dir}: {e}"
         ) from e
-    finally:
-        if prev_offline is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = prev_offline
 
 
 def validate_dataset(dataset_dir: str, mock: bool = False) -> Dict[str, Any]:
@@ -400,8 +455,6 @@ def run_sim_loop(
     final_loss = 0.0
     initial_loss = 0.0
     if metrics_file.exists():
-        import json
-
         with open(metrics_file, encoding="utf-8") as f:
             m = json.load(f)
             loss_curve = [tuple(item) for item in m.get("loss_curve", [])]  # type: ignore[misc]

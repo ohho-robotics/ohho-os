@@ -1,10 +1,12 @@
 # OhhO OS
 
+**Engine:** [ohho-os](https://github.com/ohho-robotics/ohho-os) · **Client SDK:** [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk)
+
 Python package `ohho-os` (import `ohho`), version 1.1.3.
 Homepage: [ohho-robotics.com](https://ohho-robotics.com).
-Source: [ohho-robotics/ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
+Source: [ohho-robotics/ohho-os](https://github.com/ohho-robotics/ohho-os).
 
-[![CI](https://github.com/ohho-robotics/ohho-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/ohho-robotics/ohho-sdk/actions/workflows/ci.yml)
+[![CI](https://github.com/ohho-robotics/ohho-os/actions/workflows/ci.yml/badge.svg)](https://github.com/ohho-robotics/ohho-os/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
 ## Install
@@ -15,6 +17,8 @@ ohho doctor
 ohho sim --robot omnibot --seconds 2
 ```
 
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. Full CLI reference: [`docs/cli.md`](docs/cli.md).
+
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
 adapters it can import, and the built-in robot ids. `ohho sim` connects with
@@ -22,6 +26,13 @@ transport `sim://` and runtime `native`, then drives an in-process pattern for
 the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
+
+Sign-in is optional. `ohho sim` and `ohho mcp serve` keep working with no
+account. `ohho login` uses the console device flow and stores a token in
+`~/.ohho/credentials.json` (mode `0600`, or a user-only ACL on Windows).
+`ohho whoami` prints the account; `ohho whoami --json` is the agent schema
+in [`docs/cli.md`](docs/cli.md). `OHHO_TOKEN` overrides the file and is never
+written to disk. The token is not printed.
 
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
@@ -93,7 +104,8 @@ refuses anything outside the allowlist (flips, jumps, dances, handstands and
 refusal is appended to `~/.ohho/safety/<date>.jsonl`.
 
 `sim://` is not gated. See [`docs/safety.md`](docs/safety.md) for the rules,
-profiles, config file and audit format.
+profiles, config file and audit format. For Unitree Go2 DDS (`dds://`), honest
+sim-vs-hardware status and HIL expectations are in [`docs/unitree.md`](docs/unitree.md).
 
 ## Pipeline in sim
 
@@ -148,9 +160,9 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 
 1. **In-process simulation (no ROS required):**
    ```bash
-   ohho sim-serve --backend sim --port 8765
+   ohho sim-serve --backend sim --port 8790
    ```
-   Serves the existing in-process `sim://` robot on port 8765 with zero external dependencies.
+   Serves the existing in-process `sim://` robot on port 8790 with zero external dependencies. The default is 8790 because port 8765 is OmniBot's Foxglove bridge.
 
 2. **ROS 2 bridge:**
    ```bash
@@ -182,14 +194,8 @@ See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, an
 
 ## TypeScript
 
-`ts/` is the previous TypeScript workspace (`package.json`,
-`tsconfig.json`, `packages/`), moved with the same file contents. It does
-not typecheck. `tsc --noEmit -p ts/tsconfig.json` (TypeScript 5.6.3)
-exits with 246 `error TS` diagnostics, including missing modules
-(`react`, `vitest`, `@/lib/...`) and files that are not in this tree
-(`packages/schemas/src/types.ts`, `packages/schemas/src/robot-catalog.ts`).
-See `ts/AGENTS.md`. Paths in that file still describe the old repository
-root.
+The TypeScript SDK (`@ohho/schemas`, `@ohho/connect`, `@ohho/client`) lives in
+[ohho-sdk](https://github.com/ohho-robotics/ohho-sdk). See [`ts/README.md`](ts/README.md).
 
 ## Licence
 

@@ -14,6 +14,7 @@ from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
+from .sim_serve import DEFAULT_PORT
 
 
 def _cmd_version(args) -> int:
@@ -22,6 +23,13 @@ def _cmd_version(args) -> int:
 
 
 def _cmd_doctor(args) -> int:
+    if getattr(args, "agent", False):
+        from .agent_doctor import print_agent_report
+
+        return print_agent_report(
+            as_json=bool(getattr(args, "json", False)),
+            online=bool(getattr(args, "online", False)),
+        )
     import importlib.util
 
     from .brains import harness_available
@@ -51,11 +59,24 @@ def _cmd_doctor(args) -> int:
     print(
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
+    from .mcp_tools import SIM_TOOL_NAMES
+
+    print(
+        f"  mcp         : stdio (built-in) — sim tools: {', '.join(SIM_TOOL_NAMES)}; "
+        "clients: ohho mcp connect --list"
+    )
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
     return 0
 
 
 def _cmd_list(args) -> int:
+    if getattr(args, "plugins", False):
+        from .plugins import format_plugin_report
+
+        # Register clean plugins first so ``ohho list`` and ``--plugins`` agree.
+        list_specs()
+        print(format_plugin_report())
+        return 0
     for s in list_specs():
         caps = ", ".join(s.capabilities) or "—"
         print(f"{s.id:<14} {s.name:<18} {s.category:<20} [{caps}]")
@@ -158,10 +179,26 @@ def _cmd_drive(args) -> int:
         print(
             f"driving {bot.spec.id}: vx={args.vx} vy={args.vy} w={args.w} for {args.seconds:.0f}s"
         )
-        end = time.monotonic() + args.seconds
-        while time.monotonic() < end:
-            bot.drive(vx=args.vx, vy=args.vy, w=args.w)
-            time.sleep(0.1)
+        period = 0.1
+        tp = bot.transport
+        step_fn = getattr(tp, "step", None)
+        stepped = bot.simulated and callable(step_fn)
+        stop_sim = getattr(tp, "stop_sim", None)
+        start_sim = getattr(tp, "start_sim", None)
+        if stepped and callable(stop_sim):
+            stop_sim()
+        if stepped:
+            steps = max(1, int(round(args.seconds / period)))
+            for _ in range(steps):
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
+                step_fn(period)
+        else:
+            end = time.monotonic() + args.seconds
+            while time.monotonic() < end:
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
+                time.sleep(period)
+        if stepped and callable(start_sim):
+            start_sim()
         bot.stop()
         time.sleep(0.1)
         t = bot.telemetry()
@@ -283,7 +320,7 @@ def _cmd_market(args) -> int:
         finally:
             bot.disconnect()
         return 0
-    print("usage: ohho market [list|run]")
+    print("usage: ohho skills [list|run]  (alias: market)")
     return 1
 
 
@@ -435,6 +472,65 @@ def _cmd_memory(args) -> int:
     return 1
 
 
+def _cmd_mcp_serve(args) -> int:
+    from .mcp_server import run_stdio
+    from .mcp_tools import RobotSession
+
+    transport = "sim://" if args.sim else (args.transport or "sim://")
+    session = RobotSession(
+        robot_id=args.robot, transport=transport, runtime=args.runtime
+    )
+    if args.preconnect:
+        try:
+            session.connect()
+        except UnknownRobot as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    return run_stdio(session=session)
+
+
+def _cmd_mcp_connect(args) -> int:
+    import shutil
+
+    from .mcp_connect import connect_clients
+
+    return connect_clients(
+        list(args.clients or []),
+        list_only=args.list_clients,
+        dry_run=args.dry_run,
+        print_config=args.print_config,
+        remove=args.remove,
+        hosted=args.hosted,
+        which=shutil.which,
+    )
+
+
+def _cmd_mcp(args) -> int:
+    if getattr(args, "mcp_command", None) == "connect":
+        return _cmd_mcp_connect(args)
+    return _cmd_mcp_serve(args)
+
+
+def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--robot", default="omnibot", help="default robot id for tools")
+    parser.add_argument(
+        "--transport",
+        default="",
+        help="default transport URI when not using --sim (e.g. serial:///dev/ttyUSB0)",
+    )
+    parser.add_argument("--runtime", default="native", help="native | ros2 | auto")
+    parser.add_argument(
+        "--sim",
+        action="store_true",
+        help="default to sim:// transport (safe for CI and headless)",
+    )
+    parser.add_argument(
+        "--preconnect",
+        action="store_true",
+        help="connect before serving (uses --robot and transport)",
+    )
+
+
 def _cmd_selftest(args) -> int:
     from .selftest import default_report_path, format_report_text, run_selftest
 
@@ -473,6 +569,8 @@ def _cmd_selftest(args) -> int:
     print(f"Report saved to: {out_path}")
     if report.overall_status == "FAIL":
         return 1
+    if args.sim or report.mode == "sim":
+        return 0
     if report.mode == "hardware" and report.summary.get("passed", 0) == 0:
         if not getattr(args, "allow_all_skip", False):
             print(
@@ -506,6 +604,66 @@ def _add_robot_args(
     )
 
 
+def _cmd_verify(args) -> int:
+    from .verify import run_verify_cli
+
+    return run_verify_cli(
+        sim=bool(getattr(args, "sim", False)),
+        as_json=bool(getattr(args, "json", False)),
+        robot=getattr(args, "robot", "omnibot"),
+        console=bool(getattr(args, "console", False)),
+        transport=getattr(args, "transport", None),
+    )
+
+
+def _cmd_login(args) -> int:
+    from .auth import AuthError, login
+
+    try:
+        login(no_browser=bool(args.no_browser))
+    except AuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_whoami(args) -> int:
+    from .auth import AuthError, format_whoami, whoami
+
+    try:
+        account = whoami()
+    except AuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write(format_whoami(account, as_json=bool(args.json)))
+    if (
+        not account.signed_in
+        and account.detail
+        and account.error not in ("not_signed_in", "invalid_token")
+    ):
+        print(f"error: {account.detail}", file=sys.stderr)
+    return 0 if account.signed_in else 1
+
+
+def _cmd_logout(args) -> int:
+    from .auth import AuthError, logout
+
+    try:
+        result = logout()
+    except AuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if result.removed:
+        print("Signed out. Local credentials removed.")
+    else:
+        print("Signed out.")
+    if result.env_token:
+        print(
+            "OHHO_TOKEN is still set and takes precedence. It was not written to disk."
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -515,11 +673,82 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command")
 
-    sub.add_parser(
+    doc = sub.add_parser(
         "doctor", help="show environment, runtimes, adapters and robots"
-    ).set_defaults(func=_cmd_doctor)
-    sub.add_parser("list", help="list built-in robots").set_defaults(func=_cmd_list)
+    )
+    doc.add_argument(
+        "--agent",
+        action="store_true",
+        help="agent-setup readiness (CLI, login, rules, MCP, sim://)",
+    )
+    doc.add_argument(
+        "--json",
+        action="store_true",
+        help="with --agent, print the readiness report as JSON (see docs/cli.md)",
+    )
+    doc.add_argument(
+        "--online",
+        action="store_true",
+        help="with --agent, call the console whoami endpoint",
+    )
+    doc.set_defaults(func=_cmd_doctor)
+    verify = sub.add_parser(
+        "verify",
+        help="drive a robot on sim:// and report the distance moved",
+    )
+    verify.add_argument(
+        "--sim",
+        action="store_true",
+        help="required. Drive sim:// only. Hardware is never the default.",
+    )
+    verify.add_argument(
+        "--json",
+        action="store_true",
+        help="print the verify result as JSON (see docs/cli.md)",
+    )
+    verify.add_argument(
+        "--robot",
+        default="omnibot",
+        help="robot id to simulate (default: omnibot)",
+    )
+    verify.add_argument(
+        "--console",
+        action="store_true",
+        help="GET the console /sim page and report whether it is reachable",
+    )
+    # Not a way to select hardware. Any value other than sim:// is refused.
+    verify.add_argument("--transport", default=None, help=argparse.SUPPRESS)
+    verify.set_defaults(func=_cmd_verify)
+    listed = sub.add_parser("list", help="list registered robots")
+    listed.add_argument(
+        "--plugins",
+        action="store_true",
+        help="show each robot plugin, its specs, and any load error",
+    )
+    listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
+
+    login_p = sub.add_parser(
+        "login", help="sign in to the OhhO console with a device code"
+    )
+    login_p.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="print the verification URL without opening a browser",
+    )
+    login_p.set_defaults(func=_cmd_login)
+
+    who_p = sub.add_parser("whoami", help="print the signed-in account")
+    who_p.add_argument(
+        "--json",
+        action="store_true",
+        help="print the account as JSON (see docs/cli.md)",
+    )
+    who_p.set_defaults(func=_cmd_whoami)
+
+    sub.add_parser("logout", help="delete local console credentials").set_defaults(
+        func=_cmd_logout
+    )
 
     c = sub.add_parser("connect", help="connect and print status + telemetry")
     _add_robot_args(c)
@@ -565,7 +794,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
     ss.add_argument(
-        "--port", type=int, default=8765, help="port to bind the WebSocket server"
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=(
+            "WebSocket port (default: 8790). "
+            "Do not use 8765: that is OmniBot's Foxglove bridge"
+        ),
     )
     ss.add_argument(
         "--rosbridge",
@@ -618,14 +853,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sl.set_defaults(func=_cmd_sim_loop)
 
-    mk = sub.add_parser("market", help="list and run robot skills")
-    mk_sub = mk.add_subparsers(dest="action")
-    mk_sub.add_parser("list", help="list registered skills").set_defaults(action="list")
-    mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
-    _add_robot_args(mk_run)
-    mk_run.add_argument("skill_name", help="skill name (see 'ohho market list')")
-    mk_run.set_defaults(action="run")
-    mk.set_defaults(func=_cmd_market)
+    for cmd_name, cmd_help in (
+        ("skills", "local skill registry — list and run registered skills"),
+        ("market", "alias for skills (local skill registry)"),
+    ):
+        mk = sub.add_parser(cmd_name, help=cmd_help)
+        mk_sub = mk.add_subparsers(dest="action")
+        mk_sub.add_parser("list", help="list registered skills").set_defaults(
+            action="list"
+        )
+        mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
+        _add_robot_args(mk_run)
+        mk_run.add_argument("skill_name", help="skill name (see 'ohho skills list')")
+        mk_run.set_defaults(action="run")
+        mk.set_defaults(func=_cmd_market)
 
     nv = sub.add_parser("nav", help="native navigation: goto / explore / map")
     nv_sub = nv.add_subparsers(dest="action")
@@ -719,6 +960,67 @@ def build_parser() -> argparse.ArgumentParser:
         help="allow exit code 0 when all checks are skipped in hardware mode",
     )
     st.set_defaults(func=_cmd_selftest)
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="MCP stdio server (serve) and AI-client config (connect)",
+    )
+    mcp_sub = mcp.add_subparsers(dest="mcp_command")
+    serve_help = "run the stdio MCP server (sim:// tools: connect, drive, telemetry, nav_goto, look)"
+    serve = mcp_sub.add_parser("serve", help=serve_help, description=serve_help)
+    _add_mcp_serve_args(serve)
+    # `ohho mcp --sim` keeps working: the same flags live on the parent parser.
+    _add_mcp_serve_args(mcp)
+    connect = mcp_sub.add_parser(
+        "connect",
+        help="merge the local ohho MCP server into an AI client's config",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  ohho mcp connect --list\n"
+            "  ohho mcp connect --client cursor\n"
+            "  ohho mcp connect --client claude-code --client codex\n"
+            "  ohho mcp connect --client vscode --dry-run\n"
+            "  ohho mcp connect --client cursor --remove\n"
+            "\n"
+            "--hosted needs `ohho login` (OHH-273) and hosted MCP auth (OHH-274)."
+        ),
+    )
+    connect.add_argument(
+        "--client",
+        action="append",
+        dest="clients",
+        default=None,
+        help="client to configure (repeatable). See --list.",
+    )
+    connect.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_clients",
+        help="list supported clients and their config files",
+    )
+    connect.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the diff or CLI command and change nothing",
+    )
+    connect.add_argument(
+        "--print",
+        action="store_true",
+        dest="print_config",
+        help="print the config that would be written (or the CLI command)",
+    )
+    connect.add_argument(
+        "--remove",
+        action="store_true",
+        help="remove only the ohho entry",
+    )
+    connect.add_argument(
+        "--hosted",
+        action="store_true",
+        help="hosted MCP endpoint (not available yet; see OHH-273 and OHH-274)",
+    )
+    mcp.set_defaults(func=_cmd_mcp)
 
     return p
 
