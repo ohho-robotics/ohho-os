@@ -108,7 +108,7 @@ class ImportBoundaryTest(unittest.TestCase):
             for name in _COPYLEFT_OR_PROPRIETARY:
                 self.assertNotIn(name, text, f"{path} names {name}")
 
-    def test_manifest_import_does_not_load_copyleft_or_proprietary(self) -> None:
+    def test_runtime_import_does_not_load_copyleft_or_proprietary(self) -> None:
         env = dict(os.environ)
         prior = env.get("PYTHONPATH", "")
         extra = os.pathsep.join((str(_ROOT), str(_RUNTIME_SRC)))
@@ -117,6 +117,7 @@ class ImportBoundaryTest(unittest.TestCase):
         probe = (
             "import sys\n"
             "import ohho_runtime.manifest\n"
+            "import ohho_runtime.supervisor\n"
             f"banned = {{{banned}}}\n"
             "roots = {name.split('.')[0] for name in sys.modules}\n"
             "bad = sorted(roots & banned)\n"
