@@ -38,7 +38,8 @@ serial = ["pyserial>=3.5"]                   # Yahboom serial adapter (OmniBot b
 arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101, OmniBot arm)
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
-unitree = ["cyclonedds>=0.10"]               # Unitree DDS adapter (G1, Go2, H1, B2 …)
+# cyclonedds is a build/runtime dep of unitree_sdk2py (not on PyPI — install from GitHub).
+unitree = ["cyclonedds>=0.10"]
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
