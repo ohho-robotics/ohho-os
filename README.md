@@ -17,7 +17,7 @@ ohho doctor
 ohho sim --robot omnibot --seconds 2
 ```
 
-Full CLI reference: [`docs/cli.md`](docs/cli.md).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. Full CLI reference: [`docs/cli.md`](docs/cli.md).
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and

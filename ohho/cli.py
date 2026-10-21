@@ -23,6 +23,13 @@ def _cmd_version(args) -> int:
 
 
 def _cmd_doctor(args) -> int:
+    if getattr(args, "agent", False):
+        from .agent_doctor import print_agent_report
+
+        return print_agent_report(
+            as_json=bool(getattr(args, "json", False)),
+            online=bool(getattr(args, "online", False)),
+        )
     import importlib.util
 
     from .brains import harness_available
@@ -597,6 +604,18 @@ def _add_robot_args(
     )
 
 
+def _cmd_verify(args) -> int:
+    from .verify import run_verify_cli
+
+    return run_verify_cli(
+        sim=bool(getattr(args, "sim", False)),
+        as_json=bool(getattr(args, "json", False)),
+        robot=getattr(args, "robot", "omnibot"),
+        console=bool(getattr(args, "console", False)),
+        transport=getattr(args, "transport", None),
+    )
+
+
 def _cmd_login(args) -> int:
     from .auth import AuthError, login
 
@@ -654,9 +673,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command")
 
-    sub.add_parser(
+    doc = sub.add_parser(
         "doctor", help="show environment, runtimes, adapters and robots"
-    ).set_defaults(func=_cmd_doctor)
+    )
+    doc.add_argument(
+        "--agent",
+        action="store_true",
+        help="agent-setup readiness (CLI, login, rules, MCP, sim://)",
+    )
+    doc.add_argument(
+        "--json",
+        action="store_true",
+        help="with --agent, print the readiness report as JSON (see docs/cli.md)",
+    )
+    doc.add_argument(
+        "--online",
+        action="store_true",
+        help="with --agent, call the console whoami endpoint",
+    )
+    doc.set_defaults(func=_cmd_doctor)
+    verify = sub.add_parser(
+        "verify",
+        help="drive a robot on sim:// and report the distance moved",
+    )
+    verify.add_argument(
+        "--sim",
+        action="store_true",
+        help="required. Drive sim:// only. Hardware is never the default.",
+    )
+    verify.add_argument(
+        "--json",
+        action="store_true",
+        help="print the verify result as JSON (see docs/cli.md)",
+    )
+    verify.add_argument(
+        "--robot",
+        default="omnibot",
+        help="robot id to simulate (default: omnibot)",
+    )
+    verify.add_argument(
+        "--console",
+        action="store_true",
+        help="GET the console /sim page and report whether it is reachable",
+    )
+    # Not a way to select hardware. Any value other than sim:// is refused.
+    verify.add_argument("--transport", default=None, help=argparse.SUPPRESS)
+    verify.set_defaults(func=_cmd_verify)
     listed = sub.add_parser("list", help="list registered robots")
     listed.add_argument(
         "--plugins",
