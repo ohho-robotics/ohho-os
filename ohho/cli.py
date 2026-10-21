@@ -65,6 +65,7 @@ def _cmd_doctor(args) -> int:
         f"  mcp         : stdio (built-in) — sim tools: {', '.join(SIM_TOOL_NAMES)}; "
         "clients: ohho mcp connect --list"
     )
+    print("  rules       : ohho rules list  |  ohho rules install --client <id>")
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
     return 0
 
@@ -509,6 +510,31 @@ def _cmd_mcp(args) -> int:
     if getattr(args, "mcp_command", None) == "connect":
         return _cmd_mcp_connect(args)
     return _cmd_mcp_serve(args)
+
+
+def _cmd_rules(args) -> int:
+    from .agent_rules import install_rules, list_rules, show_rules
+
+    command = args.rules_command
+    project = getattr(args, "project", None)
+    as_json = bool(getattr(args, "json", False))
+    if command == "list":
+        return list_rules(project=project, as_json=as_json)
+    if command == "show":
+        return show_rules(
+            client=getattr(args, "client", None),
+            project=project is not None,
+            as_json=as_json,
+        )
+    remove = command == "remove" or bool(getattr(args, "remove", False))
+    return install_rules(
+        list(args.clients or []),
+        all_clients=bool(getattr(args, "all_clients", False)),
+        project=project,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        remove=remove,
+        as_json=as_json,
+    )
 
 
 def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
@@ -1021,6 +1047,105 @@ def build_parser() -> argparse.ArgumentParser:
         help="hosted MCP endpoint (not available yet; see OHH-273 and OHH-274)",
     )
     mcp.set_defaults(func=_cmd_mcp)
+
+    rules = sub.add_parser(
+        "rules",
+        help="install Ohho agent rules into an AI client",
+    )
+    rules_sub = rules.add_subparsers(dest="rules_command", required=True)
+    rules_help = (
+        "examples:\n"
+        "  ohho rules list\n"
+        "  ohho rules show\n"
+        "  ohho rules install --client cursor\n"
+        "  ohho rules install --all\n"
+        "  ohho rules install --client claude-code --dry-run\n"
+        "  ohho rules install --client cursor --project .\n"
+        "  ohho rules remove --client cursor\n"
+    )
+
+    def _add_target_flags(parser: argparse.ArgumentParser, *, removing: bool) -> None:
+        parser.add_argument(
+            "--client",
+            action="append",
+            dest="clients",
+            default=None,
+            help="client id (repeatable). Same names as `ohho mcp connect --list`.",
+        )
+        parser.add_argument(
+            "--all",
+            action="store_true",
+            dest="all_clients",
+            help="every client `ohho mcp connect` knows",
+        )
+        parser.add_argument(
+            "--project",
+            default=None,
+            metavar="DIR",
+            help="write the project file under DIR instead of the user file",
+        )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="print the action and change nothing",
+        )
+        parser.add_argument(
+            "--json",
+            action="store_true",
+            help="print a JSON result on stdout",
+        )
+        if removing:
+            parser.add_argument(
+                "--remove",
+                action="store_true",
+                help="delete only the Ohho rules block",
+            )
+
+    install = rules_sub.add_parser(
+        "install",
+        help="merge Ohho agent rules into a client file",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=rules_help,
+    )
+    _add_target_flags(install, removing=True)
+    install.set_defaults(func=_cmd_rules)
+    remove = rules_sub.add_parser(
+        "remove",
+        help="delete only the Ohho rules block",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=rules_help,
+    )
+    _add_target_flags(remove, removing=False)
+    remove.set_defaults(func=_cmd_rules)
+    listing = rules_sub.add_parser(
+        "list",
+        help="show each client's rules path and whether it is installed",
+    )
+    listing.add_argument(
+        "--project",
+        default=None,
+        metavar="DIR",
+        help="check project files under DIR instead of user files",
+    )
+    listing.add_argument("--json", action="store_true", help="print JSON on stdout")
+    listing.set_defaults(func=_cmd_rules)
+    show = rules_sub.add_parser(
+        "show",
+        help="print the rules text (or the fresh file for one client)",
+    )
+    show.add_argument(
+        "--client",
+        default=None,
+        help="print the fresh file for this client instead of the source",
+    )
+    show.add_argument(
+        "--project",
+        default=None,
+        metavar="DIR",
+        help="with --client, print the project-file shape (DIR is not read)",
+    )
+    show.add_argument("--json", action="store_true", help="print JSON on stdout")
+    show.set_defaults(func=_cmd_rules)
 
     return p
 
