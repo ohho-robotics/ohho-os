@@ -196,23 +196,35 @@ def _write_stats(meta_dir: Path, episodes: List[Episode]) -> None:
         json.dump(stats, f, indent=2)
 
 
+def _feature_stats(rows: List[List[float]]) -> dict:
+    """Per-feature stats matching LeRobot v2.1 ``episodes_stats`` layout."""
+    if not rows:
+        return {}
+    n = len(rows)
+    dim = len(rows[0])
+    mins = [float(min(row[i] for row in rows)) for i in range(dim)]
+    maxs = [float(max(row[i] for row in rows)) for i in range(dim)]
+    means = [float(sum(row[i] for row in rows) / n) for i in range(dim)]
+    stds = [
+        float(
+            (sum((row[i] - means[i]) ** 2 for row in rows) / n) ** 0.5 if n > 0 else 0.0
+        )
+        for i in range(dim)
+    ]
+    # Vector features (dim > 1): flat length-dim lists, matching keepdims=False.
+    # Scalar features (dim == 1): length-1 lists, matching keepdims=True on 1-D data.
+    return {
+        "min": mins,
+        "max": maxs,
+        "mean": means,
+        "std": stds,
+        "count": [n],
+    }
+
+
 def _vector_stats(rows: List[List[float]]) -> dict:
     """Per-dimension min/max/mean/std/count in the shape lerobot 0.3.x aggregates."""
-    dim = len(rows[0])
-    n = len(rows)
-    mins: List[float] = []
-    maxs: List[float] = []
-    means: List[float] = []
-    stds: List[float] = []
-    for i in range(dim):
-        col = [row[i] for row in rows]
-        mean = sum(col) / n
-        var = sum((value - mean) ** 2 for value in col) / n
-        mins.append(float(min(col)))
-        maxs.append(float(max(col)))
-        means.append(float(mean))
-        stds.append(float(var**0.5))
-    return {"min": mins, "max": maxs, "mean": means, "std": stds, "count": [n]}
+    return _feature_stats(rows)
 
 
 def _write_episode_stats(meta_dir: Path, episodes: List[Episode]) -> None:

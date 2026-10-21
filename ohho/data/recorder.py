@@ -171,8 +171,9 @@ class Recorder:
             raise RuntimeError("no active episode — call start_episode() first")
         state = _telemetry_to_state(self.robot)
         action = self._last_action[:]
-        # LeRobotDataset requires consecutive timestamps to be 1/fps apart.
-        # Wall-clock deltas from a tight sim loop are ~0 and fail that check.
+        # Wall clock can collapse to 0.0 when frames are captured back-to-back (sim loop).
+        # LeRobotDataset requires consecutive timestamps to be 1/fps apart;
+        # wall-clock deltas from a tight sim loop are ~0 and fail that check.
         ts = self._frame_idx / self.fps if self.fps else float(self._frame_idx)
         frame = Frame(
             observation_state=state,
