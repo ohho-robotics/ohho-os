@@ -58,6 +58,38 @@ Adapters:
   window and only the samples the gate would count. It does not command the
   robot and does not change the gate.
 
+## Supervisor
+
+`ohho_runtime.supervisor.Supervisor` loads a manifest and builds its
+dependency graph. Dev mode (`mode="dev"`, the default) runs each service
+in-process on the caller thread: no subprocess, socket, or signal handler.
+The same unit tests run on Linux, macOS, and Windows.
+
+`start` launches a service only when every dependency is `ready`. `poll`
+is how the clock moves. There is no sleep. Pass a `ManualClock` from
+`ohho_runtime.service` in tests.
+
+Restart uses the manifest policy. Failures inside `window_s` count toward
+`max_restarts`. The failure that reaches the cap is not restarted. Backoff
+doubles from `backoff_s` and is capped at 10 seconds, the same schedule as
+the ohho-os link helper from PR #15. That helper is private and lives in
+an adapter package, which `ohho_runtime` is not allowed to import, so
+`ohho_runtime.backoff.ExponentialBackoff` keeps the schedule here.
+
+A critical service that reaches the cap latches `do_not_operate`. The
+supervisor holds the class safe action and `allows_motion()` stays false
+until `clear_do_not_operate()`. That call is the human clear. It does not
+arm the robot and does not restart the failed service. The
+`on_do_not_operate` hook is the extension point for a later policy. This
+layer does not change the safety gate.
+
+A degradable service that reaches the cap stays failed. The other
+services keep running.
+
+`shutdown` stops launched services in reverse start order and records
+whether that finished within `grace_s`. Events are appended to
+`supervisor.events`.
+
 ## Tests
 
 From the repository root, after `pip install -e .` and
