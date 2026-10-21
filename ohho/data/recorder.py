@@ -4,10 +4,11 @@ The recorder wraps the robot's ``drive`` and ``move_joints`` methods to intercep
 commands (the "action"), and polls ``telemetry()`` for the "state". Frames are
 captured either on a timer (live) or manually (deterministic tests / sim).
 
-Frame schema (matches LeRobot v2.0 + the mobile-manipulation spec):
+Frame schema (matches LeRobot v2.1 + the mobile-manipulation spec):
   - ``observation.state``: arm joints (6) + base velocity (3) = 9-D
   - ``action``: commanded arm joints (6) + base velocity (3) = 9-D
-  - ``timestamp``, ``frame_index``, ``episode_index``, ``task_index``, ``next.done``
+  - ``timestamp`` (``frame_index / fps``), ``frame_index``, ``episode_index``,
+    ``task_index``, ``next.done``
 """
 
 from __future__ import annotations
@@ -109,7 +110,6 @@ class Recorder:
         self._task_map: Dict[str, int] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
-        self._t0: Optional[float] = None
         self._wrap_robot()
 
     def _zero_action(self) -> List[float]:
@@ -162,7 +162,6 @@ class Recorder:
             fps=self.fps,
         )
         self._frame_idx = 0
-        self._t0 = time.monotonic()
         self._last_action = self._zero_action()
         return self._current
 
@@ -172,7 +171,10 @@ class Recorder:
             raise RuntimeError("no active episode — call start_episode() first")
         state = _telemetry_to_state(self.robot)
         action = self._last_action[:]
-        ts = time.monotonic() - (self._t0 or 0.0)
+        # Wall clock can collapse to 0.0 when frames are captured back-to-back (sim loop).
+        # LeRobotDataset requires consecutive timestamps to be 1/fps apart;
+        # wall-clock deltas from a tight sim loop are ~0 and fail that check.
+        ts = self._frame_idx / self.fps if self.fps else float(self._frame_idx)
         frame = Frame(
             observation_state=state,
             action=action,
@@ -238,7 +240,7 @@ class Recorder:
         return sorted(self._task_map, key=lambda t: self._task_map[t])
 
     def save(self, path: str) -> str:
-        """Write all episodes to ``path`` in LeRobot v2.0 format.
+        """Write all episodes to ``path`` in LeRobot v2.1 format.
 
         Uses Parquet when ``pyarrow`` is available (the ``[data]`` extra),
         otherwise falls back to JSON Lines. Meta files (``info.json``,

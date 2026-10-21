@@ -1,12 +1,15 @@
-"""LeRobot v2.0 dataset writer — Parquet + meta JSON.
+"""LeRobot v2.1 dataset writer — Parquet + meta JSON.
 
-Writes episodes to disk in the standard LeRobot v2.0 layout::
+Writes episodes to disk in the LeRobot v2.1 layout (the format lerobot 0.3.x
+loads locally)::
 
     <root>/
       meta/
-        info.json           # codebase_version, fps, features, dims
-        tasks.jsonl         # {task_index, task}
-        episodes.jsonl      # {episode_index, tasks, length}
+        info.json              # codebase_version v2.1, fps, features, dims
+        tasks.jsonl            # {task_index, task}
+        episodes.jsonl         # {episode_index, tasks, length}
+        episodes_stats.jsonl   # {episode_index, stats} per episode
+        stats.json             # global min/max/mean (kept for local readers)
       data/chunk-000/
         episode_000000.parquet   # or .jsonl without pyarrow
 
@@ -22,8 +25,17 @@ from typing import List
 
 from .recorder import Episode
 
-CODEBASE_VERSION = "2.0"
+CODEBASE_VERSION = "v2.1"
 CHUNK_SIZE = 1000
+
+# Scalar columns LeRobotDatasetMetadata.create always merges into features.
+_SCALAR_FEATURES = {
+    "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+    "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+    "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+    "index": {"dtype": "int64", "shape": [1], "names": None},
+    "task_index": {"dtype": "int64", "shape": [1], "names": None},
+}
 
 
 def write_dataset(
@@ -33,7 +45,7 @@ def write_dataset(
     fps: float,
     tasks: List[str],
 ) -> str:
-    """Write episodes to ``root`` in LeRobot v2.0 format. Returns the root path."""
+    """Write episodes to ``root`` in LeRobot v2.1 format. Returns the root path."""
     r = Path(root).expanduser()
     meta_dir = r / "meta"
     data_dir = r / "data" / "chunk-000"
@@ -44,6 +56,7 @@ def write_dataset(
     _write_episodes(meta_dir, episodes)
     _write_info(meta_dir, episodes, repo_id, fps, tasks)
     _write_stats(meta_dir, episodes)
+    _write_episode_stats(meta_dir, episodes)
 
     use_parquet = _try_import_pyarrow() is not None
     for ep in episodes:
@@ -113,7 +126,9 @@ def _write_info(
         "total_videos": 0,
         "total_chunks": 1,
         "chunks_size": CHUNK_SIZE,
+        "splits": {"train": f"0:{len(episodes)}"},
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "video_path": None,
         "tasks": tasks,
         "features": {
             "observation.state": {
@@ -146,6 +161,7 @@ def _write_info(
                     "base_omega",
                 ][:action_dim],
             },
+            **_SCALAR_FEATURES,
         },
     }
     with open(meta_dir / "info.json", "w", encoding="utf-8") as f:
@@ -178,6 +194,56 @@ def _write_stats(meta_dir: Path, episodes: List[Episode]) -> None:
         }
     with open(meta_dir / "stats.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
+
+
+def _feature_stats(rows: List[List[float]]) -> dict:
+    """Per-feature stats matching LeRobot v2.1 ``episodes_stats`` layout."""
+    if not rows:
+        return {}
+    n = len(rows)
+    dim = len(rows[0])
+    mins = [float(min(row[i] for row in rows)) for i in range(dim)]
+    maxs = [float(max(row[i] for row in rows)) for i in range(dim)]
+    means = [float(sum(row[i] for row in rows) / n) for i in range(dim)]
+    stds = [
+        float(
+            (sum((row[i] - means[i]) ** 2 for row in rows) / n) ** 0.5 if n > 0 else 0.0
+        )
+        for i in range(dim)
+    ]
+    # Vector features (dim > 1): flat length-dim lists, matching keepdims=False.
+    # Scalar features (dim == 1): length-1 lists, matching keepdims=True on 1-D data.
+    return {
+        "min": mins,
+        "max": maxs,
+        "mean": means,
+        "std": stds,
+        "count": [n],
+    }
+
+
+def _vector_stats(rows: List[List[float]]) -> dict:
+    """Per-dimension min/max/mean/std/count in the shape lerobot 0.3.x aggregates."""
+    return _feature_stats(rows)
+
+
+def _write_episode_stats(meta_dir: Path, episodes: List[Episode]) -> None:
+    """Write ``meta/episodes_stats.jsonl`` (one stats object per episode)."""
+    path = meta_dir / "episodes_stats.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        for ep in episodes:
+            if not ep.frames:
+                continue
+            stats: dict = {}
+            if ep.state_dim > 0:
+                stats["observation.state"] = _vector_stats(
+                    [frame.observation_state for frame in ep.frames]
+                )
+            if ep.action_dim > 0:
+                stats["action"] = _vector_stats([frame.action for frame in ep.frames])
+            f.write(
+                json.dumps({"episode_index": ep.episode_index, "stats": stats}) + "\n"
+            )
 
 
 def _write_parquet(ep: Episode, fpath: Path) -> None:
