@@ -14,6 +14,7 @@ from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
+from .sim_serve import DEFAULT_PORT
 
 
 def _cmd_version(args) -> int:
@@ -164,10 +165,26 @@ def _cmd_drive(args) -> int:
         print(
             f"driving {bot.spec.id}: vx={args.vx} vy={args.vy} w={args.w} for {args.seconds:.0f}s"
         )
-        end = time.monotonic() + args.seconds
-        while time.monotonic() < end:
-            bot.drive(vx=args.vx, vy=args.vy, w=args.w)
-            time.sleep(0.1)
+        period = 0.1
+        tp = bot.transport
+        step_fn = getattr(tp, "step", None)
+        stepped = bot.simulated and callable(step_fn)
+        stop_sim = getattr(tp, "stop_sim", None)
+        start_sim = getattr(tp, "start_sim", None)
+        if stepped and callable(stop_sim):
+            stop_sim()
+        if stepped:
+            steps = max(1, int(round(args.seconds / period)))
+            for _ in range(steps):
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
+                step_fn(period)
+        else:
+            end = time.monotonic() + args.seconds
+            while time.monotonic() < end:
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
+                time.sleep(period)
+        if stepped and callable(start_sim):
+            start_sim()
         bot.stop()
         time.sleep(0.1)
         t = bot.telemetry()
@@ -289,7 +306,7 @@ def _cmd_market(args) -> int:
         finally:
             bot.disconnect()
         return 0
-    print("usage: ohho market [list|run]")
+    print("usage: ohho skills [list|run]  (alias: market)")
     return 1
 
 
@@ -538,6 +555,8 @@ def _cmd_selftest(args) -> int:
     print(f"Report saved to: {out_path}")
     if report.overall_status == "FAIL":
         return 1
+    if args.sim or report.mode == "sim":
+        return 0
     if report.mode == "hardware" and report.summary.get("passed", 0) == 0:
         if not getattr(args, "allow_all_skip", False):
             print(
@@ -630,7 +649,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
     ss.add_argument(
-        "--port", type=int, default=8765, help="port to bind the WebSocket server"
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=(
+            "WebSocket port (default: 8790). "
+            "Do not use 8765: that is OmniBot's Foxglove bridge"
+        ),
     )
     ss.add_argument(
         "--rosbridge",
@@ -683,14 +708,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sl.set_defaults(func=_cmd_sim_loop)
 
-    mk = sub.add_parser("market", help="list and run robot skills")
-    mk_sub = mk.add_subparsers(dest="action")
-    mk_sub.add_parser("list", help="list registered skills").set_defaults(action="list")
-    mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
-    _add_robot_args(mk_run)
-    mk_run.add_argument("skill_name", help="skill name (see 'ohho market list')")
-    mk_run.set_defaults(action="run")
-    mk.set_defaults(func=_cmd_market)
+    for cmd_name, cmd_help in (
+        ("skills", "local skill registry — list and run registered skills"),
+        ("market", "alias for skills (local skill registry)"),
+    ):
+        mk = sub.add_parser(cmd_name, help=cmd_help)
+        mk_sub = mk.add_subparsers(dest="action")
+        mk_sub.add_parser("list", help="list registered skills").set_defaults(
+            action="list"
+        )
+        mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
+        _add_robot_args(mk_run)
+        mk_run.add_argument("skill_name", help="skill name (see 'ohho skills list')")
+        mk_run.set_defaults(action="run")
+        mk.set_defaults(func=_cmd_market)
 
     nv = sub.add_parser("nav", help="native navigation: goto / explore / map")
     nv_sub = nv.add_subparsers(dest="action")
