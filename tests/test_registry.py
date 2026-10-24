@@ -8,10 +8,18 @@ from pathlib import Path
 from ohho.registry import (
     RobotSpec,
     UnknownRobot,
+    _REGISTRY,
     get_spec,
     list_specs,
     load_manifest,
+    register,
     spec_from_dict,
+)
+from ohho.capabilities import (
+    AERIAL,
+    BASE_DRIVE,
+    HUMANOID_POSTURE,
+    PERCEPTION_RGB,
 )
 from ohho.robot_spec import (
     CI_SCENARIOS,
@@ -273,6 +281,12 @@ class TestRobotSpecV2(unittest.TestCase):
         self.assertAlmostEqual(spec.max_ang, 1.5)
         self.assertEqual(spec.joint_names, ())
         self.assertEqual(_json_round_trip(spec), spec)
+        self.assertAlmostEqual(spec.capability_params[BASE_DRIVE]["max_vx"], 0.8)
+        self.assertAlmostEqual(spec.capability_params[BASE_DRIVE]["max_wz"], 1.5)
+        self.assertNotIn(PERCEPTION_RGB, spec.capability_params)
+        registered = register(spec)
+        self.addCleanup(lambda: _REGISTRY.pop("my-rover", None))
+        self.assertEqual(get_spec("my-rover"), registered)
 
     def test_serialisation_round_trip(self):
         cases = [
@@ -421,6 +435,65 @@ class TestRobotSpecV2(unittest.TestCase):
         groups["arm"].append("wrist")
         self.assertEqual(spec.joint_groups["arm"], ("shoulder", "elbow"))
         self.assertIsInstance(spec.limits, ArmLimits)
+
+    def test_unknown_capability_is_rejected_at_registration(self):
+        spec = spec_from_dict(
+            {
+                "id": "nope-bot",
+                "category": "wheeled",
+                "capabilities": ["base.drive", "not.a.capability"],
+            }
+        )
+        with self.assertRaises(ValueError):
+            register(spec)
+        with self.assertRaises(UnknownRobot):
+            get_spec("nope-bot")
+
+        malformed = RobotSpec(
+            id="bad-params",
+            name="Bad",
+            category="humanoid",
+            capabilities=(HUMANOID_POSTURE,),
+            capability_params={HUMANOID_POSTURE: {"modes": ["dance"]}},
+        )
+        with self.assertRaises(ValueError):
+            register(malformed)
+        with self.assertRaises(UnknownRobot):
+            get_spec("bad-params")
+
+    def test_known_capabilities_still_register(self):
+        spec = RobotSpec(
+            id="known-bot",
+            name="Known",
+            category="aerial",
+            capabilities=(AERIAL, BASE_DRIVE, PERCEPTION_RGB),
+            max_lin=1.0,
+            max_ang=0.5,
+            limits=AerialLimits(max_climb=0.4, gps_fix="none"),
+        )
+        registered = register(spec)
+        self.addCleanup(lambda: _REGISTRY.pop("known-bot", None))
+        self.assertEqual(get_spec("known-bot"), registered)
+        self.assertTrue(registered.has(AERIAL))
+        self.assertEqual(registered.capability_params[AERIAL]["max_climb"], 0.4)
+        self.assertIn(BASE_DRIVE, registered.capability_params)
+        self.assertNotIn(PERCEPTION_RGB, registered.capability_params)
+
+    def test_builtin_params_come_from_the_spec(self):
+        omnibot = get_spec("omnibot")
+        self.assertEqual(
+            omnibot.capability_params[BASE_DRIVE]["max_vx"], omnibot.max_lin
+        )
+        self.assertEqual(
+            omnibot.capability_params["manipulation"]["arm_groups"], ("arm",)
+        )
+        go2 = get_spec("unitree-go2")
+        self.assertEqual(go2.capability_params[BASE_DRIVE]["max_vx"], go2.max_lin)
+        self.assertEqual(go2.capability_params[BASE_DRIVE]["max_wz"], go2.max_ang)
+        self.assertIn("stand_up", go2.capability_params["legged.pose"]["poses"])
+        sim = get_spec("sim")
+        self.assertEqual(sim.capability_params[BASE_DRIVE]["max_vx"], sim.max_lin)
+        self.assertEqual(sim.capability_params[BASE_DRIVE]["max_wz"], sim.max_ang)
 
 
 if __name__ == "__main__":
