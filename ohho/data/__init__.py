@@ -5,12 +5,15 @@ capture actions, polls telemetry for state, and writes episodes to disk in
 LeRobot v2.0 layout (Parquet + meta JSON). The same dataset feeds
 :mod:`ohho.train` and :mod:`ohho.serve`.
 
-Heavy deps (``pyarrow`` for Parquet) are lazy: without the ``[data]`` extra the
-writer falls back to JSON Lines so the record→inspect loop still works.
+Heavy deps (``pyarrow`` for Parquet, ``av`` for video) are lazy: without the
+``[data]`` extra the writer falls back to JSON Lines so the record→inspect loop
+still works with zero external dependencies.
 """
 
 from __future__ import annotations
 
-from .recorder import Recorder, Episode
+from .reader import DatasetReader
+from .recorder import Episode, Recorder
+from .teleop import record_go2_teleop_episodes
 
-__all__ = ["Recorder", "Episode"]
+__all__ = ["Recorder", "Episode", "DatasetReader", "record_go2_teleop_episodes"]

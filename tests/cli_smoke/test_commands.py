@@ -192,6 +192,12 @@ class TestCliSmokeCore(unittest.TestCase):
             code, _, _ = run_in_home(["memory", "clear", "omnibot"])
             self.assertEqual(code, 0)
 
+    def test_sim_demo_sim_fast(self):
+        # The harness binds its log stream at import, so redirect_stdout
+        # does not capture the demo transcript. Exit code is the smoke check.
+        code, _out, err = _run_cli(["sim-demo", "--sim", "--fast"])
+        self.assertEqual(code, 0, err)
+
     def test_selftest_sim(self):
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "report.json"
