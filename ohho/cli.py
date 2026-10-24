@@ -243,6 +243,44 @@ def _cmd_serve(args) -> int:
     return 0
 
 
+def _cmd_run_policy(args) -> int:
+    transport = args.transport if args.transport is not None else "sim://"
+    if not str(transport).startswith("sim://"):
+        print(
+            "error: run-policy is sim-only — never use on real hardware (OHH-128)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        bot = Robot.connect(args.robot, transport=transport, runtime=args.runtime)
+    except UnknownRobot as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    from .serve.runner import PolicyRunner
+
+    hz = float(args.hz)
+    dt = 1.0 / max(hz, 1e-6)
+    step_fn = getattr(bot.transport, "step", None)
+    step = (lambda: step_fn(dt)) if callable(step_fn) else None
+
+    try:
+        runner = PolicyRunner(bot, args.serve, hz=hz, step=step)
+        result = runner.run(
+            args.instruction,
+            duration_s=args.seconds,
+            goal_x=args.goal_x,
+            max_steps=args.max_steps,
+        )
+        print(
+            f"policy stopped: {result.stopped_reason} "
+            f"after {result.steps} steps (odom.x={result.last_odom_x:.3f})"
+        )
+    finally:
+        bot.disconnect()
+    return 0
+
+
 def _cmd_sim_serve(args) -> int:
     if args.backend in ("isaac", "mujoco"):
         print("not built", file=sys.stderr)
@@ -825,6 +863,44 @@ def build_parser() -> argparse.ArgumentParser:
         "--mock", action="store_true", help="use a no-op model (sim loop, no GPU)"
     )
     sv.set_defaults(func=_cmd_serve)
+
+    rp = sub.add_parser(
+        "run-policy",
+        help="closed-loop policy from ohho serve (simulation only)",
+    )
+    _add_robot_args(rp, transport_default="sim://")
+    rp.add_argument(
+        "--serve",
+        required=True,
+        help="policy server base URL, e.g. http://localhost:8000",
+    )
+    rp.add_argument(
+        "--instruction",
+        required=True,
+        help='natural-language task, e.g. "go forward"',
+    )
+    rp.add_argument("--hz", type=float, default=10.0, help="control loop rate")
+    rp.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="optional max duration before stopping",
+    )
+    rp.add_argument(
+        "--goal-x",
+        type=float,
+        default=None,
+        dest="goal_x",
+        help="stop once odometry x reaches this distance (meters)",
+    )
+    rp.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        dest="max_steps",
+        help="optional max policy steps",
+    )
+    rp.set_defaults(func=_cmd_run_policy)
 
     ss = sub.add_parser("sim-serve", help="serve robot simulation over WebSocket")
     ss.add_argument(
