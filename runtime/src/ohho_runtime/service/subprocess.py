@@ -353,6 +353,20 @@ class SubprocessService(ServiceBase):
         server = self._server
         return 0 if server is None else server.beats
 
+    @property
+    def exit_code(self) -> int | None:
+        """Child exit status, or ``None`` while the child is running.
+
+        Reading this polls the child. It does not signal the child.
+        """
+        proc = self._proc
+        if proc is None:
+            return None
+        code = proc.poll()
+        if isinstance(code, bool) or not isinstance(code, int):
+            return None
+        return code
+
     def stderr_text(self) -> str:
         self._capture_stderr()
         return self._stderr_cache

@@ -48,6 +48,7 @@ class _Sink:
     def __init__(self, stream: TextIO) -> None:
         self.stream = stream
         self.lock = threading.Lock()
+        self.history: object | None = None
 
 
 def normalize_level(value: str) -> str:
@@ -228,6 +229,22 @@ class RuntimeLog:
             sink=self._sink,
         )
 
+    @property
+    def history(self) -> object | None:
+        """Record history shared with loggers from :meth:`bind`."""
+        return self._sink.history
+
+    def attach_history(self, history: object) -> None:
+        """Keep every emitted record by calling ``history.append``.
+
+        Bound loggers share the attachment. A record dropped by the level
+        filter is not stored. ``append`` must not call back into this logger.
+        """
+        append = getattr(history, "append", None)
+        if not callable(append):
+            raise TypeError("log history must provide append")
+        self._sink.history = history
+
     def log(
         self,
         level: str,
@@ -268,6 +285,9 @@ class RuntimeLog:
             flush = getattr(self._sink.stream, "flush", None)
             if callable(flush):
                 flush()
+            history = self._sink.history
+            if history is not None:
+                history.append({key: record[key] for key in record})
         return record
 
 

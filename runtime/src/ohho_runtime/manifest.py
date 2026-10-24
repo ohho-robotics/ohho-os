@@ -467,22 +467,34 @@ def _manifest_log_format(value: object) -> str:
         raise ManifestError(str(exc)) from None
 
 
+def _manifest_state_dir(value: object) -> str:
+    text = _optional_text(value, "state_dir")
+    if "\x00" in text:
+        raise ManifestError("state_dir must not contain a NUL")
+    return text.strip()
+
+
 @dataclass(frozen=True)
 class RuntimeManifest:
     """Validated service set. Constructing it loads and checks the set.
 
     ``log_level`` and ``log_format`` are optional. Empty means the runtime
     default (``INFO``, JSON lines), still overridable by the environment.
+    ``state_dir`` is the directory crash bundles are written under. Empty
+    means the default directory. ``OHHO_RUNTIME_STATE_DIR`` overrides it
+    when a bundle is written.
     """
 
     services: tuple[ServiceSpec, ...] = ()
     log_level: str = ""
     log_format: str = ""
+    state_dir: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "services", _validate_and_order(self.services))
         object.__setattr__(self, "log_level", _manifest_log_level(self.log_level))
         object.__setattr__(self, "log_format", _manifest_log_format(self.log_format))
+        object.__setattr__(self, "state_dir", _manifest_state_dir(self.state_dir))
 
     def roles(self) -> tuple[str, ...]:
         """Service roles in start order. The watchdog is first when present."""
@@ -501,17 +513,20 @@ def load_manifest(
     *,
     log_level: str = "",
     log_format: str = "",
+    state_dir: str = "",
 ) -> RuntimeManifest:
     """Validate ``services`` and return a manifest.
 
     Unknown QoS profile names and dependency cycles raise
     :class:`ManifestError`. ``log_level`` and ``log_format`` are optional
-    observability settings; they do not start a service.
+    observability settings; they do not start a service. ``state_dir`` is
+    the crash-bundle directory. Empty keeps the default.
     """
     return RuntimeManifest(
         services=tuple(services),
         log_level=log_level,
         log_format=log_format,
+        state_dir=state_dir,
     )
 
 
@@ -528,6 +543,7 @@ def with_services(manifest: RuntimeManifest, *services: ServiceSpec) -> RuntimeM
         (*manifest.services, *services),
         log_level=manifest.log_level,
         log_format=manifest.log_format,
+        state_dir=manifest.state_dir,
     )
 
 
@@ -642,6 +658,7 @@ def _apply_aerial_gate(manifest: RuntimeManifest, spec: RobotSpec) -> RuntimeMan
         services=tuple(services),
         log_level=manifest.log_level,
         log_format=manifest.log_format,
+        state_dir=manifest.state_dir,
     )
 
 
