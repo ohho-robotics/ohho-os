@@ -5,6 +5,12 @@ not spawn processes, open sockets, or install signal handlers, so the
 same tests run on Linux, macOS, and Windows. The host calls
 :meth:`Supervisor.poll`. Nothing here sleeps.
 
+``mode="process"`` is the same lifecycle with OS scheduling applied on
+Linux at service start. Dev mode, macOS, and Windows ignore a declared
+scheduling config with one warning. A refusal on Linux is a warning and
+a counter. The service still starts, and the declared priority is not
+replaced with a different one.
+
 A service starts only once every dependency is ``ready``. Restarts use
 :class:`~ohho_runtime.backoff.ExponentialBackoff` and the manifest's
 ``max_restarts`` / ``window_s``. The failure that reaches ``max_restarts``
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -62,6 +69,11 @@ from ohho_runtime.manifest import (
     resolve_manifest,
 )
 from ohho_runtime.metrics import MetricsEndpoint, Registry, get_registry, publish_loop
+from ohho_runtime.scheduling import (
+    OsCalls,
+    SchedulingController,
+    SchedulingRefusal,
+)
 from ohho_runtime.service import LifecycleState, ServiceBase
 from ohho_runtime.timing import LoopTimer, loop_report
 
@@ -382,10 +394,11 @@ def _grace(value: object) -> float:
 class Supervisor:
     """Start a manifest in dependency order and stop it in reverse.
 
-    ``mode`` is ``dev``: in-process, no OS-specific process control.
-    Pass a clock, usually :class:`~ohho_runtime.service.ManualClock` in
-    tests, and call :meth:`poll` after it moves. :meth:`start` does not
-    block and does not sleep.
+    ``mode="dev"`` is in-process and ignores OS scheduling. ``mode="process"``
+    uses the same lifecycle and applies scheduling on Linux. Pass a clock,
+    usually :class:`~ohho_runtime.service.ManualClock` in tests, and call
+    :meth:`poll` after it moves. :meth:`start` does not block and does not
+    sleep.
     """
 
     def __init__(
@@ -399,6 +412,8 @@ class Supervisor:
         service_factory: ServiceBuilder | None = None,
         on_do_not_operate: DoNotOperateHook | None = None,
         events: EventLog | None = None,
+        platform: str | None = None,
+        os_calls: OsCalls | None = None,
         logger: RuntimeLog | None = None,
         metrics: Registry | None = None,
         run_id: str | None = None,
@@ -407,10 +422,15 @@ class Supervisor:
         metrics_port: int | None = None,
         crash_dir: str | None = None,
     ) -> None:
-        if mode != "dev":
+        if mode not in ("dev", "process"):
             raise SupervisorError(
-                f"supervisor mode {mode!r} is not available; dev is the in-process mode"
+                f"supervisor mode {mode!r} is not available; "
+                "dev is the in-process mode and process applies OS scheduling on Linux"
             )
+        if platform is None:
+            platform = sys.platform
+        if not isinstance(platform, str) or not platform:
+            raise SupervisorError("platform must be a non-empty string")
         if not isinstance(robot_class, RobotClass):
             raise SupervisorError(
                 f"robot_class must be a RobotClass, not {type(robot_class).__name__}"
@@ -463,6 +483,13 @@ class Supervisor:
         self._stopped: list[str] = []
         self._shut_down = False
         self._shutdown_elapsed_s = 0.0
+        self._platform = platform
+        self._sched = SchedulingController(
+            mode=mode,
+            platform=platform,
+            os_calls=os_calls,
+            record=self._record_scheduling,
+        )
         factory = DevServiceFactory() if service_factory is None else service_factory
         self._runs: dict[str, _Run] = {}
         for spec in manifest.services:
@@ -504,6 +531,20 @@ class Supervisor:
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def platform(self) -> str:
+        """``sys.platform`` value used for scheduling. Tests inject this."""
+        return self._platform
+
+    @property
+    def scheduling_metrics(self) -> Mapping[str, int]:
+        """Applied, ignored, and refused scheduling counters."""
+        return self._sched.metrics.snapshot()
+
+    def scheduling_refusals(self) -> tuple[SchedulingRefusal, ...]:
+        """Refusals recorded since this supervisor was created."""
+        return tuple(self._sched.refusals)
 
     @property
     def graph(self) -> DependencyGraph:
@@ -644,6 +685,7 @@ class Supervisor:
         self._restart_due()
         self._launch_ready()
         self._refresh_state()
+        self._collect_scheduling()
 
     def shutdown(self) -> None:
         """Stop launched services in reverse start order.
@@ -654,6 +696,7 @@ class Supervisor:
         """
         if self._state is SupervisorState.STOPPED:
             return
+        self._collect_scheduling()
         self._state = SupervisorState.STOPPING
         begin = self._now()
         self._note("shutdown_start")
@@ -688,6 +731,7 @@ class Supervisor:
         self._shut_down = True
         detail = "within_grace" if self.shutdown_within_grace else "grace_exceeded"
         self._note("shutdown_done", "", detail)
+        self._collect_scheduling(final=True)
         self._state = SupervisorState.STOPPED
         try:
             self._endpoint.stop()
@@ -722,6 +766,13 @@ class Supervisor:
 
     def _now(self) -> float:
         return float(self._clock())
+
+    def _record_scheduling(self, kind: str, role: str, detail: str) -> None:
+        self._events.record(self._now(), kind, role, detail)
+
+    def _collect_scheduling(self, *, final: bool = False) -> None:
+        for run in self._runs.values():
+            self._sched.collect(run.spec, run.service, final=final)
 
     def _note(self, kind: str, role: str = "", detail: str = "") -> None:
         """Append the in-memory event and write one structured log record."""
@@ -936,6 +987,7 @@ class Supervisor:
         run.restart_at = None
         try:
             service.configure({"role": role, "loop_hz": run.spec.loop_hz})
+            self._sched.prepare(run.spec, service)
             service.start()
         except Exception as exc:
             note_exception(
@@ -947,6 +999,7 @@ class Supervisor:
             )
             self._handle_failure(role, str(exc), exc=exc)
             return
+        self._sched.finish(run.spec, service)
         if service.state is LifecycleState.READY:
             self._log_ready(run)
         elif service.state is LifecycleState.FAILED:
