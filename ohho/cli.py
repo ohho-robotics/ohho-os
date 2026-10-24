@@ -62,7 +62,8 @@ def _cmd_doctor(args) -> int:
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
-        f"  mcp         : stdio (built-in) — sim tools: {', '.join(SIM_TOOL_NAMES)}; "
+        f"  mcp         : stdio (built-in) — sim:// unless --allow-hardware; "
+        f"tools: {', '.join(SIM_TOOL_NAMES)}, emergency_stop; "
         "clients: ohho mcp connect --list"
     )
     print("  rules       : ohho rules list  |  ohho rules install --client <id>")
@@ -492,17 +493,28 @@ def _cmd_memory(args) -> int:
 
 
 def _cmd_mcp_serve(args) -> int:
+    from .adapters.errors import AdapterUnavailable
     from .mcp_server import run_stdio
-    from .mcp_tools import RobotSession
+    from .mcp_tools import RobotSession, normalize_mcp_transport
 
-    transport = "sim://" if args.sim else (args.transport or "sim://")
+    # Only this flag enables a non-sim URI. Environment variables are ignored.
+    allow_hardware = bool(getattr(args, "allow_hardware", False))
+    raw = "sim://" if args.sim else (args.transport or "sim://")
+    try:
+        transport = normalize_mcp_transport(raw, allow_hardware=allow_hardware)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     session = RobotSession(
-        robot_id=args.robot, transport=transport, runtime=args.runtime
+        robot_id=args.robot,
+        transport=transport,
+        runtime=args.runtime,
+        allow_hardware=allow_hardware,
     )
     if args.preconnect:
         try:
             session.connect()
-        except UnknownRobot as e:
+        except (UnknownRobot, AdapterUnavailable, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
     return run_stdio(session=session)
@@ -572,6 +584,15 @@ def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
         "--preconnect",
         action="store_true",
         help="connect before serving (uses --robot and transport)",
+    )
+    parser.add_argument(
+        "--allow-hardware",
+        action="store_true",
+        help=(
+            "allow a non-sim transport URI (human only). Motion stays refused: "
+            "this process cannot arm, because stdin is the MCP pipe, not a TTY. "
+            "No environment variable and no tool argument enables hardware."
+        ),
     )
 
 
@@ -1053,7 +1074,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="MCP stdio server (serve) and AI-client config (connect)",
     )
     mcp_sub = mcp.add_subparsers(dest="mcp_command")
-    serve_help = "run the stdio MCP server (sim:// tools: connect, drive, telemetry, nav_goto, look)"
+    serve_help = (
+        "run the stdio MCP server (sim:// tools: connect, drive, telemetry, "
+        "nav_goto, look, emergency_stop; a human --allow-hardware allows a "
+        "non-sim URI and cannot arm)"
+    )
     serve = mcp_sub.add_parser("serve", help=serve_help, description=serve_help)
     _add_mcp_serve_args(serve)
     # `ohho mcp --sim` keeps working: the same flags live on the parent parser.
