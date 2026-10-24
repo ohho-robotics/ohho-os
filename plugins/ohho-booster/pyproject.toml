@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ohho-booster"
 version = "0.1.0"
-description = "OhhO robot plugin: Booster T2 spec, joint groups, mode map and pinned assets."
+description = "OhhO robot plugin: Booster T2 and K1 specs, joint groups, mode map and pinned assets."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

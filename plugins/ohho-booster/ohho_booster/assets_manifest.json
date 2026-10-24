@@ -19,6 +19,22 @@
       "path": "tasks/locomotion/robots/t2/models/t2_walk.pt",
       "sha256": "acdeefbd6fff460e756f2329a7dc459504750e52c296af618b5292cd1b433aa7",
       "licence": "Apache-2.0"
+    },
+    "k1_walk": {
+      "name": "k1_walk.pt",
+      "upstream": "https://github.com/BoosterRobotics/booster_deploy",
+      "commit": "7bb1462e2ac742eba5c01659b815e2e99fbe617f",
+      "path": "tasks/locomotion/robots/k1/models/k1_walk.pt",
+      "sha256": "2d860167ed827e8d44cd65abd4c27f474904352bcb98c0cfa97c078f63e2fea5",
+      "licence": "Apache-2.0"
+    }
+  },
+  "robots": {
+    "booster-k1": {
+      "urdf": "robots/K1/K1_22dof.urdf",
+      "mjcf": "robots/K1/K1_22dof.xml",
+      "meshes": "robots/K1/meshes",
+      "policy": "k1_walk"
     }
   }
 }

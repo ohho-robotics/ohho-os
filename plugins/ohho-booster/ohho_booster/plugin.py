@@ -1,4 +1,4 @@
-"""RobotPlugin for the Booster T2 spec.
+"""RobotPlugin for the Booster T2 and K1 specs.
 
 Importing this module does not import a vendor SDK. There is no transport
 here; the hardware scheme arrives in a later change. ``transports()`` is
@@ -12,7 +12,9 @@ from typing import Any
 
 from ohho.registry import RobotSpec
 
-from .spec import booster_t2_spec
+from .spec import booster_k1_spec, booster_t2_spec
+
+_WALK_IDS = frozenset({"booster-t2", "booster-k1"})
 
 
 class BoosterPlugin:
@@ -21,7 +23,7 @@ class BoosterPlugin:
     name = "booster"
 
     def specs(self) -> list[RobotSpec]:
-        return [booster_t2_spec()]
+        return [booster_t2_spec(), booster_k1_spec()]
 
     def transports(self) -> dict[str, Any]:
         return {}
@@ -62,11 +64,11 @@ class BoosterPlugin:
         Discovery does not call this. A sim connect does. Other robot ids
         are ignored.
         """
-        if spec.id != "booster-t2":
+        if spec.id not in _WALK_IDS:
             return
         from .sim import bind_walk_config
 
-        bind_walk_config()
+        bind_walk_config(spec.id)
 
     def doctor(
         self,

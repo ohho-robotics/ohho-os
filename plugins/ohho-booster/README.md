@@ -1,15 +1,20 @@
 # ohho-booster
 
-Separately installable OhhO robot plugin. It registers the `booster-t2`
-humanoid spec (31 joints, generic mode map, pinned description assets).
+Separately installable OhhO robot plugin. It registers two humanoid specs
+and a generic mode map. Description assets are pinned, not vendored.
 Core OhhO OS does not import this package.
+
+| Robot | Joints | Status |
+|---|---|---|
+| `booster-t2` | 31 | sim only, not hardware-tested |
+| `booster-k1` | 22 (head 2, arms 4+4, legs 6+6, no waist) | sim only, not hardware-tested |
 
 ```bash
 pip install -e plugins/ohho-booster
 ohho list
 ```
 
-Uninstalling the package removes `booster-t2` from `ohho list`.
+Uninstalling the package removes `booster-t2` and `booster-k1` from `ohho list`.
 
 The plugin does not import `booster_robotics_sdk_python`. There is no
 `booster://` transport in this package.
@@ -24,8 +29,9 @@ python plugins/ohho-booster/scripts/fetch_assets.py
 ```
 
 The download is cached under `~/.ohho/assets/booster`. Meshes and the
-locomotion checkpoint are not committed. The pin is a commit plus a sha256
-for the description archive and for `t2_walk.pt` (booster_deploy, Apache-2.0).
+locomotion checkpoints are not committed. The pin is a commit plus a sha256
+for the description archive and for `t2_walk.pt` and `k1_walk.pt`
+(booster_deploy, Apache-2.0).
 
 `ohho sim --robot booster-t2` is headless MuJoCo: it prepares, enters walk
 mode, and drives. The checkpoint's training command range (vx −0.7..3.0 m/s,
@@ -39,3 +45,7 @@ python plugins/ohho-booster/scripts/walk_check.py
 ```
 
 That check stands 30 s, walks about 1 m at 0.3 m/s, turns, and stops.
+`booster-k1` uses the same script with `--robot booster-k1`. Its
+checkpoint, observation layout and the reason the serial MJCF is loaded
+are in [docs/k1-walk.md](docs/k1-walk.md). Isaac Lab's K1 task is not
+wired here.

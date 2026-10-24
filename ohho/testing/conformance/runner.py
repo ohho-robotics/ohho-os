@@ -480,6 +480,9 @@ _STOP_SETTLE_S = 2.0
 _STOP_WINDOW_S = 0.5
 _STOP_SPEED_M_S = 0.08
 _MIN_HEIGHT_M = 0.7
+# A model spawned below the class floor is shorter. Keep 70% of that spawn
+# height so a standing pose is not reported as a fall, and a collapse still is.
+_SHORT_SPAWN_FRACTION = 0.7
 _PUSH_FORCE = (0.0, 10000.0, 2000.0)
 _PUSH_S = 1.0
 _PUSH_WAIT_S = 4.0
@@ -524,7 +527,28 @@ def _command_window(gate: Any, clock: _Clock, transport: Transport) -> str | Non
     return None
 
 
-def _guard_step(transport: Transport, duration: float, gate: Any) -> str | None:
+def _height_floor(spawn_z: float | None) -> float:
+    """Lowest base height the scripted walk may reach and still be upright.
+
+    Spawns at or above ``0.7`` m keep that floor. A shorter spawn uses 70% of
+    its own height.
+    """
+    if (
+        spawn_z is None
+        or not math.isfinite(spawn_z)
+        or spawn_z <= 0.0
+        or spawn_z >= _MIN_HEIGHT_M
+    ):
+        return _MIN_HEIGHT_M
+    return _SHORT_SPAWN_FRACTION * spawn_z
+
+
+def _guard_step(
+    transport: Transport,
+    duration: float,
+    gate: Any,
+    floor: float = _MIN_HEIGHT_M,
+) -> str | None:
     """Step while the humanoid stays upright and the gate stays clear."""
     _mode_enum, fall_state_of, is_upright, _mode_of = _humanoid_views()
     elapsed = 0.0
@@ -540,7 +564,7 @@ def _guard_step(transport: Transport, duration: float, gate: Any) -> str | None:
         if _damping(transport):
             return "damped while upright"
         height = _height_m(transport)
-        if height is not None and height < _MIN_HEIGHT_M:
+        if height is not None and height < floor:
             return f"base height fell to {height:.3f} m"
     return None
 
@@ -562,6 +586,7 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
         gate.connect()
         if gate.requires_hardware_arming:
             return _fail("humanoid_walk", "sim backend required hardware arming")
+        floor = _height_floor(_height_m(transport))
         telemetry = _check_telemetry(transport)
         if telemetry.status != "pass":
             return [telemetry]
@@ -573,7 +598,7 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
             return _fail("prepare", "sim gate did not arm")
         if not gate.command("prepare"):
             return _fail("prepare", "prepare was refused")
-        problem = _guard_step(transport, _PREPARE_S, gate)
+        problem = _guard_step(transport, _PREPARE_S, gate, floor)
         if problem is not None:
             return _fail("prepare", problem)
         if mode_of(transport.read()) is not mode_enum.PREPARE:
@@ -587,7 +612,7 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
         if not gate.command("walk_mode"):
             return _fail("walk_1m", "walk_mode was refused")
         gate.send_velocity(Velocity())
-        problem = _guard_step(transport, _STAND_S, gate)
+        problem = _guard_step(transport, _STAND_S, gate, floor)
         if problem is not None:
             return _fail("walk_1m", problem)
         speed = min(_WALK_SPEED, spec.max_lin, gate.profile.max_vx)
@@ -605,7 +630,7 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
         walked = 0.0
         elapsed = 0.0
         while walked < _WALK_DISTANCE_M and elapsed < 20.0:
-            problem = _guard_step(transport, _CHUNK_S, gate)
+            problem = _guard_step(transport, _CHUNK_S, gate, floor)
             elapsed += _CHUNK_S
             if problem is not None:
                 return _fail("walk_1m", problem)
@@ -625,7 +650,7 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
         turned = 0.0
         elapsed = 0.0
         while abs(turned) < _TURN_RAD and elapsed < 15.0:
-            problem = _guard_step(transport, _CHUNK_S, gate)
+            problem = _guard_step(transport, _CHUNK_S, gate, floor)
             elapsed += _CHUNK_S
             if problem is not None:
                 return _fail("turn_90", problem)
@@ -634,11 +659,11 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
             return _fail("turn_90", f"turned {turned:.3f} rad")
 
         gate.send_velocity(Velocity())
-        problem = _guard_step(transport, _STOP_SETTLE_S, gate)
+        problem = _guard_step(transport, _STOP_SETTLE_S, gate, floor)
         if problem is not None:
             return _fail("stop", problem)
         settled = _pose(transport)
-        problem = _guard_step(transport, _STOP_WINDOW_S, gate)
+        problem = _guard_step(transport, _STOP_WINDOW_S, gate, floor)
         if problem is not None:
             return _fail("stop", problem)
         stopped = _pose(transport)
@@ -653,7 +678,7 @@ def run_humanoid_walk(transport: Transport, spec: RobotSpec) -> list[Check]:
         if problem is not None:
             return _fail("estop_holds_prepare", problem)
         gate.send_velocity(Velocity(linear_x=speed))
-        problem = _guard_step(transport, 0.4, gate)
+        problem = _guard_step(transport, 0.4, gate, floor)
         if problem is not None:
             return _fail("estop_holds_prepare", problem)
         gate.emergency_stop()

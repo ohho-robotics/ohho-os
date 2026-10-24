@@ -26,6 +26,43 @@ class WalkResult:
     stayed_up: bool
 
 
+@dataclass(frozen=True)
+class WalkLimits:
+    """Acceptance bounds for :func:`run_walk_check`. Heights are metres."""
+
+    min_height_m: float
+    stand_height_m: float
+    walked_min_m: float = 0.9
+    walked_max_m: float = 1.2
+    yaw_abs_min_rad: float = 0.45
+    stop_speed_m_s: float = 0.05
+
+
+def walk_limits(robot_id: str) -> WalkLimits:
+    """Bounds for one headless check. T2 keeps the original height floor.
+
+    K1 is shorter, so the height floor is lower. The walk, turn and stop
+    bounds are the same.
+    """
+    if robot_id == "booster-t2":
+        return WalkLimits(min_height_m=0.9, stand_height_m=0.9)
+    if robot_id == "booster-k1":
+        return WalkLimits(min_height_m=0.45, stand_height_m=0.45)
+    raise ValueError(f"no walk limits for {robot_id}")
+
+
+def within_limits(result: WalkResult, limits: WalkLimits) -> bool:
+    """True when ``result`` meets ``limits``."""
+    return (
+        result.stayed_up
+        and result.min_height_m > limits.min_height_m
+        and result.stand_height_m > limits.stand_height_m
+        and limits.walked_min_m <= result.walked_m <= limits.walked_max_m
+        and abs(result.yaw_change_rad) > limits.yaw_abs_min_rad
+        and result.stop_speed_m_s < limits.stop_speed_m_s
+    )
+
+
 def run_walk_check(
     transport: object,
     *,

@@ -104,6 +104,7 @@ def _transport(
     default_q: float | tuple[float, ...] = 0.0,
     policy: PolicyLayout | None = None,
     robot_id: str = "dummy-humanoid",
+    effort_limit: float | tuple[float, ...] | None = None,
 ) -> HumanoidMujocoTransport:
     spec = _spec(mjcf, joints, groups, robot_id=robot_id)
     config = HumanoidSimConfig(
@@ -113,6 +114,7 @@ def _transport(
         kd=kd,
         default_q=default_q,
         policy=policy,
+        effort_limit=effort_limit,
     )
     return HumanoidMujocoTransport(spec, config=config)
 
@@ -197,6 +199,21 @@ class TestObservationAndTilt(unittest.TestCase):
     def test_unknown_term_is_rejected(self):
         with self.assertRaises(ValueError):
             ObservationTerm("vendor_joint")
+
+    def test_policy_adjustments_reject_bad_values_and_keep_defaults(self):
+        layout = PolicyLayout(joint_names=("hinge",))
+        self.assertFalse(layout.actor_module)
+        self.assertEqual(layout.action_filter, 1.0)
+        self.assertEqual(layout.action_offset, ())
+        self.assertIsNone(layout.seed_last_action)
+        with self.assertRaises(ValueError):
+            PolicyLayout(joint_names=("hinge",), action_filter=0.0)
+        with self.assertRaises(ValueError):
+            PolicyLayout(joint_names=("hinge",), action_filter=1.5)
+        with self.assertRaises(ValueError):
+            PolicyLayout(joint_names=("hinge",), action_offset=(0.1, 0.2))
+        with self.assertRaises(ValueError):
+            HumanoidSimConfig(mjcf="model.xml", joint_names=("hinge",), effort_limit=-1)
 
     def test_policy_stride_follows_the_rate(self):
         self.assertEqual(policy_stride(0.001, 50), 20)
@@ -339,6 +356,19 @@ class TestPdModesAndTelemetry(unittest.TestCase):
         self.assertEqual(transport.mode, HumanoidMode.PREPARE)
         self.assertEqual(transport.effective_kp(), (10.0,))
         self.assertAlmostEqual(transport.last_tau[0], 5.0)
+        clipped = _transport(
+            HINGE,
+            ("hinge",),
+            {"link": ("hinge",)},
+            kp=10.0,
+            kd=2.0,
+            default_q=0.5,
+            effort_limit=1.0,
+        )
+        clipped.connect()
+        clipped.send_humanoid("prepare")
+        clipped.step()
+        self.assertAlmostEqual(clipped.last_tau[0], 1.0)
         resting = _transport(
             HINGE, ("hinge",), {"link": ("hinge",)}, kp=10.0, kd=2.0, default_q=0.5
         )
@@ -677,6 +707,97 @@ class _PolicyCases:
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][1], (0.2, 0.0, 0.0))
         self.assertAlmostEqual(seen[0][2], 0.02)
+
+    def test_offset_filter_and_unseeded_action(self):
+        path = Path(self.id().replace(".", "_") + "_adjust.pt")
+        if self.kind == "onnx":
+            path = path.with_suffix(".onnx")
+        self.addCleanup(path.unlink, missing_ok=True)
+        frame = observation_size(1, default_observation_terms())
+        self.write_policy(path, frame, 1, 1.0)
+        filtered = _transport(
+            HINGE,
+            ("hinge",),
+            {"link": ("hinge",)},
+            kp=0.0,
+            kd=0.0,
+            default_q=0.0,
+            policy=PolicyLayout(
+                joint_names=("hinge",),
+                checkpoint=str(path),
+                rate_hz=50,
+                action_scale=1.0,
+                action_filter=0.5,
+                action_offset=(0.0,),
+            ),
+            robot_id="filtered",
+        )
+        filtered.connect()
+        filtered.send_humanoid("walk_mode")
+        filtered.send_velocity(Velocity(1.0, 0.0, 0.0))
+        for _ in range(20):
+            filtered.step()
+        self.assertEqual(filtered.policy_calls, 1)
+        self.assertAlmostEqual(filtered.q_target[0], 0.5, places=4)
+        for _ in range(20):
+            filtered.step()
+        self.assertEqual(filtered.policy_calls, 2)
+        self.assertAlmostEqual(filtered.q_target[0], 0.75, places=4)
+
+        offset = _transport(
+            HINGE,
+            ("hinge",),
+            {"link": ("hinge",)},
+            kp=0.0,
+            kd=0.0,
+            default_q=0.4,
+            policy=PolicyLayout(
+                joint_names=("hinge",),
+                checkpoint=str(path),
+                rate_hz=50,
+                action_scale=1.0,
+                q_relative=True,
+                action_offset=(0.25,),
+                seed_last_action=False,
+            ),
+            robot_id="offset",
+        )
+        offset.connect()
+        offset.send_humanoid("walk_mode")
+        self.assertEqual(offset.policy_calls, 0)
+        self.assertEqual(offset.last_action, (0.0,))
+        offset.send_velocity(Velocity(1.0, 0.0, 0.0))
+        for _ in range(20):
+            offset.step()
+        # action is the command 1.0, then offset 0.25, on top of default 0.4
+        self.assertAlmostEqual(offset.q_target[0], 0.4 + (1.0 - 0.25), places=4)
+
+    def test_actor_submodule_is_optional(self):
+        if self.kind != "torchscript":
+            self.skipTest("ONNX has no actor submodule")
+        import torch
+
+        class _Actor(torch.nn.Module):
+            def forward(self, obs: torch.Tensor) -> torch.Tensor:
+                flat = obs.reshape(obs.shape[0], -1)
+                return flat[:, :1] + 1.0
+
+        class _Outer(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.actor = _Actor()
+
+            def forward(self, obs: torch.Tensor) -> torch.Tensor:
+                return self.actor(obs) + 10.0
+
+        path = Path(self.id().replace(".", "_") + "_actor.pt")
+        self.addCleanup(path.unlink, missing_ok=True)
+        torch.jit.script(_Outer().eval()).save(str(path))
+        full = LocomotionPolicy(str(path))
+        selected = LocomotionPolicy(str(path), actor_module=True)
+        obs = [0.25, 0.0, 0.0, 0.0]
+        self.assertAlmostEqual(full.act(obs)[0], 11.25, places=4)
+        self.assertAlmostEqual(selected.act(obs)[0], 1.25, places=4)
 
 
 def _scaled_terms() -> tuple[ObservationTerm, ...]:

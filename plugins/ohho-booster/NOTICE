@@ -27,6 +27,15 @@ Path: tasks/locomotion/robots/t2/models/t2_walk.pt
 sha256: acdeefbd6fff460e756f2329a7dc459504750e52c296af618b5292cd1b433aa7
 Licence: Apache-2.0
 
+k1_walk.pt is the same booster_deploy commit and the same licence. It is
+not vendored. The observation and action numbers in docs/k1-walk.md are
+taken from that commit. The training command range recorded there is not
+an Ohho safety cap.
+
+Path: tasks/locomotion/robots/k1/models/k1_walk.pt
+sha256: 2d860167ed827e8d44cd65abd4c27f474904352bcb98c0cfa97c078f63e2fea5
+Licence: Apache-2.0
+
 ---
 
 BSD 3-Clause License

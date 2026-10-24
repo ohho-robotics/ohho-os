@@ -127,6 +127,11 @@ class HumanoidMujocoTransport(BaseTransport):
         self._history_init = "zeros"
         self._clip_observation: float | None = None
         self._clip_action: float | None = None
+        self._actor_module = False
+        self._action_filter = 1.0
+        self._action_offset: tuple[float, ...] = ()
+        self._seed_from_pose: bool | None = None
+        self._effort: tuple[float, ...] | None = None
         self._extra: ObservationExtra | None = None
         self._history: tuple[tuple[float, ...], ...] | None = None
         self._walk_steps = 0
@@ -413,10 +418,15 @@ class HumanoidMujocoTransport(BaseTransport):
         if self._extra is not None:
             self._extra.reset()
         self._seed_last_action()
+        if self._action_filter < 1.0 and self._default_q:
+            self._q_target = list(self._default_q)
 
     def _seed_last_action(self) -> None:
         count = len(self._policy_joints)
-        if count == 0 or not self._q_relative or self._model is None:
+        seed = (
+            self._q_relative if self._seed_from_pose is None else self._seed_from_pose
+        )
+        if count == 0 or not seed or self._model is None:
             self._last_action = tuple(0.0 for _ in range(count))
             return
         positions, _velocities = self._joint_state()
@@ -500,6 +510,7 @@ class HumanoidMujocoTransport(BaseTransport):
         self._default_q = default_q
         self._q_target = list(default_q)
         self._qadr, self._dadr, self._actuators = self._map_joints(names)
+        self._effort = config.effort_limit if config.joint_names else None
         self._base_body, self._free_qadr = self._find_base(config.base_body)
         self._install_policy(config.policy, names)
         self._kp_enabled = False
@@ -518,6 +529,10 @@ class HumanoidMujocoTransport(BaseTransport):
         self._history_init = "zeros"
         self._clip_observation = None
         self._clip_action = None
+        self._actor_module = False
+        self._action_filter = 1.0
+        self._action_offset = ()
+        self._seed_from_pose = None
         self._extra = None
         self._history = None
         self._last_action = tuple(0.0 for _ in joints)
@@ -536,9 +551,17 @@ class HumanoidMujocoTransport(BaseTransport):
         self._history_init = policy.history_init
         self._clip_observation = policy.clip_observation
         self._clip_action = policy.clip_action
+        self._actor_module = policy.actor_module
+        self._action_filter = policy.action_filter
+        self._action_offset = policy.action_offset
+        self._seed_from_pose = policy.seed_last_action
         self._extra = None if policy.extra_factory is None else policy.extra_factory()
         self._last_action = tuple(0.0 for _ in order)
-        self._policy = LocomotionPolicy(policy.checkpoint, rate_hz=policy.rate_hz)
+        self._policy = LocomotionPolicy(
+            policy.checkpoint,
+            rate_hz=policy.rate_hz,
+            actor_module=policy.actor_module,
+        )
 
     def _discover_joints(self) -> tuple[str, ...]:
         mj = self._mj
@@ -687,9 +710,14 @@ class HumanoidMujocoTransport(BaseTransport):
         self._last_action = action
         for index, (name, value) in enumerate(zip(self._policy_joints, action)):
             slot = self._index[name]
-            self._q_target[slot] = (
-                self._default_q[slot] + value * self._action_scale[index]
+            offset = self._action_offset[index] if self._action_offset else 0.0
+            target = (
+                self._default_q[slot] + (value - offset) * self._action_scale[index]
             )
+            if self._action_filter < 1.0:
+                previous = self._q_target[slot]
+                target = previous + self._action_filter * (target - previous)
+            self._q_target[slot] = target
 
     def _pd(self, q: Sequence[float], dq: Sequence[float]) -> list[float]:
         if self._mode is HumanoidMode.OFF:
@@ -697,7 +725,11 @@ class HumanoidMujocoTransport(BaseTransport):
         tau: list[float] = []
         for i, (position, velocity) in enumerate(zip(q, dq)):
             kp = self._kp[i] if self._kp_enabled else 0.0
-            tau.append(kp * (self._q_target[i] - position) - self._kd[i] * velocity)
+            torque = kp * (self._q_target[i] - position) - self._kd[i] * velocity
+            if self._effort is not None:
+                limit = self._effort[i]
+                torque = max(-limit, min(limit, torque))
+            tau.append(torque)
         return tau
 
     def _write_tau(self, tau: Sequence[float]) -> None:
