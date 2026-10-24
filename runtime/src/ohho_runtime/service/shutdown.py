@@ -5,6 +5,7 @@ from __future__ import annotations
 import signal
 from collections.abc import Callable
 
+from ohho_runtime.log import note_exception
 from ohho_runtime.service.base import ServiceBase
 from ohho_runtime.service.lifecycle import IllegalTransition, ShutdownRecord
 
@@ -37,6 +38,12 @@ class SigtermShutdown:
         try:
             self._service.stop()
         except IllegalTransition as exc:
+            note_exception(
+                exc,
+                service="service",
+                event="shutdown_not_stoppable",
+                level="WARNING",
+            )
             self._service.note_shutdown(
                 ShutdownRecord(
                     action="sigterm",

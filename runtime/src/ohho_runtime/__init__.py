@@ -7,6 +7,9 @@ The supervisor lives in :mod:`ohho_runtime.supervisor`.
 ``LoopTimer``, ``LoopStats``, and ``loop_report`` load on first use so a
 worker that only imports :mod:`ohho_runtime.heartbeat` does not import
 ``ohho``.
+
+Structured logs live in :mod:`ohho_runtime.log`. Metrics live in
+:mod:`ohho_runtime.metrics`.
 """
 
 from __future__ import annotations
