@@ -1,7 +1,10 @@
 """Per-service scheduling. OS calls are fakes, so these tests do not need Linux.
 
-The privileged test is skipped unless this process is root or holds
-CAP_SYS_NICE. It is the one that reads ``/proc/<pid>/sched`` and ``taskset``.
+The privileged test runs when this process is root or holds ``CAP_SYS_NICE``.
+When the same probe the scheduler uses allows the declared realtime priority,
+that test reads ``/proc/<pid>/sched`` and ``taskset``. When ``CAP_SYS_NICE``
+is absent and ``RLIMIT_RTPRIO`` does not allow the priority, it expects that
+refusal and checks that ``SCHED_FIFO`` was not installed.
 """
 
 from __future__ import annotations
@@ -40,6 +43,11 @@ from ohho_runtime.scheduling import (
     SCHEDULING_APPLIED,
     SCHEDULING_IGNORED,
     SCHEDULING_REFUSED,
+    FieldRefusal,
+    OsCalls,
+    SchedulingRefusal,
+    _limit_allows,
+    _probe,
     apply_scheduling,
 )
 from ohho_runtime.service import LifecycleState, ManualClock, ServiceBase
@@ -362,6 +370,43 @@ class ApplyTest(unittest.TestCase):
         self.assertIn("priority 20", refusal.declared)
         self.assertIn("CAP_SYS_NICE not held", refusal.reason)
         self.assertIn("RLIMIT_RTPRIO soft 5", refusal.reason)
+
+    def test_soft_zero_rlimit_refuses_fifo_priority_one(self) -> None:
+        fake = FakeOs(cap_sys_nice=False, rtprio=(0, 0))
+        priority = 1
+        self.assertFalse(_realtime_allowed(fake, priority))
+        hint = SchedulingHint(policy="fifo", priority=priority)
+        outcome = apply_scheduling(
+            hint,
+            pid=7,
+            os_calls=fake,
+            same_process=False,
+            mlock_delegated=False,
+        )
+        self.assertEqual(fake.of("set_scheduler"), [])
+        self.assertEqual(fake.scheduler, {})
+        self.assertEqual(
+            outcome.refusals,
+            (
+                FieldRefusal(
+                    "policy",
+                    "policy fifo priority 1",
+                    "CAP_SYS_NICE not held, RLIMIT_RTPRIO soft 0",
+                ),
+            ),
+        )
+
+    def test_realtime_gate_follows_cap_or_rlimit(self) -> None:
+        self.assertTrue(_realtime_allowed(FakeOs(cap_sys_nice=True, rtprio=(0, 0)), 1))
+        self.assertTrue(_realtime_allowed(FakeOs(cap_sys_nice=False, rtprio=(1, 1)), 1))
+        self.assertTrue(
+            _realtime_allowed(
+                FakeOs(cap_sys_nice=False, rtprio=(-1, -1), infinity=-1), 1
+            )
+        )
+        self.assertFalse(
+            _realtime_allowed(FakeOs(cap_sys_nice=False, rtprio=(0, 99)), 1)
+        )
 
     def test_scheduler_error_does_not_store_a_different_priority(self) -> None:
         fake = FakeOs(cap_sys_nice=True, rtprio=(99, 99), fail=frozenset({"scheduler"}))
@@ -765,6 +810,19 @@ class SupervisorSchedulingTest(unittest.TestCase):
         self.assertIs(sup.service("perception").state, LifecycleState.READY)
 
 
+def _realtime_allowed(os_calls: OsCalls, priority: int) -> bool:
+    """Same gate as policy application: capability, or an rlimit that allows it.
+
+    Root without ``CAP_SYS_NICE`` and with ``RLIMIT_RTPRIO`` soft 0 cannot
+    set ``SCHED_FIFO``. The probe is :func:`_probe` and :func:`_limit_allows`.
+    """
+    try:
+        cap, rtprio, _memlock, infinity = _probe(os_calls)
+    except OSError:
+        return False
+    return bool(cap) or _limit_allows(rtprio[0], priority, infinity)
+
+
 def _child_env() -> dict[str, str]:
     keys = ("PATH", "HOME", "LANG", "LC_ALL", "LD_LIBRARY_PATH", "SYSTEMROOT")
     return {key: os.environ[key] for key in keys if key in os.environ}
@@ -795,33 +853,62 @@ class PrivilegedLinuxTest(unittest.TestCase):
                 priority=priority,
                 cpu_affinity=(cpu,),
             )
+            calls = LinuxOsCalls()
             sup = Supervisor(
                 load_manifest([_service(hint)]),
                 robot_class=RobotClass.MOBILE_BASE,
                 clock=ManualClock(),
                 mode="process",
                 platform="linux",
-                os_calls=LinuxOsCalls(),
+                os_calls=calls,
                 service_factory=_PidFactory(proc.pid),
             )
             sup.start()
-            self.assertEqual(
-                sup.scheduling_refusals(),
-                (),
-                sup.scheduling_refusals(),
-            )
-            sched_text = Path(f"/proc/{proc.pid}/sched").read_text(encoding="utf-8")
-            fields = parse_proc_sched(sched_text)
-            self.assertEqual(fields["policy"], os.SCHED_FIFO, sched_text)
-            self.assertEqual(fields["prio"], _MAX_RT_PRIO - 1 - priority, sched_text)
-            taskset = subprocess.run(
-                ["taskset", "-p", str(proc.pid)],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(taskset.returncode, 0, taskset.stderr)
-            self.assertEqual(parse_taskset_mask(taskset.stdout), 1 << cpu)
+            if _realtime_allowed(calls, priority):
+                self.assertEqual(
+                    sup.scheduling_refusals(),
+                    (),
+                    sup.scheduling_refusals(),
+                )
+                sched_text = Path(f"/proc/{proc.pid}/sched").read_text(encoding="utf-8")
+                fields = parse_proc_sched(sched_text)
+                self.assertEqual(fields["policy"], os.SCHED_FIFO, sched_text)
+                self.assertEqual(
+                    fields["prio"], _MAX_RT_PRIO - 1 - priority, sched_text
+                )
+                taskset = subprocess.run(
+                    ["taskset", "-p", str(proc.pid)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(taskset.returncode, 0, taskset.stderr)
+                self.assertEqual(parse_taskset_mask(taskset.stdout), 1 << cpu)
+            else:
+                cap, rtprio, _memlock, infinity = _probe(calls)
+                soft = rtprio[0]
+                self.assertFalse(bool(cap) or _limit_allows(soft, priority, infinity))
+                policy_refusals = [
+                    item for item in sup.scheduling_refusals() if item.field == "policy"
+                ]
+                self.assertEqual(
+                    policy_refusals,
+                    [
+                        SchedulingRefusal(
+                            role="perception",
+                            field="policy",
+                            declared=f"policy fifo priority {priority}",
+                            reason=(
+                                f"CAP_SYS_NICE not held, RLIMIT_RTPRIO soft {soft}"
+                            ),
+                        )
+                    ],
+                    sup.scheduling_refusals(),
+                )
+                sched_text = Path(f"/proc/{proc.pid}/sched").read_text(encoding="utf-8")
+                fields = parse_proc_sched(sched_text)
+                self.assertIn("policy", fields, sched_text)
+                self.assertNotEqual(fields["policy"], os.SCHED_FIFO, sched_text)
             self.assertIs(sup.service("perception").state, LifecycleState.READY)
         finally:
             if proc.poll() is None:
