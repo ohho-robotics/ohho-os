@@ -17,7 +17,7 @@ ohho doctor
 ohho sim --robot omnibot --seconds 2
 ```
 
-Full CLI reference: [`docs/cli.md`](docs/cli.md).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md).
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
@@ -27,10 +27,21 @@ the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
 
+Sign-in is optional. `ohho sim` and `ohho mcp serve` keep working with no
+account. `ohho login` uses the console device flow and stores a token in
+`~/.ohho/credentials.json` (mode `0600`, or a user-only ACL on Windows).
+`ohho whoami` prints the account; `ohho whoami --json` is the agent schema
+in [`docs/cli.md`](docs/cli.md). `OHHO_TOKEN` overrides the file and is never
+written to disk. The token is not printed.
+
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is
 green on `main`. Tag `v1.1.2` published `ohho-os` 1.1.2 to PyPI.
+
+## Protocol pin (not yet tagged)
+
+`protocolVersion` `1.0.0` is not in this commit (`85db848268168fa27b4ebb1b5992220b3bfacfcd`). Package version stays `1.1.3`. Do not push a `v*` tag for that pin: [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes PyPI on `v*` when the tag matches `pyproject.toml`. The paperwork name is `protocol-v1.0.0`. `ohho.telemetry.v1` and `RobotDescriptor` live in the ohho-sdk npm repository, also not yet tagged. Draft: [CHANGELOG.md](CHANGELOG.md). Human commands: [docs/releases/protocol-tag-commands.md](docs/releases/protocol-tag-commands.md).
 
 ## Tests
 
@@ -170,6 +181,44 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ohho sim-serve --backend mujoco
    ```
    Both exit non-zero and print `not built`.
+
+## Simulation Demo (OHH-134)
+
+**SIMULATION ONLY -- NOT TESTED ON PHYSICAL ROBOT HARDWARE.**
+All quadruped behaviors execute in MuJoCo simulation via local DDS loopback
+(`dds://lo?domain=1`) or in-process simulation (`sim://`). Real hardware
+bring-up is tracked as **Vision** until a physical Unitree Go2 EDU is available
+and an operator is physically present (**OHH-135**).
+
+`ohho sim-demo` executes the complete 6-shot demo sequence (typed goal -> agent
+-> Go2 in MuJoCo) and generates an evaluation report conforming to
+[`evals/schemas/sim_demo_schema.json`](evals/schemas/sim_demo_schema.json):
+
+```bash
+# Print OBS recording cues and the 60-90s shot list checklist:
+ohho sim-demo --check-overlays
+
+# Run the live demo against the MuJoCo sport shim (domain 1, interface lo):
+ohho sim-demo --transport dds://lo?domain=1 --out evals/logs/demo-run.json
+
+# Offline / automated CI execution (simulated loopback, fast execution):
+python scripts/sim_demo_harness.py --sim --fast
+```
+
+### The 6-Shot Demo Sequence (~85s target)
+1. **Shot 1 -- Doctor & Readiness (`0:00 - 0:10`)**: `ohho doctor` probes runtimes, adapters, and `unitree-go2` capabilities.
+2. **Shot 2 -- Sim & Sport Shim (`0:10 - 0:22`)**: Connects over DDS loopback (`dds://lo?domain=1`) to local MuJoCo sport shim; SafetyGate arms on loopback.
+3. **Shot 3 -- Typed Goal (`0:22 - 0:34`)**: Prompts: `"Stand up, drive forward 0.3 m, then stop and lie down."`
+4. **Shot 4 -- Tool-Call Stream (`0:34 - 0:54`)**: Streams tool calls (`stand_up`, `drive`, `stop`, `lie_down`) with live odometry feedback in MuJoCo.
+5. **Shot 5 -- SafetyGate Invariants (`0:54 - 1:12`)**: Demonstrates velocity ceiling clamp (2.0 m/s -> 0.5 m/s), dangerous command refusal (`backflip` denied), and latched E-Stop.
+6. **Shot 6 -- Honest End-Card (`1:12 - 1:25`)**: Full-screen graphic end card declaring simulation-only status, OHH-135 hardware gate, and repository links.
+
+### How Varun Records the 60--90s Video Clip
+- **Screen Layout**: 1920x1080 @ 60 FPS in OBS Studio. Left 50% Terminal (font size ~18pt), Right 50% MuJoCo Simulation Window.
+- **Top-right Watermark**: `SIMULATION ONLY -- NOT TESTED ON HARDWARE`.
+- **Terminal 1 (`ohho-quadruped`)**: `python sim/run_go2.py --scene flat` and `python -m ohho_go2.sport_shim --domain 1 --iface lo`.
+- **Terminal 2 (`ohho-os`)**: `ohho sim-demo --transport dds://lo?domain=1 --out evals/logs/demo-run.json`.
+- Full recording checklist and link instructions: see [`docs/sim-demo.md`](docs/sim-demo.md).
 
 ## Hardware Bring-Up Self-Test (`selftest`)
 

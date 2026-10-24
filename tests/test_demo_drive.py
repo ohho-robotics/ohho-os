@@ -41,7 +41,10 @@ class TestDemoDrive(unittest.TestCase):
                 self.assertEqual(default_runtime_for_transport(transport), expected)
 
     def test_has_live_odom_through_safety_gate(self) -> None:
-        from tests.test_ros2 import FakeMsgFactory, FakeOdometry, FakeRos2Node
+        try:
+            from test_ros2 import FakeMsgFactory, FakeOdometry, FakeRos2Node
+        except ImportError:
+            from tests.test_ros2 import FakeMsgFactory, FakeOdometry, FakeRos2Node
 
         spec = get_spec("omnibot")
         node = FakeRos2Node("test")
