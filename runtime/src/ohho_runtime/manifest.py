@@ -3,8 +3,9 @@
 A :class:`RuntimeManifest` is a set of services. Each service has a role,
 an entry (Python callable, console script, or ROS 2 launch/node),
 dependencies, criticality, readiness and liveness timeouts, a restart
-policy, a periodic loop rate, named QoS profiles, and an optional
-scheduling hint.
+policy, a periodic loop rate, named QoS profiles, and optional
+scheduling (``nice``, ``policy``, ``priority``, ``cpu_affinity``,
+``mlockall``). Defaults leave the policy at ``other`` and change nothing.
 
 Loading a manifest rejects an unknown QoS profile name and a dependency
 cycle. The named QoS set is small on purpose.
@@ -179,26 +180,70 @@ class RestartPolicy:
         object.__setattr__(self, "backoff_s", float(self.backoff_s))
 
 
+class SchedulePolicy(str, Enum):
+    """OS scheduler policy. ``other`` is the default and changes nothing."""
+
+    OTHER = "other"
+    FIFO = "fifo"
+    RR = "rr"
+
+
+_NICE_MIN = -20
+_NICE_MAX = 19
+_RT_MIN = 1
+_RT_MAX = 99
+
+
 @dataclass(frozen=True)
 class SchedulingHint:
-    """Optional period, priority, and CPU affinity.
+    """Optional period and OS scheduling for one service.
 
-    Configuration only. Not a hard real-time promise on a stock kernel.
+    ``period_s`` is a loop-period hint. It is not an OS call. ``nice``,
+    ``policy``, ``priority``, ``cpu_affinity``, and ``mlockall`` are
+    applied by the supervisor on Linux. Defaults are policy ``other``
+    with the other OS fields unset, which changes nothing.
+
+    ``priority`` is the realtime priority for ``fifo`` and ``rr`` (1..99).
+    It is rejected on ``other``. Do not raise policy or priority until a
+    :class:`ohho.loop_timer.LoopTimer` measurement for that service shows
+    the misses the change is for. This is configuration, not a hard
+    real-time promise on a stock kernel.
     """
 
     period_s: float | None = None
     priority: int | None = None
     cpu_affinity: tuple[int, ...] = ()
+    nice: int | None = None
+    policy: SchedulePolicy | str = SchedulePolicy.OTHER
+    mlockall: bool = False
 
     def __post_init__(self) -> None:
         if self.period_s is not None:
             if not _positive(self.period_s):
                 raise ManifestError("scheduling period_s must be a number > 0")
             object.__setattr__(self, "period_s", float(self.period_s))
+        policy = _enum_value(SchedulePolicy, self.policy, "scheduling policy")
+        object.__setattr__(self, "policy", policy)
+        if self.nice is not None and (
+            isinstance(self.nice, bool) or not isinstance(self.nice, int)
+        ):
+            raise ManifestError("scheduling nice must be an int or None")
+        if self.nice is not None and not _NICE_MIN <= self.nice <= _NICE_MAX:
+            raise ManifestError("scheduling nice must be in -20..19")
         if self.priority is not None and (
             isinstance(self.priority, bool) or not isinstance(self.priority, int)
         ):
             raise ManifestError("scheduling priority must be an int")
+        if policy is SchedulePolicy.OTHER:
+            if self.priority is not None:
+                raise ManifestError(
+                    "scheduling priority is only valid for policy fifo or rr"
+                )
+        else:
+            if self.priority is None or not _RT_MIN <= self.priority <= _RT_MAX:
+                raise ManifestError(
+                    f"scheduling policy {policy.value!r} requires priority in 1..99"
+                )
         affinity = self.cpu_affinity
         if isinstance(affinity, list):
             affinity = tuple(affinity)
@@ -210,6 +255,24 @@ class SchedulingHint:
                 raise ManifestError("cpu_affinity entries must be ints >= 0")
             cleaned.append(cpu)
         object.__setattr__(self, "cpu_affinity", tuple(cleaned))
+        if not isinstance(self.mlockall, bool):
+            raise ManifestError("scheduling mlockall must be a bool")
+
+    def requests_os_change(self) -> bool:
+        """True when an OS niceness, policy, affinity, or lock was declared.
+
+        A period-only hint, and the all-default hint, return False. The
+        supervisor then leaves the process scheduling alone.
+        """
+        if self.nice is not None:
+            return True
+        if self.policy is not SchedulePolicy.OTHER:
+            return True
+        if self.priority is not None:
+            return True
+        if self.cpu_affinity:
+            return True
+        return self.mlockall
 
 
 @dataclass(frozen=True)
@@ -908,6 +971,7 @@ __all__ = [
     "Ros2Launch",
     "Ros2Node",
     "RuntimeManifest",
+    "SchedulePolicy",
     "SchedulingHint",
     "ServiceEntry",
     "ServiceSpec",

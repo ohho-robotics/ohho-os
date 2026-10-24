@@ -27,6 +27,7 @@ from ohho_runtime.manifest import (
     Ros2Launch,
     Ros2Node,
     RuntimeManifest,
+    SchedulePolicy,
     SchedulingHint,
     ServicesProvider,
     class_default_manifest,
@@ -217,6 +218,44 @@ class ManifestLoadTest(unittest.TestCase):
         with self.assertRaises(ManifestError):
             SchedulingHint(cpu_affinity=(-1,))
 
+    def test_scheduling_defaults_do_not_request_an_os_change(self) -> None:
+        hint = SchedulingHint()
+        self.assertIs(hint.policy, SchedulePolicy.OTHER)
+        self.assertIsNone(hint.nice)
+        self.assertIsNone(hint.priority)
+        self.assertEqual(hint.cpu_affinity, ())
+        self.assertFalse(hint.mlockall)
+        self.assertFalse(hint.requests_os_change())
+        self.assertFalse(SchedulingHint(period_s=0.05).requests_os_change())
+
+    def test_realtime_policy_keeps_the_declared_priority(self) -> None:
+        with self.assertRaises(ManifestError):
+            SchedulingHint(policy="fifo")
+        with self.assertRaises(ManifestError):
+            SchedulingHint(policy=SchedulePolicy.RR, priority=0)
+        with self.assertRaises(ManifestError):
+            SchedulingHint(policy="fifo", priority=100)
+        with self.assertRaises(ManifestError):
+            SchedulingHint(priority=1)
+        with self.assertRaises(ManifestError):
+            SchedulingHint(policy="batch", priority=1)
+        with self.assertRaises(ManifestError):
+            SchedulingHint(nice=20)
+        with self.assertRaises(ManifestError):
+            SchedulingHint(nice=True)  # type: ignore[arg-type]
+        with self.assertRaises(ManifestError):
+            SchedulingHint(mlockall=1)  # type: ignore[arg-type]
+        hint = SchedulingHint(
+            policy="rr",
+            priority=2,
+            nice=-20,
+            mlockall=True,
+            cpu_affinity=(0, 1),
+        )
+        self.assertIs(hint.policy, SchedulePolicy.RR)
+        self.assertEqual(hint.priority, 2)
+        self.assertTrue(hint.requests_os_change())
+
 
 class ClassDefaultTest(unittest.TestCase):
     def test_every_robot_class_has_a_default(self) -> None:
@@ -234,6 +273,10 @@ class ClassDefaultTest(unittest.TestCase):
                 self.assertEqual(watchdog.restart.kind, RestartKind.NEVER)
                 self.assertEqual(watchdog.loop_hz, 20.0)
                 self.assertIsNotNone(watchdog.scheduling)
+                assert watchdog.scheduling is not None
+                self.assertIs(watchdog.scheduling.policy, SchedulePolicy.OTHER)
+                self.assertFalse(watchdog.scheduling.requests_os_change())
+                self.assertFalse(watchdog.scheduling.mlockall)
                 transport = manifest.service(ROLE_TRANSPORT)
                 self.assertEqual(transport.depends_on, (ROLE_SAFETY_WATCHDOG,))
                 self.assertTrue(transport.commands_motion)

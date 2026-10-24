@@ -31,9 +31,17 @@ model.
    missed deadline on a command or state stream is a fault in the failure
    table. After that deadline the last command is not replayed.
 
-4. **Scheduling and real-time config.** Period, priority, and CPU affinity
-   for each service. This is configuration. It is not a promise of hard
-   real-time on a stock kernel (see Non-goals).
+4. **Scheduling and real-time config.** Each service may set `nice`
+   (-20..19), `policy` (`other`, `fifo`, or `rr`), `priority` (1..99, and
+   only with `fifo` or `rr`), `cpu_affinity`, and `mlockall`. The default
+   is `other` with the other fields unset, which changes nothing. Period
+   stays a loop hint. This is configuration. It is not a promise of hard
+   real-time on a stock kernel (see Non-goals). Recommended order, highest
+   first: the safety watchdog and transport, then control loops, then
+   perception and the agent. Do not raise a policy or a priority until a
+   LoopTimer measurement for that service shows the misses the change is
+   for. A host that cannot apply the declared value reports the refusal.
+   It does not silently run the service at a different priority.
 
 5. **Health monitoring and heartbeats/deadlines.** Every supervised service
    has a heartbeat or a deadline. A miss feeds the failure table. Loop timing
