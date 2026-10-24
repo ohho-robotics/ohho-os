@@ -37,9 +37,21 @@ _VENDOR = re.compile(r"booster|\bt2\b", re.IGNORECASE)
 
 
 def _ensure_plugin_path() -> None:
+    """Put this checkout's plugin first.
+
+    Another checkout on ``sys.path`` can leave ``ohho_booster`` imported from
+    the wrong tree. Tests in this file always load the plugin beside this repo.
+    """
     root = str(_PLUGIN)
-    if root not in sys.path:
-        sys.path.insert(0, root)
+    if root in sys.path:
+        sys.path.remove(root)
+    sys.path.insert(0, root)
+    loaded = sys.modules.get("ohho_booster")
+    origin = getattr(loaded, "__file__", "") or ""
+    if loaded is not None and not origin.startswith(root):
+        for name in list(sys.modules):
+            if name == "ohho_booster" or name.startswith("ohho_booster."):
+                del sys.modules[name]
 
 
 @contextmanager
@@ -144,6 +156,27 @@ class TestBoosterSpec(unittest.TestCase):
         self.assertEqual(spec.sim_backend, "humanoid-mujoco")
         self.assertTrue(spec.ci_sim.enabled)
         self.assertEqual(spec.ci_sim.scenario, "humanoid_walk")
+
+    def test_sim_serve_uses_descriptor_joint_order(self):
+        from ohho import registry as registry_mod
+        from ohho.descriptor import robot_descriptor
+        from ohho.sim_stream import stream_joint_names
+        from ohho_booster.spec import booster_k1_spec
+
+        for spec in (self.spec, booster_k1_spec()):
+            previous = registry_mod._REGISTRY.get(spec.id)
+            registry_mod.register(spec)
+
+            def restore(spec_id: str = spec.id, saved: object = previous) -> None:
+                if saved is None:
+                    registry_mod._REGISTRY.pop(spec_id, None)
+                else:
+                    registry_mod._REGISTRY[spec_id] = saved
+
+            self.addCleanup(restore)
+            document = robot_descriptor(spec.id, kind="sim")
+            self.assertEqual(tuple(document["joints"]), tuple(spec.joint_names))
+            self.assertEqual(stream_joint_names(spec), tuple(spec.joint_names))
 
     def test_limits_are_not_looser_than_the_humanoid_defaults(self):
         generic = default_limits(RobotClass.HUMANOID, 0.5, 1.0)
