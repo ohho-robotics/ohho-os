@@ -157,6 +157,21 @@ def _humanoid_spec() -> RobotSpec:
     )
 
 
+class TestHeightFloor(unittest.TestCase):
+    def test_a_tall_spawn_keeps_the_class_floor(self):
+        from ohho.testing.conformance.runner import _MIN_HEIGHT_M, _height_floor
+
+        self.assertEqual(_height_floor(1.05), _MIN_HEIGHT_M)
+        self.assertEqual(_height_floor(0.7), _MIN_HEIGHT_M)
+        self.assertEqual(_height_floor(None), _MIN_HEIGHT_M)
+        self.assertEqual(_height_floor(0.0), _MIN_HEIGHT_M)
+
+    def test_a_shorter_spawn_uses_seventy_percent(self):
+        from ohho.testing.conformance.runner import _height_floor
+
+        self.assertAlmostEqual(_height_floor(0.6), 0.42)
+
+
 class TestHumanoidWalkScript(unittest.TestCase):
     def test_prepare_walk_turn_stop_estop_and_push(self):
         transport = _PlanarHumanoid()
@@ -198,6 +213,29 @@ class TestHumanoidMuJoCoConformance(unittest.TestCase):
                 raise
             self.skipTest(f"pinned assets absent: {exc}")
         result = run_robot("booster-t2")
+        self.assertEqual(result.status, "pass", format_result(result))
+        names = {check.name: check.status for check in result.checks}
+        self.assertEqual(names["prepare"], "pass")
+        self.assertEqual(names["walk_1m"], "pass")
+        self.assertEqual(names["turn_90"], "pass")
+        self.assertEqual(names["stop"], "pass")
+        self.assertEqual(names["estop_holds_prepare"], "pass")
+        self.assertEqual(names["push_damp"], "pass")
+
+    def test_booster_k1_passes(self):
+        try:
+            get_spec("booster-k1")
+        except UnknownRobot:
+            self.skipTest("humanoid plugin is not installed")
+        from ohho_booster.assets import ensure_assets
+
+        try:
+            ensure_assets(robot_id="booster-k1")
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                raise
+            self.skipTest(f"pinned assets absent: {exc}")
+        result = run_robot("booster-k1")
         self.assertEqual(result.status, "pass", format_result(result))
         names = {check.name: check.status for check in result.checks}
         self.assertEqual(names["prepare"], "pass")

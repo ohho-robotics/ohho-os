@@ -206,10 +206,13 @@ class TestBoosterDiscovery(unittest.TestCase):
             return [_builtin_entry()]
 
         with _discovered(with_plugin):
-            self.assertIn("booster-t2", {spec.id for spec in list_specs()})
+            ids = {spec.id for spec in list_specs()}
+            self.assertIn("booster-t2", ids)
+            self.assertIn("booster-k1", ids)
             code, listed = _stdout(["list"])
             self.assertEqual(code, 0)
             self.assertIn("booster-t2", listed)
+            self.assertIn("booster-k1", listed)
             code, report = _stdout(["list", "--plugins"])
             self.assertEqual(code, 0)
             self.assertIn("booster: booster-t2", report)
@@ -225,14 +228,22 @@ class TestBoosterDiscovery(unittest.TestCase):
             self.assertEqual(rows["booster-t2"]["scenario"], "humanoid_walk")
             self.assertIn("/", rows["booster-t2"]["asset_repository"])
             self.assertEqual(len(rows["booster-t2"]["asset_commit"]), 40)
+            self.assertIn("booster-k1", rows)
+            self.assertEqual(rows["booster-k1"]["robot_class"], "humanoid")
+            self.assertEqual(rows["booster-k1"]["plugin"], "booster")
+            self.assertEqual(rows["booster-k1"]["scenario"], "humanoid_walk")
+            self.assertEqual(len(rows["booster-k1"]["asset_commit"]), 40)
             self.assertIn("omnibot", rows)
             self.assertIn("sim", rows)
 
         with _discovered(without_plugin):
-            self.assertNotIn("booster-t2", {spec.id for spec in list_specs()})
+            ids = {spec.id for spec in list_specs()}
+            self.assertNotIn("booster-t2", ids)
+            self.assertNotIn("booster-k1", ids)
             code, listed = _stdout(["list"])
             self.assertEqual(code, 0)
             self.assertNotIn("booster-t2", listed)
+            self.assertNotIn("booster-k1", listed)
 
     def test_plugin_declares_no_transport(self):
         bot = self.factory()
@@ -501,6 +512,7 @@ class TestPipInstallAndUninstall(unittest.TestCase):
             )
             self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
             self.assertIn("booster-t2", listed.stdout)
+            self.assertIn("booster-k1", listed.stdout)
             removed = run("-m", "pip", "uninstall", "-y", "ohho-booster")
             self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
             after = run(
@@ -509,6 +521,7 @@ class TestPipInstallAndUninstall(unittest.TestCase):
             )
             self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
             self.assertNotIn("booster-t2", after.stdout)
+            self.assertNotIn("booster-k1", after.stdout)
 
 
 if __name__ == "__main__":

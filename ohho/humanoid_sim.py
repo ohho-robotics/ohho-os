@@ -99,10 +99,17 @@ class PolicyLayout:
     ``history_length`` stacks that many frames, oldest first, before the
     network call. ``history_init`` ``zeros`` fills every frame but the latest
     with zeros on the first call. ``repeat`` copies the first frame. Length 1
-    leaves the observation as one frame. ``clip_observation`` and
+    leaves the observation as one frame.     ``clip_observation`` and
     ``clip_action`` limit each element when set. ``extra_factory`` builds the
     object whose values are appended to each frame. An empty ``checkpoint``
     means no policy is loaded.
+
+    ``actor_module`` selects a TorchScript ``actor`` submodule when the file
+    has one. ``action_filter`` in ``(0, 1)`` low-passes each position target;
+    ``1`` writes the target immediately. ``action_offset`` is subtracted from
+    the network output before ``action_scale``. ``seed_last_action`` ``None``
+    keeps the previous rule: seed the last action from the pose when
+    ``q_relative`` is set, otherwise start at zero.
     """
 
     joint_names: tuple[str, ...] = ()
@@ -118,6 +125,10 @@ class PolicyLayout:
     clip_observation: float | None = None
     clip_action: float | None = None
     extra_factory: Callable[[], ObservationExtra] | None = None
+    actor_module: bool = False
+    action_filter: float = 1.0
+    action_offset: tuple[float, ...] = ()
+    seed_last_action: bool | None = None
 
     def __post_init__(self) -> None:
         names = _names(self.joint_names, "policy joint_names")
@@ -148,6 +159,30 @@ class PolicyLayout:
         object.__setattr__(self, "clip_action", _optional_clip(self.clip_action))
         if self.extra_factory is not None and not callable(self.extra_factory):
             raise TypeError("extra_factory must be callable or None")
+        if not isinstance(self.actor_module, bool):
+            raise TypeError("actor_module must be a bool")
+        if isinstance(self.action_filter, bool) or not isinstance(
+            self.action_filter, (int, float)
+        ):
+            raise TypeError("action_filter must be a number")
+        action_filter = float(self.action_filter)
+        if not math.isfinite(action_filter) or action_filter <= 0 or action_filter > 1:
+            raise ValueError("action_filter must be in (0, 1]")
+        object.__setattr__(self, "action_filter", action_filter)
+        if isinstance(self.action_offset, (str, bytes)) or not isinstance(
+            self.action_offset, Sequence
+        ):
+            raise TypeError("action_offset must be a sequence of numbers")
+        offset = tuple(_finite("action_offset", item) for item in self.action_offset)
+        if offset and len(offset) != len(names):
+            raise ValueError(
+                f"action_offset must have {len(names)} values, got {len(offset)}"
+            )
+        object.__setattr__(self, "action_offset", offset)
+        if self.seed_last_action is not None and not isinstance(
+            self.seed_last_action, bool
+        ):
+            raise TypeError("seed_last_action must be a bool or None")
 
 
 @dataclass(frozen=True)
@@ -160,6 +195,8 @@ class HumanoidSimConfig:
     and ``custom`` run with it left as ``None``. ``timestep`` replaces the
     MJCF timestep when set. ``base_pos`` is the floating-base ``(x, y, z)``
     written on connect, with the joints placed at ``default_q``.
+    ``effort_limit`` clips each PD torque when set. ``None`` leaves the
+    torque unclipped apart from the MJCF actuator range.
     """
 
     mjcf: str
@@ -171,6 +208,7 @@ class HumanoidSimConfig:
     base_body: str = ""
     timestep: float | None = None
     base_pos: tuple[float, float, float] | None = None
+    effort_limit: Number | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mjcf, str) or not self.mjcf.strip():
@@ -194,6 +232,7 @@ class HumanoidSimConfig:
                 raise ValueError("timestep must be > 0")
             object.__setattr__(self, "timestep", step)
         object.__setattr__(self, "base_pos", _optional_vec3(self.base_pos))
+        object.__setattr__(self, "effort_limit", _effort_limit(self.effort_limit, n))
 
 
 _BOUND: dict[str, HumanoidSimConfig] = {}
@@ -441,6 +480,16 @@ def _names(values: Sequence[str], where: str) -> tuple[str, ...]:
     if len(set(names)) != len(names):
         raise ValueError(f"{where} must not repeat a joint")
     return names
+
+
+def _effort_limit(value: Number | None, n: int) -> tuple[float, ...] | None:
+    """Per-joint torque clip. ``None`` means the PD torque is not clipped here."""
+    if value is None:
+        return None
+    limits = _broadcast(value, n, "effort_limit")
+    if any(item < 0 for item in limits):
+        raise ValueError("effort_limit must be >= 0")
+    return limits
 
 
 def _broadcast(value: Number, n: int, where: str) -> tuple[float, ...]:

@@ -23,10 +23,18 @@ class LocomotionPolicy:
     ``.onnx`` uses ONNX Runtime. ``.pt`` is a TorchScript module from
     ``torch.jit.save``. The module's forward takes a float tensor of shape
     ``(1, obs)`` and returns ``(1, action)``. ``calls`` counts inferences.
+
+    ``actor_module`` uses the file's ``actor`` submodule for a TorchScript
+    checkpoint. An ONNX file is already one graph, so the flag does not
+    change that path.
     """
 
     def __init__(
-        self, checkpoint: str, rate_hz: float = DEFAULT_POLICY_RATE_HZ
+        self,
+        checkpoint: str,
+        rate_hz: float = DEFAULT_POLICY_RATE_HZ,
+        *,
+        actor_module: bool = False,
     ) -> None:
         path = Path(checkpoint)
         if not path.is_file():
@@ -42,8 +50,11 @@ class LocomotionPolicy:
             )
         if rate_hz <= 0:
             raise ValueError("rate_hz must be > 0")
+        if not isinstance(actor_module, bool):
+            raise TypeError("actor_module must be a bool")
         self.path = path
         self.rate_hz = float(rate_hz)
+        self._actor_module = actor_module
         self.calls = 0
         self._kind = kind
         self._session: object | None = None
@@ -83,6 +94,12 @@ class LocomotionPolicy:
             ) from exc
         module = torch.jit.load(str(self.path), map_location="cpu")
         module.eval()
+        if self._actor_module:
+            actor = getattr(module, "actor", None)
+            if not callable(actor):
+                raise ValueError("TorchScript policy has no actor module")
+            module = actor
+            module.eval()
         self._module = module
 
     def act(self, observation: Sequence[float]) -> tuple[float, ...]:

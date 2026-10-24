@@ -52,6 +52,7 @@ def load_manifest() -> dict[str, Any]:
     if not isinstance(paths, dict):
         raise ValueError("asset manifest paths must be an object")
     _policy_pin(data["policies"])
+    _robot_entries(data)
     return data
 
 
@@ -62,10 +63,13 @@ def archive_url(manifest: Mapping[str, Any] | None = None) -> str:
     return f"{upstream}/archive/{pin['commit']}.tar.gz"
 
 
-def policy_url(manifest: Mapping[str, Any] | None = None) -> str:
-    """Raw URL for the pinned locomotion checkpoint."""
+def policy_url(manifest: Mapping[str, Any] | None = None, *, name: str = "walk") -> str:
+    """Raw URL for one pinned locomotion checkpoint. ``walk`` is T2."""
     pin = dict(manifest) if manifest is not None else load_manifest()
-    walk = pin["policies"]["walk"]
+    policies = pin["policies"]
+    if name not in policies:
+        raise ValueError(f"asset manifest has no policies.{name}")
+    walk = policies[name]
     upstream = str(walk["upstream"]).rstrip("/")
     commit = str(walk["commit"])
     rel = str(walk["path"]).lstrip("/")
@@ -139,14 +143,20 @@ def fetch_policy(
     *,
     url: str | None = None,
     timeout: float = 120,
+    name: str = "walk",
 ) -> Path:
-    """Download the pinned locomotion checkpoint and return its path.
+    """Download one pinned locomotion checkpoint and return its path.
 
-    A file already in the cache is reused when its sha256 matches the pin.
-    ``url`` overrides the download location for tests.
+    ``name`` selects ``policies.<name>``. The default ``walk`` is the T2
+    checkpoint, which is what existing callers fetch. A file already in the
+    cache is reused when its sha256 matches the pin. ``url`` overrides the
+    download location for tests.
     """
     pin = load_manifest()
-    walk = pin["policies"]["walk"]
+    policies = pin["policies"]
+    if name not in policies:
+        raise ValueError(f"asset manifest has no policies.{name}")
+    walk = policies[name]
     commit = str(walk["commit"])
     expected = str(walk["sha256"])
     filename = Path(str(walk["path"])).name
@@ -155,7 +165,7 @@ def fetch_policy(
     if url is None and path.is_file() and _sha256_file(path) == expected:
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    _download(url or policy_url(pin), path, timeout=timeout)
+    _download(url or policy_url(pin, name=name), path, timeout=timeout)
     _require_sha256(path, expected, filename)
     return path
 
@@ -201,44 +211,118 @@ def materialise_checkout(dest: Path) -> tuple[Path, Path]:
     if not mjcf.is_file():
         fetched = fetch_assets(root)
         mjcf = fetched / str(pin["paths"]["mjcf"])
-    checkpoint = fetch_policy(root)
+    checkpoint = _fetch_policies(root)
     return mjcf, checkpoint
 
 
-def ensure_assets(dest: Path | None = None) -> tuple[Path, Path]:
-    """Return ``(mjcf, checkpoint)`` from the cache, fetching anything missing.
+def ensure_assets(
+    dest: Path | None = None, *, robot_id: str = "booster-t2"
+) -> tuple[Path, Path]:
+    """Return ``(mjcf, checkpoint)`` for ``robot_id``, fetching anything missing.
 
-    A sim-matrix checkout at ``.sim-assets/booster`` wins over the home cache
-    when ``dest`` is omitted, so CI does not download the mesh archive twice.
+    The default robot is ``booster-t2``. A sim-matrix checkout at
+    ``.sim-assets/booster`` wins over the home cache when ``dest`` is omitted,
+    so CI does not download the mesh archive twice.
     """
     if dest is None:
         checkout = matrix_checkout()
         if checkout is not None:
-            return materialise_checkout(checkout)
+            materialise_checkout(checkout)
+            return _pair_from_root(checkout, robot_id, policy_dest=checkout)
     root = fetch_assets(dest)
-    checkpoint = fetch_policy(dest)
-    mjcf = root / str(load_manifest()["paths"]["mjcf"])
+    return _pair_from_root(root, robot_id, policy_dest=dest)
+
+
+def _robot_files(
+    pin: Mapping[str, Any], robot_id: str
+) -> tuple[Mapping[str, Any], str]:
+    """Relative description paths and the policy name for ``robot_id``.
+
+    T2 stays on the top-level ``paths`` and ``policies.walk`` so older pins
+    still resolve. Other ids come from ``robots``.
+    """
+    if robot_id == "booster-t2":
+        return pin["paths"], "walk"
+    robots = pin.get("robots")
+    if not isinstance(robots, dict) or robot_id not in robots:
+        raise ValueError(f"asset manifest has no robot {robot_id}")
+    entry = robots[robot_id]
+    if not isinstance(entry, dict):
+        raise ValueError(f"asset manifest robots.{robot_id} must be an object")
+    return entry, str(entry["policy"])
+
+
+def _pair_from_root(
+    root: Path, robot_id: str, *, policy_dest: Path | None
+) -> tuple[Path, Path]:
+    pin = load_manifest()
+    paths, policy_name = _robot_files(pin, robot_id)
+    rel = paths.get("mjcf")
+    if not isinstance(rel, str) or not rel:
+        raise ValueError(f"asset manifest has no mjcf for {robot_id}")
+    mjcf = root / rel
+    if not mjcf.is_file():
+        raise ValueError(f"pinned description is missing {rel}")
+    # ``policy_dest`` None is the home cache. A matrix checkout passes itself.
+    checkpoint = fetch_policy(policy_dest, name=policy_name)
     return mjcf, checkpoint
+
+
+def _fetch_policies(root: Path) -> Path:
+    """Store every pinned checkpoint under ``root``. Return the walk file."""
+    pin = load_manifest()
+    checkpoint: Path | None = None
+    for name in pin["policies"]:
+        path = fetch_policy(root, name=name)
+        if name == "walk":
+            checkpoint = path
+    if checkpoint is None:
+        raise ValueError("asset manifest policies.walk is required")
+    return checkpoint
 
 
 def _policy_pin(policies: object) -> None:
     if not isinstance(policies, dict) or "walk" not in policies:
         raise ValueError("asset manifest policies.walk is required")
-    walk = policies["walk"]
-    if not isinstance(walk, dict):
-        raise ValueError("asset manifest policies.walk must be an object")
-    for key in ("upstream", "commit", "path", "sha256", "licence"):
-        if key not in walk:
-            raise ValueError(f"asset manifest policies.walk missing {key}")
-    commit = walk["commit"]
-    if not isinstance(commit, str) or len(commit) != 40:
-        raise ValueError("policy commit must be a 40-character sha")
-    path = walk["path"]
-    if not isinstance(path, str) or not path or path.startswith(("/", "\\")):
-        raise ValueError("policy path must be a relative path")
-    if ".." in Path(path).parts:
-        raise ValueError("policy path must stay inside the upstream tree")
-    walk["sha256"] = _sha256_text(walk["sha256"], "policy sha256")
+    for name, walk in policies.items():
+        if not isinstance(walk, dict):
+            raise ValueError(f"asset manifest policies.{name} must be an object")
+        for key in ("upstream", "commit", "path", "sha256", "licence"):
+            if key not in walk:
+                raise ValueError(f"asset manifest policies.{name} missing {key}")
+        commit = walk["commit"]
+        if not isinstance(commit, str) or len(commit) != 40:
+            raise ValueError(f"policies.{name} commit must be a 40-character sha")
+        path = walk["path"]
+        if not isinstance(path, str) or not path or path.startswith(("/", "\\")):
+            raise ValueError(f"policies.{name} path must be a relative path")
+        if ".." in Path(path).parts:
+            raise ValueError(f"policies.{name} path must stay inside the upstream tree")
+        walk["sha256"] = _sha256_text(walk["sha256"], f"policies.{name} sha256")
+
+
+def _robot_entries(data: Mapping[str, Any]) -> None:
+    """Optional ``robots`` object. T2 stays on the top-level paths."""
+    robots = data.get("robots")
+    if robots is None:
+        return
+    if not isinstance(robots, dict):
+        raise ValueError("asset manifest robots must be an object")
+    policies = data["policies"]
+    for robot_id, entry in robots.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"asset manifest robots.{robot_id} must be an object")
+        for key in ("urdf", "mjcf", "meshes", "policy"):
+            if key not in entry or not isinstance(entry[key], str) or not entry[key]:
+                raise ValueError(f"asset manifest robots.{robot_id}.{key} is required")
+            if ".." in Path(str(entry[key])).parts:
+                raise ValueError(
+                    f"asset manifest robots.{robot_id}.{key} must stay relative"
+                )
+        if entry["policy"] not in policies:
+            raise ValueError(
+                f"asset manifest robots.{robot_id} policy {entry['policy']!r} is missing"
+            )
 
 
 def _sha256_text(value: object, where: str) -> str:
@@ -366,9 +450,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     root = fetch_assets(args.dest, url=args.url)
-    checkpoint = fetch_policy(args.dest, url=args.policy_url)
     print(root)
-    print(checkpoint)
+    pin = load_manifest()
+    for name in pin["policies"]:
+        url = args.policy_url if name == "walk" else None
+        print(fetch_policy(args.dest, url=url, name=name))
     return 0
 
 
