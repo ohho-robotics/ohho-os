@@ -113,6 +113,7 @@ class SimServe:
         port: int = 8765,
         rosbridge: str = "ws://localhost:9090",
         rate_hz: float = 20.0,
+        viewer: bool = False,
     ) -> None:
         if backend not in ("sim", "ros2"):
             raise ValueError(f"unsupported backend '{backend}' (choose: sim, ros2)")
@@ -123,6 +124,7 @@ class SimServe:
         self.port = port
         self.rosbridge_url = rosbridge
         self.rate_hz = rate_hz
+        self.viewer = bool(viewer)
 
         # Session safety state
         self._deadman: bool = False
@@ -150,6 +152,10 @@ class SimServe:
 
     async def start(self) -> None:
         """Start backend connections and the WebSocket server."""
+        if self.viewer and self.backend != "sim":
+            raise SimServeUnavailable(
+                "--viewer opens the native MuJoCo window for the in-process sim backend"
+            )
         if self.backend == "ros2" and not is_ros2_available():
             raise SimServeUnavailable(
                 "backend 'ros2' depends on the [ros2] extra (source your ROS 2 environment or set OHHO_ROSBRIDGE)."
@@ -166,39 +172,54 @@ class SimServe:
         self._loop = asyncio.get_running_loop()
         self._running = True
 
-        if self.backend == "sim":
-            from .robot import Robot
+        try:
+            if self.backend == "sim":
+                from .robot import Robot
 
-            self._bot = Robot.connect(
-                self.robot_id, transport="sim://", runtime="native"
-            )
-        elif self.backend == "ros2":
-            self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
-            await self._rosbridge_ws.send(
-                json.dumps(
-                    {
-                        "op": "subscribe",
-                        "topic": "/odom",
-                        "type": "nav_msgs/Odometry",
-                    }
+                self._bot = Robot.connect(
+                    self.robot_id,
+                    transport="sim://",
+                    runtime="native",
+                    viewer=self.viewer,
                 )
-            )
-            await self._rosbridge_ws.send(
-                json.dumps(
-                    {
-                        "op": "subscribe",
-                        "topic": "/joint_states",
-                        "type": "sensor_msgs/JointState",
-                    }
+            elif self.backend == "ros2":
+                self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
+                await self._rosbridge_ws.send(
+                    json.dumps(
+                        {
+                            "op": "subscribe",
+                            "topic": "/odom",
+                            "type": "nav_msgs/Odometry",
+                        }
+                    )
                 )
+                await self._rosbridge_ws.send(
+                    json.dumps(
+                        {
+                            "op": "subscribe",
+                            "topic": "/joint_states",
+                            "type": "sensor_msgs/JointState",
+                        }
+                    )
+                )
+                self._rosbridge_task = asyncio.create_task(self._rosbridge_loop())
+
+            self._server = await websockets.serve(
+                self._handle_client, self.host, self.port
             )
-            self._rosbridge_task = asyncio.create_task(self._rosbridge_loop())
+            if self._server.sockets:
+                self.port = self._server.sockets[0].getsockname()[1]
 
-        self._server = await websockets.serve(self._handle_client, self.host, self.port)
-        if self._server.sockets:
-            self.port = self._server.sockets[0].getsockname()[1]
-
-        self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+            if self.viewer:
+                print(
+                    "MuJoCo viewer open, synced to the sim loop "
+                    f"(WebSocket {self.host}:{self.port})",
+                    flush=True,
+                )
+            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        except Exception:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         """Shut down the server and disconnect backends."""
@@ -501,6 +522,7 @@ def serve_sim(
     rosbridge: str = "ws://localhost:9090",
     rate_hz: float = 20.0,
     stop_event: Optional[threading.Event] = None,
+    viewer: bool = False,
 ) -> None:
     """Serve a robot simulation or rosbridge gateway over WebSocket.
 
@@ -512,6 +534,8 @@ def serve_sim(
         rosbridge: rosbridge WebSocket URL (for "ros2" backend).
         rate_hz: telemetry broadcast rate in Hz (default 20.0).
         stop_event: optional threading.Event to request server shutdown.
+        viewer: open MuJoCo's passive viewer when the in-process sim is MuJoCo.
+            Headless is the default. On macOS, run under ``mjpython``.
     """
     server = SimServe(
         backend=backend,
@@ -520,5 +544,6 @@ def serve_sim(
         port=port,
         rosbridge=rosbridge,
         rate_hz=rate_hz,
+        viewer=viewer,
     )
     server.run(stop_event=stop_event)

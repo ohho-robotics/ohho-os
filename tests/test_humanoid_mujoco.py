@@ -60,6 +60,7 @@ _NEW_CORE = (
     Path("ohho/humanoid_sim.py"),
     Path("ohho/policy_runner.py"),
     Path("ohho/adapters/humanoid_mujoco.py"),
+    Path("ohho/mujoco_viewer.py"),
 )
 _VENDOR = re.compile(
     r"booster|unitree|yahboom|omnibot|crazyflie|\bt2\b|\bgo2\b|\bpx4\b",
@@ -707,6 +708,103 @@ class TestTorchScriptPolicy(_PolicyCases, unittest.TestCase):
 class TestOnnxPolicy(_PolicyCases, unittest.TestCase):
     write_policy = staticmethod(_write_onnx)
     kind = "onnx"
+
+
+class _FakeViewer:
+    def __init__(self) -> None:
+        self.syncs = 0
+        self.closes = 0
+        self.running = True
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def sync(self) -> None:
+        self.syncs += 1
+
+    def close(self) -> None:
+        self.closes += 1
+        self.running = False
+
+
+@unittest.skipUnless(_HAS_MUJOCO, "mujoco is not installed")
+class TestPassiveViewerSync(unittest.TestCase):
+    def test_step_syncs_the_handle_and_disconnect_closes_it(self) -> None:
+        transport = _transport(DUMMY, DUMMY_JOINTS, DUMMY_GROUPS)
+        transport.connect()
+        viewer = _FakeViewer()
+        transport.attach_viewer(viewer)
+        transport.step()
+        transport.step()
+        self.assertEqual(viewer.syncs, 2)
+        self.assertTrue(transport.viewer_is_running())
+        viewer.running = False
+        transport.step()
+        self.assertEqual(viewer.syncs, 2)
+        self.assertFalse(transport.viewer_is_running())
+        transport.disconnect()
+        self.assertEqual(viewer.closes, 1)
+        self.assertFalse(transport.viewer_is_running())
+
+    def test_a_viewer_error_does_not_fail_the_step(self) -> None:
+        transport = _transport(HINGE, ("hinge",), {"link": ("hinge",)})
+        transport.connect()
+
+        class _Boom:
+            def is_running(self) -> bool:
+                return True
+
+            def sync(self) -> None:
+                raise RuntimeError("gl")
+
+            def close(self) -> None:
+                raise RuntimeError("close")
+
+        transport.attach_viewer(_Boom())
+        snap = transport.step()
+        self.assertIsNotNone(snap.timestamp)
+        transport.disconnect()
+
+    def test_step_holds_the_viewer_lock_around_physics(self) -> None:
+        transport = _transport(HINGE, ("hinge",), {"link": ("hinge",)})
+        transport.connect()
+        held: list[bool] = []
+
+        class _Locked:
+            def __init__(self) -> None:
+                self.syncs = 0
+                self.inside = False
+
+            def is_running(self) -> bool:
+                return True
+
+            def lock(self) -> object:
+                owner = self
+
+                class _Guard:
+                    def __enter__(self) -> None:
+                        owner.inside = True
+
+                    def __exit__(self, *exc: object) -> bool:
+                        held.append(owner.inside)
+                        owner.inside = False
+                        return False
+
+                return _Guard()
+
+            def sync(self) -> None:
+                self.syncs += 1
+                held.append(self.inside)
+
+            def close(self) -> None:
+                return None
+
+        viewer = _Locked()
+        transport.attach_viewer(viewer)
+        transport.step()
+        self.assertEqual(held, [True, False])
+        self.assertEqual(viewer.syncs, 1)
+        transport.disconnect()
 
 
 if __name__ == "__main__":

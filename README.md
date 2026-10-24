@@ -23,6 +23,27 @@ the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
 
+## MuJoCo viewer
+
+`ohho sim` and `ohho sim-serve` stay headless unless you pass `--viewer`.
+That flag calls `mujoco.viewer.launch_passive` and syncs the window from the
+sim backend's existing loop. It applies to any robot whose in-process sim
+exposes a MuJoCo model. A kinematic simulator exits with an error. With no
+display (CI, or SSH without `DISPLAY` / `WAYLAND_DISPLAY` on Linux, or no
+monitor on Windows) the process exits with an error and does not open GLFW.
+On Windows, a process that cannot create an OpenGL context gets the same
+error. `glfwCreateWindow` aborts the process in that case, so the viewer
+tries a tiny window in a child process first.
+
+On macOS the window has to be created on the process main thread. The
+ordinary `python` launcher does not do that. `mjpython` ships with the
+`mujoco` package (`pip install 'ohho-os[humanoid-sim]'`):
+
+```bash
+mjpython -m ohho sim --robot <id> --viewer
+mjpython -m ohho sim-serve --robot <id> --viewer
+```
+
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
 then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is

@@ -14,10 +14,16 @@ The MJCF, joint order, gains, observation layout and checkpoint come from
 :class:`~ohho.humanoid_sim.HumanoidSimConfig`.
 
 MuJoCo is imported on ``connect``, not when this module loads.
+
+A passive viewer is optional. ``attach_viewer`` stores a
+``mujoco.viewer.launch_passive`` handle, and each :meth:`step` syncs it.
+The live ``start_sim`` loop calls :meth:`step`, so the window follows that
+loop. Headless operation never opens one.
 """
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -139,6 +145,8 @@ class HumanoidMujocoTransport(BaseTransport):
         self.last_tau: tuple[float, ...] = ()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._viewer: object | None = None
+        self._viewer_lock = threading.Lock()
 
     @property
     def mode(self) -> HumanoidMode:
@@ -184,6 +192,44 @@ class HumanoidMujocoTransport(BaseTransport):
         self._require_model()
         pos = self._data.xpos[self._base_body]
         return (float(pos[0]), float(pos[1]), float(pos[2]))
+
+    @property
+    def mujoco_model(self) -> Any:
+        """Live MuJoCo model, or ``None`` before :meth:`connect`."""
+        return self._model
+
+    @property
+    def mujoco_data(self) -> Any:
+        """Live MuJoCo data. The sim loop is the only writer."""
+        return self._data
+
+    def attach_viewer(self, handle: object) -> None:
+        """Show ``handle`` and sync it from :meth:`step`.
+
+        ``handle`` is the object returned by ``mujoco.viewer.launch_passive``.
+        A previous handle is closed.
+        """
+        with self._viewer_lock:
+            previous = self._viewer
+            self._viewer = handle
+        if previous is not None and previous is not handle:
+            from ..mujoco_viewer import close_viewer
+
+            close_viewer(previous)
+
+    def viewer_is_running(self) -> bool:
+        """True while an attached passive viewer still has its window."""
+        with self._viewer_lock:
+            handle = self._viewer
+        if handle is None:
+            return False
+        running = getattr(handle, "is_running", None)
+        if not callable(running):
+            return True
+        try:
+            return bool(running())
+        except Exception:
+            return False
 
     def policy_stride_steps(self) -> int:
         """Model steps between policy evaluations at the current rate."""
@@ -236,6 +282,7 @@ class HumanoidMujocoTransport(BaseTransport):
 
     def disconnect(self) -> None:
         self.stop_sim()
+        self._close_viewer()
         self._state = ConnectionState.DISCONNECTED
         self._emit_status(self.status())
 
@@ -353,14 +400,20 @@ class HumanoidMujocoTransport(BaseTransport):
             if dt <= 0:
                 raise ValueError("dt must be > 0")
             count = max(1, int(round(dt / timestep)))
-        for _ in range(count):
-            self._substep()
-        snap = self.read()
+        with self._viewer_physics_guard():
+            for _ in range(count):
+                self._substep()
+            snap = self.read()
         self._emit_telemetry(snap)
+        self._sync_viewer()
         return snap
 
     def start_sim(self, hz: float | None = None) -> None:
-        """Background loop at the model rate. Tests call :meth:`step` instead."""
+        """Background loop at the model rate. Tests call :meth:`step` instead.
+
+        Each iteration calls :meth:`step`, which syncs an attached passive
+        viewer. The window is not opened here.
+        """
         if self._thread is not None:
             return
         self._require_model()
@@ -383,6 +436,48 @@ class HumanoidMujocoTransport(BaseTransport):
         if thread is not None:
             thread.join(timeout=1.0)
             self._thread = None
+
+    def _viewer_physics_guard(self) -> contextlib.AbstractContextManager[object]:
+        """Lock the passive viewer around ``mj_step``.
+
+        The live loop steps on a background thread while the viewer renders
+        on its own thread. MuJoCo's handle lock keeps those two off the same
+        ``mjData``. ``sync`` takes the lock itself, so it stays outside this
+        guard. No viewer means the step runs as it always has.
+        """
+        with self._viewer_lock:
+            handle = self._viewer
+        if handle is None:
+            return contextlib.nullcontext()
+        lock = getattr(handle, "lock", None)
+        if not callable(lock):
+            return contextlib.nullcontext()
+        try:
+            guard = lock()
+        except Exception:
+            return contextlib.nullcontext()
+        if not hasattr(guard, "__enter__"):
+            return contextlib.nullcontext()
+        return guard
+
+    def _sync_viewer(self) -> None:
+        with self._viewer_lock:
+            handle = self._viewer
+        if handle is None:
+            return
+        from ..mujoco_viewer import sync_viewer
+
+        sync_viewer(handle)
+
+    def _close_viewer(self) -> None:
+        with self._viewer_lock:
+            handle = self._viewer
+            self._viewer = None
+        if handle is None:
+            return
+        from ..mujoco_viewer import close_viewer
+
+        close_viewer(handle)
 
     def _restore_mode(self, requested: HumanoidMode) -> None:
         if requested is HumanoidMode.PREPARE:

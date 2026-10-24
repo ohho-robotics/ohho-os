@@ -137,22 +137,59 @@ def _cmd_connect(args) -> int:
     return 0
 
 
-def _cmd_sim(args) -> int:
+def _viewer_open(bot: Robot) -> bool | None:
+    """Whether an attached native viewer still has its window.
+
+    ``None`` means this transport does not host a viewer.
+    """
+    fn = getattr(bot.transport, "viewer_is_running", None)
+    if not callable(fn):
+        return None
     try:
-        bot = Robot.connect(args.robot, transport="sim://", runtime="native")
-    except UnknownRobot as e:
+        return bool(fn())
+    except Exception:
+        return False
+
+
+def _cmd_sim(args) -> int:
+    from .adapters.errors import AdapterUnavailable
+    from .mujoco_viewer import ViewerNotSupported, ViewerUnavailable
+
+    try:
+        bot = Robot.connect(
+            args.robot,
+            transport="sim://",
+            runtime="native",
+            viewer=bool(getattr(args, "viewer", False)),
+        )
+    except (
+        UnknownRobot,
+        AdapterUnavailable,
+        ViewerUnavailable,
+        ViewerNotSupported,
+    ) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     print(
         f"simulating {bot.spec.name} — driving a pattern for {args.seconds:.0f}s (Ctrl-C to stop)"
     )
+    if args.viewer:
+        print("MuJoCo viewer open. Close the window to stop early.")
     try:
         if bot.has(caps.HUMANOID_POSTURE):
             bot.prepare()
             bot.walk_mode()
         i = 0
         end = time.monotonic() + args.seconds
+        saw_viewer = False
         while time.monotonic() < end:
+            if args.viewer:
+                state = _viewer_open(bot)
+                if state:
+                    saw_viewer = True
+                elif saw_viewer and state is False:
+                    print("viewer closed.")
+                    break
             phase = i % 4
             if phase == 0:
                 bot.drive(vx=0.15)
@@ -241,6 +278,7 @@ def _cmd_sim_serve(args) -> int:
         print("not built", file=sys.stderr)
         return 1
 
+    from .mujoco_viewer import ViewerNotSupported, ViewerUnavailable
     from .sim_serve import SimServeUnavailable, serve_sim
 
     try:
@@ -251,8 +289,9 @@ def _cmd_sim_serve(args) -> int:
             port=args.port,
             rosbridge=args.rosbridge,
             rate_hz=args.rate,
+            viewer=bool(getattr(args, "viewer", False)),
         )
-    except SimServeUnavailable as e:
+    except (SimServeUnavailable, ViewerUnavailable, ViewerNotSupported) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
@@ -575,6 +614,14 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sim", help="run a robot in simulation")
     s.add_argument("--robot", default="omnibot")
     s.add_argument("--seconds", type=float, default=8.0)
+    s.add_argument(
+        "--viewer",
+        action="store_true",
+        help=(
+            "open MuJoCo's native 3D viewer when this robot's sim backend "
+            "is MuJoCo (headless is the default). On macOS, run under mjpython"
+        ),
+    )
     s.set_defaults(func=_cmd_sim)
 
     d = sub.add_parser("drive", help="drive a robot for a duration")
@@ -621,6 +668,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ss.add_argument(
         "--rate", type=float, default=20.0, help="telemetry broadcast rate in Hz"
+    )
+    ss.add_argument(
+        "--viewer",
+        action="store_true",
+        help=(
+            "open MuJoCo's native 3D viewer for an in-process MuJoCo sim "
+            "(headless is the default). On macOS, run under mjpython"
+        ),
     )
     ss.set_defaults(func=_cmd_sim_serve)
 
