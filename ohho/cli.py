@@ -620,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="rosbridge WebSocket URL for ros2 backend",
     )
     ss.add_argument(
-        "--rate", type=float, default=20.0, help="telemetry broadcast rate in Hz"
+        "--rate", type=float, default=30.0, help="telemetry broadcast rate in Hz"
     )
     ss.set_defaults(func=_cmd_sim_serve)
 

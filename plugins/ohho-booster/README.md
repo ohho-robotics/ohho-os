@@ -49,3 +49,19 @@ That check stands 30 s, walks about 1 m at 0.3 m/s, turns, and stops.
 checkpoint, observation layout and the reason the serial MJCF is loaded
 are in [docs/k1-walk.md](docs/k1-walk.md). Isaac Lab's K1 task is not
 wired here.
+
+`ohho sim-serve` exposes either spec on the local WebSocket. The process
+is the in-process MuJoCo sim (`--backend sim`), not the unimplemented
+`mujoco` backend name. Commands are velocity plus the declared posture
+modes (`prepare`, `walk`, `damping`, `custom`, `get_up`, `lie_down`).
+The server sends pose, joint positions in descriptor order, and status
+at about 30 Hz.
+
+```bash
+ohho sim-serve --backend sim --robot booster-t2
+ohho sim-serve --backend sim --robot booster-k1
+```
+
+Default port is 8765. A browser page served over https can open
+`ws://127.0.0.1` only when the browser allows loopback from a secure
+page; a non-loopback `ws://` host is blocked. See `docs/sim-serve.md`.

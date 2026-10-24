@@ -9,7 +9,8 @@ joint step). This module does not raise a cap.
 parameters and is not copied into ``drive.caps`` or ``safety.hard``.
 
 ``telemetry.schema_id`` is ``ohho.telemetry.v1``. A humanoid spec lists
-``humanoid`` in ``telemetry.fields``. The payload is
+``humanoid`` in ``telemetry.fields`` and ``joints`` in spec order. That
+list is the sim-serve ``joint_state.names`` order. The payload is
 ``Telemetry.custom["humanoid"]`` with ``mode``, ``vendor_mode``,
 ``fall_state``, ``base_rpy``, ``base_ang_vel``, ``joints``, ``odom``,
 ``battery`` and ``experimental`` (:data:`~ohho.humanoid_telemetry.HUMANOID_BLOCK_SCHEMA`).
@@ -291,6 +292,20 @@ def _generic_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) 
     }
 
 
+def _documented_joint_names(spec: RobotSpec) -> list[str]:
+    """Humanoid joint names in spec order. Other classes leave the list off.
+
+    The wire stream uses this list as ``joint_state.names``.
+    """
+    if spec.robot_class is not RobotClass.HUMANOID:
+        return []
+    names: list[str] = []
+    for name in spec.joint_names:
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
 def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
     """Build a RobotDescriptor for a registered robot.
 
@@ -306,6 +321,9 @@ def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
         document = _omnibot_document(spec, kind, hard, drive_caps)
     else:
         document = _generic_document(spec, kind, hard, drive_caps)
+    joint_names = _documented_joint_names(spec)
+    if joint_names:
+        document["joints"] = joint_names
     document["capability_params"] = thaw_json(spec.capability_params)
     validate_descriptor(document)
     return document
@@ -342,7 +360,16 @@ def spec_from_descriptor(document: Mapping[str, Any]) -> RobotSpec:
     ``max_lin`` is the smaller of the two linear hard caps.
     """
     validate_descriptor(document)
-    joints = tuple(joint["name"] for arm in document["arms"] for joint in arm["joints"])
+    arm_joints = tuple(
+        joint["name"] for arm in document["arms"] for joint in arm["joints"]
+    )
+    listed = document.get("joints")
+    if arm_joints:
+        joints = arm_joints
+    elif isinstance(listed, list):
+        joints = tuple(name for name in listed if isinstance(name, str))
+    else:
+        joints = ()
     hard = document["safety"]["hard"]
     drive = document["drive"]
     if drive["holonomic"]:
@@ -384,8 +411,10 @@ def validate_descriptor(document: Mapping[str, Any]) -> None:
             "safety",
         },
         "descriptor",
-        optional={"capability_params"},
+        optional={"capability_params", "joints"},
     )
+    if "joints" in document:
+        _validate_joint_names(document["joints"])
     if "capability_params" in document:
         validate_capability_params(document["capability_params"])
     _match("v", document["v"], _VERSION_RE)
@@ -459,6 +488,18 @@ def _validate_drive(drive: Any) -> None:
     _number("drive.caps.vx_mps", caps_obj["vx_mps"], ceiling=MAX_VX_MPS)
     _number("drive.caps.vy_mps", caps_obj["vy_mps"], ceiling=MAX_VY_MPS)
     _number("drive.caps.wz_rad_s", caps_obj["wz_rad_s"], ceiling=MAX_WZ_RAD_S)
+
+
+def _validate_joint_names(joints: Any) -> None:
+    """Documented joint order: non-empty unique names, not arm objects."""
+    if not isinstance(joints, list) or not joints:
+        raise ValueError("joints must be a non-empty list of names")
+    seen: set[str] = set()
+    for index, name in enumerate(joints):
+        _match(f"joints[{index}]", name, _NAME_RE)
+        if name in seen:
+            raise ValueError(f"joints[{index}] is duplicated")
+        seen.add(name)
 
 
 def _validate_arms(arms: Any) -> None:
