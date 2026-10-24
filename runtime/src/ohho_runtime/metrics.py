@@ -25,6 +25,7 @@ METRICS_ENABLED_ENV = "OHHO_RUNTIME_METRICS"
 METRICS_HOST_ENV = "OHHO_RUNTIME_METRICS_HOST"
 METRICS_PORT_ENV = "OHHO_RUNTIME_METRICS_PORT"
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+CRASH_BUNDLES_METRIC = "ohho_runtime_crash_bundles_total"
 
 # name, type, help. Order is the order of the exposition.
 CATALOG: tuple[tuple[str, str, str], ...] = (
@@ -107,6 +108,11 @@ CATALOG: tuple[tuple[str, str, str], ...] = (
         "ohho_runtime_supervisor_state",
         "gauge",
         "Current supervisor state (1 = current).",
+    ),
+    (
+        CRASH_BUNDLES_METRIC,
+        "counter",
+        "Crash diagnostics bundles the runtime has written.",
     ),
 )
 
@@ -501,6 +507,7 @@ def _handler_class(endpoint: MetricsEndpoint) -> type[BaseHTTPRequestHandler]:
 
 __all__ = [
     "CATALOG",
+    "CRASH_BUNDLES_METRIC",
     "DEFAULT_METRICS_HOST",
     "DEFAULT_METRICS_PORT",
     "METRIC_NAMES",

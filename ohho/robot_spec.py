@@ -592,6 +592,46 @@ def _freeze_json(value: Any) -> Any:
     )
 
 
+def resolve_capability_params(
+    capabilities: Sequence[str],
+    explicit: Mapping[str, Any] | None,
+    limits: ClassLimits,
+    joint_groups: Mapping[str, Sequence[str]] | None,
+    *,
+    max_lin: float,
+    max_ang: float,
+) -> dict[str, Any]:
+    """Capability parameters for a spec.
+
+    Velocity numbers come from the class limits when that object has them, and
+    from ``max_lin`` / ``max_ang`` otherwise. Climb comes from ``AerialLimits``.
+    An explicit mapping wins per capability name. Not a safety cap.
+    """
+    # Imported lazily: capability_params imports the capability names only.
+    from .capability_params import merge_capability_params
+
+    if isinstance(limits, MobileManipulatorLimits):
+        max_vx, max_vy, max_wz = (
+            limits.ground.max_vx,
+            limits.ground.max_vy,
+            limits.ground.max_wz,
+        )
+    elif isinstance(limits, (GroundLimits, LeggedLimits, HumanoidLimits)):
+        max_vx, max_vy, max_wz = limits.max_vx, limits.max_vy, limits.max_wz
+    else:
+        max_vx, max_vy, max_wz = max_lin, max_lin, max_ang
+    max_climb = float(limits.max_climb) if isinstance(limits, AerialLimits) else 0.0
+    return merge_capability_params(
+        capabilities,
+        explicit,
+        max_vx=max_vx,
+        max_vy=max_vy,
+        max_wz=max_wz,
+        max_climb=max_climb,
+        joint_groups=joint_groups,
+    )
+
+
 def thaw_json(value: Any) -> Any:
     """Turn frozen JSON-like values back into plain dicts and lists."""
     if isinstance(value, Mapping):

@@ -43,6 +43,7 @@ class InProcessService(ServiceBase):
         self._ready_check = ready_check
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self.failure_exception: BaseException | None = None
 
     @property
     def stop_event(self) -> threading.Event:
@@ -64,6 +65,7 @@ class InProcessService(ServiceBase):
         try:
             self._target(self)
         except Exception as exc:
+            self.failure_exception = exc
             note_exception(
                 exc,
                 service=self._service_name(),
