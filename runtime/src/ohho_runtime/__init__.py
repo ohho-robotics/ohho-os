@@ -9,7 +9,7 @@ worker that only imports :mod:`ohho_runtime.heartbeat` does not import
 ``ohho``.
 
 Structured logs live in :mod:`ohho_runtime.log`. Metrics live in
-:mod:`ohho_runtime.metrics`.
+:mod:`ohho_runtime.metrics`. Crash bundles live in :mod:`ohho_runtime.crash`.
 """
 
 from __future__ import annotations
@@ -19,20 +19,34 @@ from typing import Any
 
 __version__ = "0.1.0"
 
-_LAZY = ("LoopStats", "LoopTimer", "loop_report")
+_LAZY = {
+    "LoopStats": "ohho_runtime.timing",
+    "LoopTimer": "ohho_runtime.timing",
+    "loop_report": "ohho_runtime.timing",
+    "CrashBundle": "ohho_runtime.crash",
+    "write_crash_bundle": "ohho_runtime.crash",
+}
 
 
 def __getattr__(name: str) -> Any:
-    if name not in _LAZY:
+    module_name = _LAZY.get(name)
+    if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = importlib.import_module("ohho_runtime.timing")
-    for key in _LAZY:
-        globals()[key] = getattr(module, key)
-    return globals()[name]
+    module = importlib.import_module(module_name)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
 
 
 def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY))
 
 
-__all__ = ["LoopStats", "LoopTimer", "__version__", "loop_report"]
+__all__ = [
+    "CrashBundle",
+    "LoopStats",
+    "LoopTimer",
+    "__version__",
+    "loop_report",
+    "write_crash_bundle",
+]

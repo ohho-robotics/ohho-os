@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ohho-runtime"
 version = "0.1.0"
-description = "OhhO onboard runtime — robot-agnostic service manifests, lifecycle, supervision, shutdown, logging, and metrics."
+description = "OhhO onboard runtime — robot-agnostic service manifests, lifecycle, supervision, shutdown, logging, metrics, and crash bundles."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
