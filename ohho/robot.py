@@ -8,9 +8,10 @@ something turns the call into a safe no-op rather than crashing).
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
 from . import capabilities as caps
+from . import humanoid
 from .adapters import resolve_transport
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
@@ -102,7 +103,11 @@ class Robot:
     # ── control ───────────────────────────────────────────────────────────────
     def drive(self, vx: float = 0.0, vy: float = 0.0, w: float = 0.0) -> "Robot":
         """Drive the base. Clamped to the robot's limits; ``vy`` ignored on
-        non-holonomic bases; a no-op if the robot can't drive."""
+        non-holonomic bases; a no-op if the robot can't drive.
+
+        A humanoid walks with this same call (``vx``, ``vy``, yaw rate). It
+        does not change posture; :meth:`walk_mode` does that.
+        """
         if not self.has(caps.BASE_DRIVE):
             return self
         if not self.has(caps.BASE_HOLONOMIC):
@@ -117,8 +122,27 @@ class Robot:
         self._t.send_velocity(Velocity())
         return self
 
-    def move_joints(self, positions: Iterable[float]) -> "Robot":
-        """Command arm joints (in spec order). No-op if the robot has no arm."""
+    def move_joints(
+        self,
+        positions: Union[str, Iterable[float]],
+        q: Optional[Iterable[float]] = None,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
+    ) -> "Robot":
+        """Command joints.
+
+        A sequence of positions commands the arm in spec order and is a no-op
+        without ``manipulation``. A group name commands that whole-body group
+        (``move_joints(group, q, kp=None, kd=None)``) and is a no-op without
+        ``whole_body.joint``. Gains on the arm form are a ``TypeError``.
+        """
+        if isinstance(positions, str):
+            return humanoid.move_joints(self, positions, q, kp=kp, kd=kd)
+        if q is not None or kp is not None or kd is not None:
+            raise TypeError(
+                "move_joints(positions) commands the arm; "
+                "move_joints(group, q) commands a whole-body group"
+            )
         if not self.has(caps.MANIPULATION):
             return self
         for name, p in zip(self.spec.joint_names, positions):
@@ -132,6 +156,49 @@ class Robot:
     def release_stop(self) -> "Robot":
         self._t.release_stop()
         return self
+
+    # ── humanoid (no-op without the capability; gated calls enter the gate) ──
+    def prepare(self) -> "Robot":
+        """Stand and hold balance. No-op without ``humanoid.posture``."""
+        return humanoid.prepare(self)
+
+    def walk_mode(self) -> "Robot":
+        """Enable locomotion. No-op without ``humanoid.posture``.
+
+        Walking speed is :meth:`drive`.
+        """
+        return humanoid.walk_mode(self)
+
+    def damp(self) -> "Robot":
+        """Damping on every joint. The robot may collapse.
+
+        No-op without ``humanoid.posture``. Not an e-stop.
+        """
+        return humanoid.damp(self)
+
+    def get_up(self) -> "Robot":
+        """Get-up recovery. No-op without ``humanoid.posture``."""
+        return humanoid.get_up(self)
+
+    def lie_down(self) -> "Robot":
+        """Lie-down recovery. No-op without ``humanoid.posture``."""
+        return humanoid.lie_down(self)
+
+    def look(self, pitch: float, yaw: float) -> "Robot":
+        """Point the head, radians. No-op without ``head.gaze``."""
+        return humanoid.look(self, pitch, yaw)
+
+    def move_ee(self, side: str, pose: Iterable[float], t: float) -> "Robot":
+        """Move one hand. No-op without ``manipulation.dual_arm``."""
+        return humanoid.move_ee(self, side, pose, t)
+
+    def gripper(self, side: str, cmd: object) -> "Robot":
+        """Command one gripper. No-op without ``end_effector.gripper``."""
+        return humanoid.gripper(self, side, cmd)
+
+    def hand(self, side: str, fingers: Iterable[float]) -> "Robot":
+        """Command one dexterous hand. No-op without ``end_effector.dex_hand``."""
+        return humanoid.hand(self, side, fingers)
 
     # ── state ─────────────────────────────────────────────────────────────────
     def telemetry(self) -> Telemetry:
