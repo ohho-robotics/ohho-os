@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
+from ohho_runtime.log import note_exception
 from ohho_runtime.service.base import ServiceBase
 from ohho_runtime.service.lifecycle import LifecycleState, ShutdownRecord
 
@@ -63,6 +64,13 @@ class InProcessService(ServiceBase):
         try:
             self._target(self)
         except Exception as exc:
+            note_exception(
+                exc,
+                service=self._service_name(),
+                event="service_error",
+                logger=self._logger,
+                metrics=self._metrics,
+            )
             if self.state not in (
                 LifecycleState.STOPPING,
                 LifecycleState.STOPPED,

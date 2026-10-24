@@ -7,6 +7,8 @@ import time
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
+from ohho_runtime.log import RuntimeLog
+from ohho_runtime.metrics import Registry
 from ohho_runtime.service.lifecycle import (
     LEGAL_TRANSITIONS,
     Clock,
@@ -83,6 +85,12 @@ class ServiceBase:
         self._starting_at: float | None = None
         self._last_heartbeat_at: float | None = None
         self._shutdown: list[ShutdownRecord] = []
+        self._logger: RuntimeLog | None = None
+        self._metrics: Registry | None = None
+        self._log_service = ""
+        self._start_duration_s: float | None = None
+        self._stop_duration_s: float | None = None
+        self._heartbeat_misses = 0
 
     @property
     def state(self) -> LifecycleState:
@@ -145,6 +153,75 @@ class ServiceBase:
     def clock(self) -> float:
         return self._clock()
 
+    @property
+    def start_duration_s(self) -> float | None:
+        """Seconds the last start took, or ``None`` before the first start."""
+        with self._lock:
+            return self._start_duration_s
+
+    @property
+    def stop_duration_s(self) -> float | None:
+        """Seconds the last stop took, or ``None`` before the first stop."""
+        with self._lock:
+            return self._stop_duration_s
+
+    @property
+    def heartbeat_age_s(self) -> float | None:
+        """Seconds since the last heartbeat, or ``None`` before the first one."""
+        with self._lock:
+            last = self._last_heartbeat_at
+            if last is None:
+                return None
+            return self._clock() - last
+
+    @property
+    def heartbeat_misses(self) -> int:
+        """Liveness deadlines committed to ``failed``."""
+        with self._lock:
+            return self._heartbeat_misses
+
+    def bind_log(
+        self,
+        logger: RuntimeLog,
+        *,
+        service: str = "",
+        metrics: Registry | None = None,
+    ) -> None:
+        """Attach the supervisor logger. Does not change the lifecycle."""
+        self._logger = logger
+        self._metrics = metrics
+        if service:
+            self._log_service = service
+
+    def _service_name(self) -> str:
+        role = self._config.get("role")
+        if isinstance(role, str) and role:
+            return role
+        if self._log_service:
+            return self._log_service
+        return "service"
+
+    def _emit(self, level: str, event: str, message: str = "") -> None:
+        logger = self._logger
+        if logger is None:
+            return
+        logger.log(
+            level,
+            event=event,
+            service=self._service_name(),
+            message=message,
+        )
+
+    def _set_start_duration(self, begin: float) -> None:
+        elapsed = self._clock() - begin
+        with self._lock:
+            self._start_duration_s = elapsed
+
+    def _set_stop_duration(self, begin: float) -> None:
+        elapsed = self._clock() - begin
+        with self._lock:
+            self._stop_duration_s = elapsed
+
     def note_shutdown(self, record: ShutdownRecord) -> None:
         """Append a shutdown record. Does not change the lifecycle by itself."""
         with self._lock:
@@ -180,6 +257,7 @@ class ServiceBase:
             self.on_configure(cfg)
         except Exception as exc:
             self._fail(f"configure failed: {exc}")
+            self._emit("ERROR", "configure_failed", str(exc))
             raise
         with self._lock:
             self._config = cfg
@@ -189,6 +267,7 @@ class ServiceBase:
             self._last_heartbeat_at = None
             self._starting_at = None
         self._transition(LifecycleState.CONFIGURED)
+        self._emit("INFO", "configured", "")
 
     def start(self) -> None:
         with self._lock:
@@ -196,13 +275,18 @@ class ServiceBase:
             if (src, LifecycleState.STARTING) not in LEGAL_TRANSITIONS:
                 raise IllegalTransition(src, LifecycleState.STARTING)
         self._transition(LifecycleState.STARTING)
+        begin = self._clock()
         with self._lock:
-            self._starting_at = self._clock()
+            self._starting_at = begin
         try:
             self.on_start()
         except Exception as exc:
+            self._set_start_duration(begin)
             self._fail(f"start failed: {exc}")
+            self._emit("ERROR", "start_failed", str(exc))
             raise
+        self._set_start_duration(begin)
+        self._emit("INFO", "service_start", "")
         self.poll()
 
     def mark_ready(self) -> None:
@@ -255,11 +339,14 @@ class ServiceBase:
         fails with ``liveness timeout``.
         """
         is_ready = self.ready()
+        became_ready = False
+        failed_event = ""
         with self._lock:
             if self._state is LifecycleState.STARTING:
                 if is_ready:
                     self._state = move(self._state, LifecycleState.READY)
                     self._history.append(self._state)
+                    became_ready = True
                 elif (
                     self._starting_at is not None
                     and (self._clock() - self._starting_at) >= self._readiness_timeout_s
@@ -267,12 +354,23 @@ class ServiceBase:
                     self._failure_reason = "readiness timeout"
                     self._state = move(self._state, LifecycleState.FAILED)
                     self._history.append(self._state)
-                    return
-            if self._state in (LifecycleState.STARTING, LifecycleState.READY):
-                if self._heartbeat_expired():
-                    self._failure_reason = "liveness timeout"
-                    self._state = move(self._state, LifecycleState.FAILED)
-                    self._history.append(self._state)
+                    failed_event = "readiness_timeout"
+            if (
+                not failed_event
+                and self._state in (LifecycleState.STARTING, LifecycleState.READY)
+                and self._heartbeat_expired()
+            ):
+                self._failure_reason = "liveness timeout"
+                self._heartbeat_misses += 1
+                self._state = move(self._state, LifecycleState.FAILED)
+                self._history.append(self._state)
+                failed_event = "heartbeat_miss"
+        if became_ready:
+            self._emit("INFO", "ready", "")
+        if failed_event == "readiness_timeout":
+            self._emit("ERROR", "readiness_timeout", "readiness timeout")
+        elif failed_event == "heartbeat_miss":
+            self._emit("WARNING", "heartbeat_miss", "liveness timeout")
 
     def degrade(self, reason: str) -> None:
         """Mark the running service degraded without leaving ``ready``."""
@@ -335,14 +433,19 @@ class ServiceBase:
             if (src, LifecycleState.STOPPING) not in LEGAL_TRANSITIONS:
                 raise IllegalTransition(src, LifecycleState.STOPPING)
         self._transition(LifecycleState.STOPPING)
+        begin = self._clock()
         try:
             self.on_stop()
         except Exception as exc:
+            self._set_stop_duration(begin)
             self._fail(f"stop failed: {exc}")
+            self._emit("ERROR", "stop_failed", str(exc))
             raise
+        self._set_stop_duration(begin)
         with self._lock:
             self._explicit_ready = False
         self._transition(LifecycleState.STOPPED)
+        self._emit("INFO", "service_stop", "")
 
 
 # Re-export the transition error used by callers that catch configure/start.

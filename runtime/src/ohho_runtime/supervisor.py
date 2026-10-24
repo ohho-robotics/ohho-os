@@ -30,6 +30,7 @@ do-not-operate. Dependents of a terminal failure are not started.
 from __future__ import annotations
 
 import inspect
+import math
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -41,6 +42,13 @@ from ohho.registry import RobotSpec
 from ohho.robot_spec import RobotClass
 
 from ohho_runtime.backoff import ExponentialBackoff
+from ohho_runtime.log import (
+    RuntimeLog,
+    note_exception,
+    resolve_log_format,
+    resolve_log_level,
+    resolve_run_id,
+)
 from ohho_runtime.manifest import (
     Criticality,
     PythonCallable,
@@ -49,12 +57,14 @@ from ohho_runtime.manifest import (
     ServiceSpec,
     resolve_manifest,
 )
+from ohho_runtime.metrics import MetricsEndpoint, Registry, get_registry, publish_loop
 from ohho_runtime.scheduling import (
     OsCalls,
     SchedulingController,
     SchedulingRefusal,
 )
 from ohho_runtime.service import LifecycleState, ServiceBase
+from ohho_runtime.timing import LoopTimer, loop_report
 
 
 class SupervisorError(Exception):
@@ -82,6 +92,18 @@ class ClassSafeAction(Enum):
     STOP_BASE_HOLD_ARM = "stop_base_hold_arm"
     HOLD = "hold"
     DO_NOT_OPERATE = "do_not_operate"
+
+
+_EVENT_LEVEL = {
+    "stop_failed": "ERROR",
+    "service_failed": "ERROR",
+    "restart_limit": "ERROR",
+    "do_not_operate": "ERROR",
+    "grace_exceeded": "WARNING",
+    "restart_refused": "WARNING",
+    "blocked": "WARNING",
+    "safe_hold": "WARNING",
+}
 
 
 _CLASS_SAFE: dict[RobotClass, ClassSafeAction] = {
@@ -236,10 +258,24 @@ class ServiceBuilder(Protocol):
     ) -> ServiceBase: ...
 
 
-def _call_target(target: Callable[..., object], service: ServiceBase) -> None:
+def _call_target(
+    target: Callable[..., object],
+    service: ServiceBase,
+    *,
+    logger: RuntimeLog | None = None,
+    metrics: Registry | None = None,
+) -> None:
     try:
         parameters = inspect.signature(target).parameters
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        note_exception(
+            exc,
+            service="supervisor",
+            event="target_signature",
+            level="DEBUG",
+            logger=logger,
+            metrics=metrics,
+        )
         target()
         return
     positional = [
@@ -293,7 +329,7 @@ class DevService(ServiceBase):
         self._target = target
 
     def on_start(self) -> None:
-        _call_target(self._target, self)
+        _call_target(self._target, self, logger=self._logger, metrics=self._metrics)
         if self.state is LifecycleState.STARTING:
             self.mark_ready()
             self.heartbeat()
@@ -367,6 +403,12 @@ class Supervisor:
         events: EventLog | None = None,
         platform: str | None = None,
         os_calls: OsCalls | None = None,
+        logger: RuntimeLog | None = None,
+        metrics: Registry | None = None,
+        run_id: str | None = None,
+        metrics_enabled: bool | None = None,
+        metrics_host: str | None = None,
+        metrics_port: int | None = None,
     ) -> None:
         if mode not in ("dev", "process"):
             raise SupervisorError(
@@ -391,6 +433,28 @@ class Supervisor:
         self._on_do_not_operate = (
             _noop_hook if on_do_not_operate is None else on_do_not_operate
         )
+        if logger is not None and run_id is None and logger.run_id:
+            self._run_id = logger.run_id
+        else:
+            self._run_id = resolve_run_id(run_id)
+        self._metrics = get_registry() if metrics is None else metrics
+        if logger is None:
+            logger = RuntimeLog(
+                service="supervisor",
+                robot_class=robot_class.value,
+                run_id=self._run_id,
+                level=resolve_log_level(manifest.log_level),
+                log_format=resolve_log_format(manifest.log_format),
+            )
+        self._logger = logger
+        self._endpoint = MetricsEndpoint(
+            self._metrics,
+            enabled=metrics_enabled,
+            host=metrics_host,
+            port=metrics_port,
+            collect=self.collect_metrics,
+        )
+        self._loops: dict[str, LoopTimer] = {}
         self._state = SupervisorState.IDLE
         self._dno = False
         self._holding_safe = False
@@ -414,6 +478,13 @@ class Supervisor:
             if spec.restart.kind is RestartKind.ON_FAILURE:
                 backoff = ExponentialBackoff(spec.restart.backoff_s)
             service = factory(spec, clock=self._clock, grace_s=self._grace_s)
+            bind = getattr(service, "bind_log", None)
+            if callable(bind):
+                bind(
+                    self._logger.bind(service=spec.role),
+                    service=spec.role,
+                    metrics=self._metrics,
+                )
             self._runs[spec.role] = _Run(spec=spec, service=service, backoff=backoff)
 
     @classmethod
@@ -463,6 +534,21 @@ class Supervisor:
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def logger(self) -> RuntimeLog:
+        """Structured logger for this supervisor and its services."""
+        return self._logger
+
+    @property
+    def run_id(self) -> str:
+        """Run id stamped on every log record and metric label."""
+        return self._run_id
+
+    @property
+    def metrics_endpoint(self) -> MetricsEndpoint:
+        """``/metrics`` endpoint. Disabled endpoints do not bind."""
+        return self._endpoint
 
     @property
     def grace_s(self) -> float:
@@ -559,8 +645,9 @@ class Supervisor:
         """Begin startup. Call :meth:`poll` to move a clock forward."""
         if self._state is not SupervisorState.IDLE:
             raise SupervisorError(f"cannot start from {self._state.value}")
+        self._endpoint.start()
         self._state = SupervisorState.STARTING
-        self._events.record(self._now(), "supervisor_start")
+        self._note("supervisor_start")
         self.poll()
 
     def poll(self) -> None:
@@ -593,26 +680,30 @@ class Supervisor:
         self._collect_scheduling()
         self._state = SupervisorState.STOPPING
         begin = self._now()
-        self._events.record(begin, "shutdown_start")
+        self._note("shutdown_start")
         for role in reversed(self._started):
             run = self._runs[role]
             run.restart_at = None
             service = run.service
             if service.state in (LifecycleState.STOPPED, LifecycleState.CREATED):
                 self._stopped.append(role)
-                self._events.record(
-                    self._now(), "service_stop", role, "already stopped"
-                )
+                self._note("service_stop", role, "already stopped")
                 continue
             try:
                 service.stop()
             except Exception as exc:
+                note_exception(
+                    exc,
+                    service=role,
+                    event="stop_failed",
+                    logger=self._logger,
+                    metrics=self._metrics,
+                )
                 self._events.record(self._now(), "stop_failed", role, str(exc))
             self._stopped.append(role)
-            self._events.record(self._now(), "service_stop", role)
+            self._note("service_stop", role)
             if self._now() - begin > self._grace_s:
-                self._events.record(
-                    self._now(),
+                self._note(
                     "grace_exceeded",
                     role,
                     "shutdown exceeded the grace period",
@@ -620,9 +711,20 @@ class Supervisor:
         self._shutdown_elapsed_s = self._now() - begin
         self._shut_down = True
         detail = "within_grace" if self.shutdown_within_grace else "grace_exceeded"
-        self._events.record(self._now(), "shutdown_done", "", detail)
+        self._note("shutdown_done", "", detail)
         self._collect_scheduling(final=True)
         self._state = SupervisorState.STOPPED
+        try:
+            self._endpoint.stop()
+        except Exception as exc:
+            note_exception(
+                exc,
+                service="supervisor",
+                event="metrics_stop_failed",
+                logger=self._logger,
+                metrics=self._metrics,
+            )
+            raise
 
     def clear_do_not_operate(self) -> None:
         """Human clear of the do-not-operate latch.
@@ -635,7 +737,7 @@ class Supervisor:
             raise SupervisorError("supervisor is not do-not-operate")
         self._dno = False
         self._holding_safe = False
-        self._events.record(self._now(), "human_clear", "", "human clear")
+        self._note("human_clear", "", "human clear")
         if self._state is SupervisorState.DO_NOT_OPERATE:
             self._state = (
                 SupervisorState.RUNNING
@@ -652,6 +754,102 @@ class Supervisor:
     def _collect_scheduling(self, *, final: bool = False) -> None:
         for run in self._runs.values():
             self._sched.collect(run.spec, run.service, final=final)
+
+    def _note(self, kind: str, role: str = "", detail: str = "") -> None:
+        """Append the in-memory event and write one structured log record."""
+        self._events.record(self._now(), kind, role, detail)
+        self._logger.log(
+            _EVENT_LEVEL.get(kind, "INFO"),
+            event=kind,
+            service=role or "supervisor",
+            message=detail,
+        )
+
+    def observe_loop(self, role: str, timer: LoopTimer) -> None:
+        """Attach the loop owned by ``role``.
+
+        Scrapes read :meth:`LoopTimer.stats`. This does not start the loop
+        and does not command motion.
+        """
+        if not isinstance(timer, LoopTimer):
+            raise SupervisorError("timer must be a LoopTimer")
+        self._run(role)
+        self._loops[role] = timer
+
+    def collect_metrics(self) -> None:
+        """Copy supervisor, service, and loop state into the registry."""
+        base = {"robot_class": self._robot_class.value, "run_id": self._run_id}
+        self._metrics.set(
+            "ohho_runtime_do_not_operate",
+            1.0 if self._dno else 0.0,
+            base,
+        )
+        self._metrics.set(
+            "ohho_runtime_allows_motion",
+            1.0 if self.allows_motion() else 0.0,
+            base,
+        )
+        self._metrics.set_state(
+            "ohho_runtime_supervisor_state",
+            self._state.value,
+            base,
+        )
+        for role, run in self._runs.items():
+            labels = {"service": role, **base}
+            service = run.service
+            state = service.state.value
+            self._metrics.set_state("ohho_runtime_service_state", state, labels)
+            self._metrics.set(
+                "ohho_runtime_service_restarts_total",
+                float(run.restarts),
+                labels,
+            )
+            self._set_optional(
+                "ohho_runtime_heartbeat_age_seconds",
+                getattr(service, "heartbeat_age_s", None),
+                labels,
+            )
+            misses = getattr(service, "heartbeat_misses", 0)
+            if isinstance(misses, bool):
+                misses = 0
+            self._metrics.set(
+                "ohho_runtime_heartbeat_misses_total",
+                float(misses) if isinstance(misses, (int, float)) else 0.0,
+                labels,
+            )
+            self._set_optional(
+                "ohho_runtime_start_duration_seconds",
+                getattr(service, "start_duration_s", None),
+                labels,
+            )
+            self._set_optional(
+                "ohho_runtime_stop_duration_seconds",
+                getattr(service, "stop_duration_s", None),
+                labels,
+            )
+            beats = getattr(service, "beats", None)
+            if isinstance(beats, int) and not isinstance(beats, bool):
+                self._metrics.set(
+                    "ohho_runtime_heartbeat_beats_total",
+                    float(beats),
+                    labels,
+                )
+            timer = self._loops.get(role)
+            if timer is not None:
+                publish_loop(self._metrics, labels, loop_report(timer.stats()))
+
+    def metrics_text(self) -> str:
+        """Collect current samples and return Prometheus text."""
+        self.collect_metrics()
+        return self._metrics.render()
+
+    def _set_optional(self, name: str, value: object, labels: dict[str, str]) -> None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return
+        number = float(value)
+        if not math.isfinite(number):
+            return
+        self._metrics.set(name, number, labels)
 
     def _run(self, role: str) -> _Run:
         try:
@@ -704,8 +902,7 @@ class Supervisor:
             return False
         if self._dno and run.spec.commands_motion:
             run.terminal = True
-            self._events.record(
-                self._now(),
+            self._note(
                 "blocked",
                 role,
                 "do-not-operate refuses a motion service",
@@ -714,7 +911,7 @@ class Supervisor:
         status = self._dependency_status(role)
         if status == "blocked":
             run.terminal = True
-            self._events.record(self._now(), "blocked", role, "dependency failed")
+            self._note("blocked", role, "dependency failed")
             return False
         if status != "ready":
             return False
@@ -747,15 +944,22 @@ class Supervisor:
             except Exception as exc:
                 run.failure_latched = True
                 run.terminal = True
+                note_exception(
+                    exc,
+                    service=role,
+                    event="stop_failed",
+                    logger=self._logger,
+                    metrics=self._metrics,
+                )
                 self._events.record(self._now(), "stop_failed", role, str(exc))
                 if run.spec.criticality is Criticality.CRITICAL:
                     self._enter_dno(role, "restart stop failed")
                 return
             run.restarts += 1
-            self._events.record(self._now(), "restart", role, str(run.restarts))
+            self._note("restart", role, str(run.restarts))
         else:
             self._started.append(role)
-            self._events.record(self._now(), "service_start", role)
+            self._note("service_start", role)
         run.failure_latched = False
         run.restart_at = None
         try:
@@ -763,6 +967,13 @@ class Supervisor:
             self._sched.prepare(run.spec, service)
             service.start()
         except Exception as exc:
+            note_exception(
+                exc,
+                service=role,
+                event="service_failed",
+                logger=self._logger,
+                metrics=self._metrics,
+            )
             self._handle_failure(role, str(exc))
             return
         self._sched.finish(run.spec, service)
@@ -775,7 +986,7 @@ class Supervisor:
         if run.ready_open:
             return
         run.ready_open = True
-        self._events.record(self._now(), "service_ready", run.spec.role)
+        self._note("service_ready", run.spec.role)
 
     def _handle_failure(self, role: str, detail: str) -> None:
         run = self._run(role)
@@ -784,18 +995,15 @@ class Supervisor:
         run.failure_latched = True
         run.ready_open = False
         reason = detail or run.service.failure_reason or "failed"
-        self._events.record(self._now(), "service_failed", role, reason)
+        self._note("service_failed", role, reason)
         policy = run.spec.restart
         if policy.kind is not RestartKind.ON_FAILURE or run.backoff is None:
             run.terminal = True
-            self._events.record(
-                self._now(), "restart_refused", role, "restart policy is never"
-            )
+            self._note("restart_refused", role, "restart policy is never")
             return
         if policy.only_while_disarmed and not self._disarmed:
             run.terminal = True
-            self._events.record(
-                self._now(),
+            self._note(
                 "restart_refused",
                 role,
                 "restart requires the robot to be disarmed",
@@ -815,8 +1023,7 @@ class Supervisor:
         if len(prior) >= policy.max_restarts:
             run.terminal = True
             run.restart_at = None
-            self._events.record(
-                now,
+            self._note(
                 "restart_limit",
                 role,
                 f"{len(prior)} failures in {policy.window_s}s",
@@ -826,7 +1033,7 @@ class Supervisor:
             return
         delay = run.backoff.next_delay()
         run.restart_at = now + delay
-        self._events.record(now, "restart_scheduled", role, f"{delay}")
+        self._note("restart_scheduled", role, f"{delay}")
 
     def _enter_dno(self, role: str, reason: str) -> None:
         if self._dno:
@@ -842,8 +1049,8 @@ class Supervisor:
             reason=reason,
             allows_motion=False,
         )
-        self._events.record(self._now(), "do_not_operate", role, reason)
-        self._events.record(self._now(), "safe_hold", role, action.value)
+        self._note("do_not_operate", role, reason)
+        self._note("safe_hold", role, action.value)
         self._on_do_not_operate(notice)
 
     def _refresh_state(self) -> None:

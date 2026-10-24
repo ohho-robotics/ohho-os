@@ -20,13 +20,21 @@ from ohho.safety import SafetyGate, SafetyProfile
 from ohho.schema import ConnectionState, Telemetry, TransportStatus
 from ohho.transport import Transport
 
+from ohho_runtime.log import note_exception
 from ohho_runtime.service.base import ServiceBase
 
 
 def _as_float(value: object) -> float:
     try:
         return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        note_exception(
+            exc,
+            service="transport",
+            event="telemetry_field",
+            level="DEBUG",
+            message="telemetry field is not a float",
+        )
         return math.nan
 
 
@@ -47,7 +55,14 @@ def _faulted(profile: SafetyProfile, sample: Telemetry) -> bool:
     if "error_code" in custom:
         try:
             code = int(custom["error_code"])  # type: ignore[arg-type]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            note_exception(
+                exc,
+                service="transport",
+                event="telemetry_error_code",
+                level="DEBUG",
+                message="telemetry error_code is not an int",
+            )
             return True
         if code != 0:
             return True
