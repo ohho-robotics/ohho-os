@@ -9,7 +9,9 @@ worker that only imports :mod:`ohho_runtime.heartbeat` does not import
 ``ohho``.
 
 Structured logs live in :mod:`ohho_runtime.log`. Metrics live in
-:mod:`ohho_runtime.metrics`. Crash bundles live in :mod:`ohho_runtime.crash`.
+:mod:`ohho_runtime.metrics`. The operator CLI lives in
+:mod:`ohho_runtime.cli` (console script ``ohho-runtime``). Crash bundles
+live in :mod:`ohho_runtime.crash`.
 """
 
 from __future__ import annotations

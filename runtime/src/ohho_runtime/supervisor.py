@@ -764,6 +764,45 @@ class Supervisor:
                 else SupervisorState.STARTING
             )
 
+    def restart(self, role: str) -> None:
+        """Restart one service on the supervisor boot path.
+
+        Stops the service and starts it again, and counts the restart.
+        Does not arm, does not clear do-not-operate, and does not raise a
+        cap. A ``never`` policy is refused. A service that restarts only
+        while disarmed is refused when the robot is not disarmed. A service
+        that commands motion is refused while do-not-operate is latched.
+        A service that has reached its restart cap is not restarted.
+        """
+        if self._state in (
+            SupervisorState.IDLE,
+            SupervisorState.STOPPING,
+            SupervisorState.STOPPED,
+        ):
+            raise SupervisorError(f"cannot restart from {self._state.value}")
+        run = self._run(role)
+        spec = run.spec
+        if not run.launched:
+            raise SupervisorError(f"{role} has not started")
+        if run.terminal:
+            raise SupervisorError(f"{role} will not be restarted")
+        if spec.restart.kind is not RestartKind.ON_FAILURE:
+            raise SupervisorError(f"{role} restart policy is never")
+        if spec.restart.only_while_disarmed and not self._disarmed:
+            raise SupervisorError(f"{role} restarts only while disarmed")
+        if self._dno and spec.commands_motion:
+            raise SupervisorError(
+                f"{role} is not restarted while do-not-operate is latched"
+            )
+        run.ready_open = False
+        run.failure_latched = False
+        run.restart_at = None
+        self._boot(run, restart=True)
+        self._refresh_state()
+        if run.service.state is not LifecycleState.READY:
+            reason = run.service.failure_reason or run.service.state.value
+            raise SupervisorError(f"{role} restart finished in {reason}")
+
     def _now(self) -> float:
         return float(self._clock())
 
