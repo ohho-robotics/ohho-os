@@ -27,6 +27,7 @@ classifiers = [
 dependencies = ["ohho-os"]
 
 [project.scripts]
+ohho-runtime = "ohho_runtime.cli:main"
 ohho-runtime-service = "ohho_runtime.worker:main"
 
 [tool.setuptools.packages.find]
