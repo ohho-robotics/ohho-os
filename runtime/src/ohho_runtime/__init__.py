@@ -1,6 +1,8 @@
 """OhhO onboard runtime (distribution ``ohho-runtime``).
 
 This package is not the executor port in ``ohho.runtime``.
+Service manifests live in :mod:`ohho_runtime.manifest`.
+The supervisor lives in :mod:`ohho_runtime.supervisor`.
 
 ``LoopTimer``, ``LoopStats``, and ``loop_report`` load on first use so a
 worker that only imports :mod:`ohho_runtime.heartbeat` does not import

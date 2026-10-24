@@ -22,12 +22,6 @@ _OHHO_RUNTIME_IMPORTS = (
 
 _OHHO_IMPORT = re.compile(r"(?m)^(?:from|import)\s+(ohho(?:\.[\w]+)*)\b")
 
-# Names the onboard runtime must not use. Kept here, not in runtime/src.
-_VENDOR = re.compile(
-    r"\b(?:booster|t2|unitree|go2|px4|crazyflie|yahboom|omnibot)\b",
-    re.IGNORECASE,
-)
-
 _PRIVATE_SAFETY = (
     "_last_state_t",
     "_state_stale",
@@ -41,6 +35,9 @@ _PRIVATE_SAFETY = (
     ".tick(",
     ".arm(",
 )
+
+# GPL, LGPL, or proprietary modules the base import must not load.
+_COPYLEFT_OR_PROPRIETARY = ("pymavlink", "MAVProxy", "unitree_sdk2py")
 
 
 class ImportBoundaryTest(unittest.TestCase):
@@ -99,16 +96,46 @@ class ImportBoundaryTest(unittest.TestCase):
                 )
 
     def test_runtime_source_has_no_vendor_or_private_safety_use(self) -> None:
+        from vendor_grep import scan_runtime
+
+        self.assertEqual(scan_runtime(_ROOT), [])
         files = list(_RUNTIME_SRC.rglob("*.py"))
         files.append(_ROOT / "runtime" / "pyproject.toml")
         for path in files:
             text = path.read_text(encoding="utf-8")
-            self.assertIsNone(
-                _VENDOR.search(text),
-                f"{path.relative_to(_ROOT)} names a vendor",
-            )
             for token in _PRIVATE_SAFETY:
                 self.assertNotIn(token, text, f"{path} contains {token}")
+            for name in _COPYLEFT_OR_PROPRIETARY:
+                self.assertNotIn(name, text, f"{path} names {name}")
+
+    def test_runtime_import_does_not_load_copyleft_or_proprietary(self) -> None:
+        env = dict(os.environ)
+        prior = env.get("PYTHONPATH", "")
+        extra = os.pathsep.join((str(_ROOT), str(_RUNTIME_SRC)))
+        env["PYTHONPATH"] = extra if not prior else extra + os.pathsep + prior
+        banned = ", ".join(repr(name) for name in _COPYLEFT_OR_PROPRIETARY)
+        probe = (
+            "import sys\n"
+            "import ohho_runtime.manifest\n"
+            "import ohho_runtime.supervisor\n"
+            f"banned = {{{banned}}}\n"
+            "roots = {name.split('.')[0] for name in sys.modules}\n"
+            "bad = sorted(roots & banned)\n"
+            "raise SystemExit(0 if not bad else ','.join(bad))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr or result.stdout,
+        )
 
 
 if __name__ == "__main__":
