@@ -137,13 +137,32 @@ Fetch once (cached under `~/.ohho/assets/booster`, not committed):
 python -m ohho_booster.assets
 ```
 
-Then, headless (no viewer; the process is a physics thread):
+Then, headless (the default; the process is a physics thread):
 
 ```bash
 ohho sim --robot booster-t2
 ```
 
 That prepares, enters walk mode, and drives the usual timed pattern.
+
+The same loop can open MuJoCo's native window. The viewer is
+`mujoco.viewer.launch_passive`, synced from each model step:
+
+```bash
+ohho sim --robot booster-t2 --viewer
+ohho sim-serve --robot booster-t2 --viewer
+```
+
+On macOS, `python` does not run that window on the main thread. Use the
+launcher installed with MuJoCo:
+
+```bash
+mjpython -m ohho sim --robot booster-t2 --viewer
+```
+
+A session with no display (CI, or SSH without a display) makes `--viewer`
+exit with an error. The headless command is what CI runs.
+
 `plugins/ohho-booster/scripts/walk_check.py` is the scripted check: stand
 30 s, walk about 1 m at 0.3 m/s, turn, and stop. The same function is what
 the unit test asserts.

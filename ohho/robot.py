@@ -37,6 +37,7 @@ class Robot:
         *,
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
+        viewer: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -49,6 +50,12 @@ class Robot:
         ``safety_config`` is a safety config JSON path (default:
         ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
         e-stop even when standing.
+
+        ``viewer=True`` opens MuJoCo's passive viewer when the sim backend
+        exposes a MuJoCo model, and that backend syncs the window from its
+        loop. The default leaves the simulator headless. With no display,
+        connect raises :class:`ohho.mujoco_viewer.ViewerUnavailable`. On
+        macOS, run the process under ``mjpython``.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
@@ -58,6 +65,16 @@ class Robot:
                 tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
             )
         tp.connect()
+        if viewer:
+            from .mujoco_viewer import attach_passive_viewer
+
+            try:
+                attach_passive_viewer(tp)
+            except Exception:
+                try:
+                    tp.disconnect()
+                finally:
+                    raise
         bot = cls(spec, tp, rt)
         # live backends that own a loop start it here
         start_sim = getattr(tp, "start_sim", None)
@@ -244,6 +261,7 @@ def connect(
     *,
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
+    viewer: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -252,4 +270,5 @@ def connect(
         runtime=runtime,
         safety_config=safety_config,
         estop_damp=estop_damp,
+        viewer=viewer,
     )

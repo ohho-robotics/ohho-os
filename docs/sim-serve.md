@@ -85,4 +85,25 @@ Forwards velocity to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the 
 ohho sim-serve --backend isaac
 ohho sim-serve --backend mujoco
 ```
-Both exit non-zero and print `not built`.
+Both exit non-zero and print `not built`. `--viewer` on those backends does
+not change that.
+
+### 4. Native MuJoCo window
+
+```bash
+ohho sim-serve --robot <id> --viewer
+```
+
+Headless is the default. `--viewer` opens MuJoCo's passive viewer
+(`mujoco.viewer.launch_passive`) when `<id>` uses an in-process MuJoCo sim,
+and the sim loop syncs the window. `--backend ros2` rejects the flag. A
+session with no display exits with an error. On Windows, a process that
+cannot create an OpenGL context exits with an error as well, because
+``glfwCreateWindow`` would abort the process.
+
+On macOS, run the same command under MuJoCo's launcher so the window is
+created on the main thread:
+
+```bash
+mjpython -m ohho sim-serve --robot <id> --viewer
+```

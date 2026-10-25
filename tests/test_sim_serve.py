@@ -88,7 +88,7 @@ class TestNotBuiltBackends(unittest.TestCase):
         script = (
             "import sys\n"
             "from ohho.cli import main\n"
-            "code = main(['sim-serve', '--backend', 'mujoco'])\n"
+            "code = main(['sim-serve', '--backend', 'mujoco', '--viewer'])\n"
             "imported = 'mujoco' in sys.modules\n"
             "print('IMPORTED', imported)\n"
             "raise SystemExit(0 if code != 0 and not imported else 1)\n"
