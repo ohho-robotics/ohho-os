@@ -5,13 +5,13 @@
 > with no prior context can understand what exists, why it's built this way, and
 > exactly what to do next. Keep it up to date as milestones land.
 
-> **This checkout is the ohho-sdk tree.** The Python package is at the
-> repository root. Paths written below as `sdk/` refer to that root
-> (`tests/`, not `sdk/tests/`). The TypeScript workspace is in `ts/` and
-> is unchanged; `tsc` fails there. The licence is Apache-2.0 (OHH-18).
+> **This checkout is ohho-os** (Python `ohho-os` at the repository root).
+> Paths written below as `sdk/` refer to that root (`tests/`, not `sdk/tests/`).
+> The TypeScript SDK moved to [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk);
+> `ts/README.md` points there. The licence is Apache-2.0 (OHH-18).
 
 - **Package:** `ohho-os` (imports as `ohho`) — repository root of
-  [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
+  [ohho-os](https://github.com/ohho-robotics/ohho-os).
 - **What it is:** the open-source, robot-agnostic engine that powers the OhhO
   platform. One API controls any robot, **with or without ROS**, and carries the
   whole stack from perception to training.
@@ -59,12 +59,16 @@
 | Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.0), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, Claude-vision `VlmPerceptor`). CLI `ohho look`, `ohho memory` |
-| **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve` |
+| **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 complete** — `ohho.sim_serve` (JSON WebSocket session: velocity/joints/deadman/estop, 300ms timeout, estop latch; backends: `sim` and `ros2` via rosbridge; isaac/mujoco exit non-zero). CLI `ohho sim-serve`. Default port **8790** (8765 is OmniBot's Foxglove bridge). |
 | **Hardware self-test (`selftest`)** | ⏳ **OHH-87 code + sim done; real-robot run pending (Varun)** — `ohho.selftest`: Bench v0 bring-up suite (serial link, wheel spin direction with encoder integration, IMU 20+ Hz rate, STS3215 servo diagnostics [ID/voltage/temp/pos], camera frames) with dated JSON report + `--sim` CI mode. Real-robot bench run pending (Varun). CLI `ohho selftest` |
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
+| **Go2 MuJoCo Sim Demo (`sim-demo`)** | ✅ **OHH-134 complete** — `ohho.sim_demo` (6-shot scripted demo harness: doctor -> sim connection -> typed goal -> tool-call log -> SafetyGate clamp/e-stop demo -> end card; eval JSON schema + example log; recording checklist; labeled Simulation only everywhere; video recording pending Varun). CLI `ohho sim-demo` + `python scripts/sim_demo_harness.py`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
-| CLI (`ohho`) | ✅ `doctor list version config connect sim drive agent serve sim-serve sim-loop market profile nav look memory selftest` |
-| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 383 tests, OK (skipped=7). |
+| **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): five real sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). Docs `docs/mcp.md` |
+| **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
+| **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`, `--robot`), `config show`, `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo market profile nav look memory selftest mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`) |
+| Tests | Python 3.12, Windows: `python -m unittest discover -s tests` → Ran 682 tests, OK (skipped=7) after merging main. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_config.py` covers the OHH-314 robot-id resolver. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -151,6 +155,7 @@ sdk/
 │   ├── __init__.py       # exports Robot, connect, schema types, registry fns; __version__
 │   ├── schema.py         # Velocity, Odometry, JointReading, Telemetry, TransportStatus, ConnectionState, clamp()
 │   ├── capabilities.py   # capability string constants + ALL + is_known()
+│   ├── capability_params.py  # typed parameters for those capabilities (OHH-312)
 │   ├── registry.py       # RobotSpec v2 (frozen dataclass) + _BUILTINS + get_spec/list_specs/register/load_manifest
 │   ├── robot_spec.py     # RobotClass, per-class limits, assets, CiSim, category table (OHH-309)
 │   ├── transport.py      # Transport (ABC) + BaseTransport (callback bookkeeping)
@@ -185,15 +190,26 @@ sdk/
 │   │   └── act.py        # ACTModel inference adapter
 │   ├── sim_serve.py      # ohho.sim_serve — WebSocket teleop and telemetry server (`sim` and `ros2`)
 │   ├── sim_loop.py       # ohho.sim_loop — record -> validate -> tiny ACT train -> serve -> eval pipeline
+│   ├── sim_demo.py       # ohho.sim_demo — OHH-134 6-shot Go2 sim demo harness + eval log
 │   ├── selftest.py       # ohho.selftest — hardware self-test suite (motors, encoders, IMU, servos, camera)
 │   ├── safety.py         # ohho.safety — SafetyGate(Transport), SafetyProfile, AuditLog, arming policy
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor/list(--plugins)/version/config/connect/sim/drive/agent/serve/sim-serve/sim-loop/selftest; main()
+│   ├── cli.py            # argparse: doctor (--agent, --robot), config, verify, login, mcp, rules, sim-demo, and the other commands; main()
 │   ├── config.py         # robot-id resolver + RobotProfile (OHH-314)
 │   ├── session.py        # MCP RobotSession — one resolved robot id
+│   ├── mcp_server.py     # stdio JSON-RPC MCP server (OHH-173; tools from mcp_tools)
+│   ├── mcp_tools.py      # on-robot catalog + five real sim tools (OHH-47)
+│   ├── mcp_split.py      # hosted vs on-robot MCP product sets
+│   ├── mcp_connect.py    # `ohho mcp connect` — merge ohho into 7 AI client configs (OHH-275)
+│   ├── mcp_toml.py       # stdlib TOML read + surgical `[mcp_servers.ohho]` edit (Codex)
+│   ├── auth.py           # device-flow login, ~/.ohho/credentials.json, whoami (OHH-273)
+│   ├── agent_doctor.py   # ohho doctor --agent readiness (OHH-271 phase 7); rules hook is ohho.agent_rules
+│   ├── agent_rules/      # ohho rules install (OHH-271 phase 6); body is ohho-rules.md
+│   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
 │   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
+│   ├── cli.py            # argparse: doctor/verify/list(--plugins)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/selftest/mcp/rules; main()
 │   └── robots/
 │       ├── __init__.py   # package for the built-in plugin and example manifests
 │       ├── builtin.py    # built-in plugin (sim, omnibot, unitree-go2); vendor SDKs stay lazy
@@ -202,11 +218,17 @@ sdk/
 │   ├── architecture/
 │   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
-│   └── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── sim-demo.md       # OHH-134 sim demo recording checklist and eval log schema
+│   ├── mcp.md            # stdio MCP server + `ohho mcp connect` client configs
+│   ├── rules.md          # `ohho rules install` paths, markers, and safety text
+│   ├── cli.md            # CLI reference; ohho login / whoami / logout and whoami --json schema
+│   └── unitree.md        # Go2 DDS adapter — sim-tested only; hardware OHH-135
 ├── scripts/
 │   ├── check_classifiers.py
-│   └── sim_loop.py       # one-liner reproducible sim loop runner
-└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_selftest.py
+│   ├── sim_loop.py       # one-liner reproducible sim loop runner
+│   └── sim_demo_harness.py  # OHH-134 sim demo harness entry point
+└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py
 ```
 
 ---
@@ -269,8 +291,13 @@ specs and any load error. A duplicate robot id, transport scheme or sim
 backend is a load error naming both plugins. `resolve_transport` uses the
 factories from plugins that loaded, then the scheme dict.
 
-**Capabilities (`ohho/capabilities.py`):** `base.drive`, `base.holonomic_drive`,
-`legged.pose`, `manipulation`, `perception.rgb`, `perception.depth`.
+**Capabilities (`ohho/capabilities.py`, parameters in `ohho/capability_params.py`):**
+`base.drive`, `base.holonomic_drive`, `legged.pose`, `aerial`,
+`humanoid.locomotion`, `humanoid.posture`, `whole_body.joint`, `manipulation`,
+`manipulation.dual_arm`, `end_effector.gripper`, `end_effector.dex_hand`,
+`head.gaze`, `perception.rgb`, `perception.depth`, `perception.scan`. `has()`
+stays a string check. Typed parameters live on `spec.capability_params` and are
+descriptive; they are not safety caps. `register()` rejects an unknown name.
 
 **Transport interface (`ohho/transport.py`):** `connect()`, `disconnect()`,
 `status()`, `read()->Telemetry`, `send_velocity(Velocity)`,
