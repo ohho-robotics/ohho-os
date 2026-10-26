@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from ..hardware import resolve_device
+from .runner import BASE_ACTION_SCHEMA_VERSION
 
 
 class ServeUnavailable(RuntimeError):
@@ -32,6 +33,7 @@ try:
 
     class InferenceResponse(BaseModel):
         action: dict
+        schema_version: int = 0
         raw_output: str = ""
         latency_ms: float = 0.0
 
@@ -47,6 +49,7 @@ def build_app(
     api_key: str = "",
     auto_load: bool = False,
     mock_model: bool = False,
+    robot_id: str = "",
 ):
     """Build a FastAPI inference app (testable without launching).
 
@@ -59,6 +62,8 @@ def build_app(
         auto_load: load the model on startup vs. lazy via ``/load_model``.
         mock_model: if True, inject a no-op model that returns zero actions
             (for the record→train→serve sim loop, no GPU needed).
+        robot_id: when set to a base-only robot (e.g. ``unitree-go2``), ``/predict``
+            uses the base-velocity action schema (see ``BASE_ACTION_SCHEMA_VERSION``).
 
     Returns:
         A FastAPI ``FastAPI`` application instance.
@@ -79,6 +84,8 @@ def build_app(
     dev = resolve_device(device)
     _model: Any = None
     _model_path = model_path
+    _robot_id = robot_id
+    _use_base_action = _base_action_contract(robot_id, model_class)
     app.state.model = None
 
     def _check_auth(x_api_key: Optional[str] = Header(None)):
@@ -90,7 +97,7 @@ def build_app(
             model_class = "act"
 
     if mock_model:
-        _model = _MockModel(dev)
+        _model = _make_mock_model(dev, model_class, robot_id)
         if model_path:
             _model.load_model(model_path)
     elif auto_load and model_path:
@@ -112,23 +119,37 @@ def build_app(
     @app.post("/load_model")
     async def load_model(
         model_path: str = "",
+        model_class: str = "",
+        mock: bool = False,
+        robot_id: str = "",
         x_api_key: Optional[str] = Header(None),
     ):
         _check_auth(x_api_key)
-        nonlocal _model, _model_path, model_class
+        nonlocal _model, _model_path, _robot_id, _use_base_action
+        cls_name = model_class or ""
         path = model_path or _model_path
-        if not path:
+        if not path and not mock:
             raise HTTPException(400, "model_path required")
-        _model_path = path
-        if not model_class:
-            if _is_act_checkpoint(path):
-                model_class = "act"
+        if path:
+            _model_path = path
+        if robot_id:
+            _robot_id = robot_id
+            _use_base_action = _base_action_contract(_robot_id, cls_name)
+        elif cls_name:
+            _use_base_action = _base_action_contract(_robot_id, cls_name)
 
-        if mock_model:
-            _model = _MockModel(dev)
-            _model.load_model(path)
+        if not cls_name:
+            if path and _is_act_checkpoint(path):
+                cls_name = "act"
+            elif _use_base_action:
+                cls_name = "go2"
+
+        use_mock = mock_model or mock
+        if use_mock:
+            _model = _make_mock_model(dev, cls_name, _robot_id)
+            _model.load_model(path or "mock")
         else:
-            cls = _resolve_model_class(model_class)
+            cls = _resolve_model_class(cls_name)
             try:
                 _model = cls(device=dev)
             except TypeError:
@@ -138,7 +159,13 @@ def build_app(
             except TypeError:
                 _model.load_model(path)
         app.state.model = _model
-        return {"status": "loaded", "model": type(_model).__name__}
+        if _is_go2_model(_model):
+            _use_base_action = True
+        return {
+            "status": "loaded",
+            "model": type(_model).__name__,
+            "schema_version": BASE_ACTION_SCHEMA_VERSION if _use_base_action else 0,
+        }
 
     @app.post("/predict", response_model=InferenceResponse)
     async def predict(
@@ -158,7 +185,12 @@ def build_app(
             action = result
         else:
             action = {"vector": list(result)}
-        return InferenceResponse(action=action, latency_ms=latency)
+        schema_version = 0
+        if _use_base_action or "base" in action:
+            action, schema_version = _normalize_base_action(action)
+        return InferenceResponse(
+            action=action, schema_version=schema_version, latency_ms=latency
+        )
 
     return app
 
@@ -252,6 +284,15 @@ def _resolve_model_class(dotted: str):
         from .act import ACTModel
 
         return ACTModel
+    if dotted in (
+        "go2",
+        "go2_base",
+        "Go2PolicyModel",
+        "ohho.serve.go2.Go2PolicyModel",
+    ):
+        from .go2 import Go2PolicyModel
+
+        return Go2PolicyModel
     parts = dotted.rsplit(".", 1)
     if len(parts) != 2:
         raise ValueError(f"invalid model class path: {dotted}")
@@ -293,4 +334,70 @@ class _MockModel:
         return {"vector": [0.0] * 9, "instruction": instruction, "mock": True}
 
 
-__all__ = ["serve", "build_app", "ServeUnavailable"]
+def _is_go2_model(model: Any) -> bool:
+    from .go2 import Go2PolicyModel
+
+    return isinstance(model, Go2PolicyModel)
+
+
+def _make_mock_model(device: str, model_class: str, robot_id: str):
+    if _base_action_contract(robot_id, model_class):
+        from .go2 import Go2PolicyModel
+
+        m = Go2PolicyModel(device=device)
+        m.load_model("mock")
+        m.config.update({"mock": True, "policy": "go2_mock", "default_vx": 0.2})
+        m._mock = True
+        return m
+    return _MockModel(device)
+
+
+def _base_action_contract(robot_id: str, model_class: str) -> bool:
+    if model_class in (
+        "go2",
+        "go2_base",
+        "Go2PolicyModel",
+        "ohho.serve.go2.Go2PolicyModel",
+    ):
+        return True
+    if not robot_id:
+        return False
+    try:
+        from ..registry import get_spec
+
+        spec = get_spec(robot_id)
+        from .. import capabilities as caps
+
+        return not spec.has(caps.MANIPULATION)
+    except Exception:
+        return False
+
+
+def _normalize_base_action(action: dict) -> tuple[dict, int]:
+    if "base" in action and isinstance(action["base"], dict):
+        base = action["base"]
+        out = {
+            "base": {
+                "vx": float(base.get("vx", 0.0)),
+                "vy": float(base.get("vy", 0.0)),
+                "wz": float(base.get("wz", 0.0)),
+            }
+        }
+        if "mode" in action:
+            out["mode"] = action["mode"]
+        return out, BASE_ACTION_SCHEMA_VERSION
+    vec = action.get("vector") or []
+    if len(vec) >= 3:
+        out = {"base": {"vx": float(vec[0]), "vy": float(vec[1]), "wz": float(vec[2])}}
+        if action.get("mode"):
+            out["mode"] = action["mode"]
+        return out, BASE_ACTION_SCHEMA_VERSION
+    return action, BASE_ACTION_SCHEMA_VERSION
+
+
+__all__ = [
+    "serve",
+    "build_app",
+    "ServeUnavailable",
+    "BASE_ACTION_SCHEMA_VERSION",
+]

@@ -1,0 +1,5 @@
+model = "gpt-5.1"
+
+[mcp_servers.other]
+command = "npx"
+args = ["-y", "other-server"]
