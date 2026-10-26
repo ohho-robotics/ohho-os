@@ -1,0 +1,132 @@
+# Multi-arch and multi-distro CI. See docs/ci-multiarch.md.
+name: Multi-arch CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  unit:
+    name: py3.12 / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e '.[serve]'
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      # ohho-runtime (import ohho_runtime) is the top-level runtime/ distribution.
+      # ohho/runtime/ is the executor port, already covered by the unit tests.
+      # The step skips when runtime/ is absent so it starts passing once that
+      # tree lands, with no edit to this workflow.
+      - name: ohho-runtime tests
+        run: bash scripts/ci/run-ohho-runtime-tests.sh
+
+  ros2:
+    name: ros2 ${{ matrix.distro }} / ${{ matrix.rmw }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The container image is the distro under test. Both rows use the
+          # standard x64 runner; Noble vs Jammy comes from the image.
+          - distro: jazzy
+            image: ros:jazzy-ros-base-noble
+            runner: ubuntu-24.04
+            rmw: rmw_cyclonedds_cpp
+            rmw_apt: ros-jazzy-rmw-cyclonedds-cpp
+          - distro: humble
+            image: ros:humble-ros-base-jammy
+            runner: ubuntu-24.04
+            rmw: rmw_cyclonedds_cpp
+            rmw_apt: ros-humble-rmw-cyclonedds-cpp
+    container:
+      image: ${{ matrix.image }}
+    env:
+      ROS_DISTRO: ${{ matrix.distro }}
+      RMW_IMPLEMENTATION: ${{ matrix.rmw }}
+      RMW_APT: ${{ matrix.rmw_apt }}
+      ROS_DOMAIN_ID: "199"
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ohho-os and the pinned RMW
+        run: bash scripts/ci/ros2-install.sh
+      - name: Ros2Runtime and Ros2Transport tests
+        run: bash scripts/ci/ros2-test.sh
+      - name: Source ROS and load the pinned RMW
+        run: bash scripts/ci/ros2-rmw-smoke.sh
+      # Hook for RT-08 (QoS catalogue). Those tests are not in this checkout.
+      # Add the command in this step so it runs with ROS sourced and with this
+      # row's RMW_IMPLEMENTATION. Keep them out of tests/test_ros2.py: that
+      # module injects a fake node and does not open a DDS participant.
+      - name: QoS catalogue hook (RT-08)
+        run: |
+          pinned="${RMW_IMPLEMENTATION}"
+          set +e
+          set +u
+          # shellcheck disable=SC1091
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          source_status=$?
+          set -e
+          if [[ "${source_status}" -ne 0 ]]; then
+            echo "failed to source /opt/ros/${ROS_DISTRO}/setup.bash (status ${source_status})" >&2
+            exit "${source_status}"
+          fi
+          export RMW_IMPLEMENTATION="${pinned}"
+          # shellcheck disable=SC1091
+          source scripts/ci/ros2-venv.sh
+          # shellcheck disable=SC1091
+          source scripts/ci/ros2-loopback.sh
+          echo "RT-08 QoS catalogue: no tests in this checkout."
+          echo "Add the catalogue command below this line. ROS is sourced and DDS is loopback."
+          echo "Row ROS_DISTRO=${ROS_DISTRO} RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}"
+
+  l4t:
+    name: l4t r36.2.0
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Public L4T base (arm64). No --gpus and no nvidia runtime.
+      # r36.2.0 is the newest published tag of nvcr.io/nvidia/l4t-base.
+      - name: Import and unit tests in L4T base (no GPU)
+        run: |
+          docker run --rm \
+            --platform linux/arm64 \
+            --entrypoint bash \
+            -e OHHO_L4T_INNER=1 \
+            -e DEBIAN_FRONTEND=noninteractive \
+            -e NVIDIA_VISIBLE_DEVICES= \
+            -e NVIDIA_DRIVER_CAPABILITIES= \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            nvcr.io/nvidia/l4t-base:r36.2.0 \
+            /work/scripts/ci/l4t-inner.sh

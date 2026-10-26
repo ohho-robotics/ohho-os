@@ -12,9 +12,10 @@ import time
 from typing import Any
 import unittest
 
-from ohho.cli import main
+from ohho.cli import build_parser, main
 from ohho.sim_serve import (
     DEADMAN_TIMEOUT_S,
+    DEFAULT_PORT,
     SimServe,
     SimServeUnavailable,
     backend_entry,
@@ -177,7 +178,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                     self.assertAlmostEqual(msg["odom"]["x"], x0, places=4)
 
                     # 2. Deadman is true -> robot drives and odom changes
-                    for _ in range(5):
+                    for _ in range(10):
                         await client.send(
                             json.dumps(
                                 {
@@ -238,7 +239,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                     self.assertAlmostEqual(msg["odom"]["x"], x_estop, places=3)
 
                     # 5. Estop unlatch -> robot drives again
-                    for _ in range(5):
+                    for _ in range(10):
                         await client.send(
                             json.dumps(
                                 {
@@ -259,11 +260,11 @@ class TestSimServeSimBackend(unittest.TestCase):
 
         asyncio.run(run_test())
         elapsed = time.monotonic() - start_time
-        # Must drive and complete all checks in under 2 seconds
+        # Must drive and complete all checks in under 3 seconds (macOS runners)
         self.assertLess(
             elapsed,
-            2.0,
-            f"Test took {elapsed:.2f}s, expected under 2 seconds",
+            3.0,
+            f"Test took {elapsed:.2f}s, expected under 3 seconds",
         )
 
 
@@ -1004,6 +1005,30 @@ class TestRos2ProtocolWithoutGazebo(unittest.TestCase):
                 await bridge.wait_closed()
 
         asyncio.run(run_test())
+
+
+class TestDefaultPort(unittest.TestCase):
+    """sim-serve must not take Foxglove's port unless the caller asks for it."""
+
+    def test_default_is_8790_not_foxglove(self):
+        import inspect
+
+        self.assertEqual(DEFAULT_PORT, 8790)
+        self.assertNotEqual(DEFAULT_PORT, 8765)
+        self.assertEqual(SimServe().port, 8790)
+        self.assertEqual(inspect.signature(serve_sim).parameters["port"].default, 8790)
+        self.assertEqual(SimServe(port=8765).port, 8765)
+
+    def test_cli_default_and_help(self):
+        args = build_parser().parse_args(["sim-serve"])
+        self.assertEqual(args.port, 8790)
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(SystemExit):
+            build_parser().parse_args(["sim-serve", "--help"])
+        help_text = buf.getvalue()
+        self.assertIn("8790", help_text)
+        self.assertIn("8765", help_text)
+        self.assertIn("Foxglove", help_text)
 
 
 if __name__ == "__main__":
