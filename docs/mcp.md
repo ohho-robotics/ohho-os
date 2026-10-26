@@ -7,21 +7,24 @@ existing `ohho mcp --sim` invocations keep working.
 
 | Tool | What it does |
 |------|----------------|
-| `connect` | `Robot.connect` in simulation (`sim://` enforced) |
-| `drive` | Velocity command for a duration, then stop |
+| `connect` | `Robot.connect`. `sim://` unless the human passed `--allow-hardware`. Never arms. |
+| `drive` | Velocity for a duration, then stop. Clamped to the sim or profile cap. |
 | `telemetry` | Odometry, battery, joints |
-| `nav_goto` | Native `Navigator.navigate_to` |
-| `look` | `SimPerceptor.look` + spatial memory |
+| `nav_goto` | Native `Navigator.navigate_to` (simulation) |
+| `look` | `SimPerceptor.look` + spatial memory (simulation) |
+| `emergency_stop` | Latch e-stop on sim or a gated link. Always allowed. |
 
 The same process also serves the OHH-173 on-robot catalog (`connect.listRobots`,
-`connect.connect`, `bridge.listAdapters`, and the other on-robot tools). The
-five tools above refuse any session that is not simulated.
+`connect.connect`, `connect.emergencyStop`, `bridge.listAdapters`, and the
+other on-robot tools). Those tools follow the same transport rule.
 
 No extra package is required — the server is stdlib:
 
 ```bash
 ohho mcp serve
 ohho mcp serve --sim
+# human only — opens a non-sim URI through SafetyGate, still disarmed:
+# ohho mcp serve --allow-hardware --transport serial:///dev/ttyUSB0
 ```
 
 `ohho mcp connect` (OHH-275) registers that local server with an AI client.
@@ -222,16 +225,55 @@ npx @modelcontextprotocol/inspector ohho mcp serve --sim
 Connect, call `connect` with `{"robot":"omnibot","transport":"sim://"}`, then
 `telemetry` or `drive`.
 
-## Safety
+## Safety (OHH-278)
 
-The Link v0 tools **refuse** non-`sim` transports at `connect`, and refuse
-`drive`, `telemetry`, `nav_goto`, and `look` unless the session robot is
-simulated. They do not expose `arm`, `release_stop`, or raw adapter commands.
-`ohho mcp connect` only records how to launch that server. It does not arm
-hardware and it does not call `Robot.connect`.
+Default is `sim://`. `connect` and `connect.connect` refuse any other URI
+with `hardware_refused` / `sim_only`. The text still says the tools only
+support `sim://`.
+
+`--allow-hardware` is the only switch, and only on the `ohho mcp serve`
+command a human starts. `OHHO_ALLOW_HARDWARE`, `OHHO_ARM_HARDWARE`, and tool
+arguments (`allowHardware`, `allow_hardware`) do not enable hardware.
+`ohho mcp connect` writes `mcp serve` with neither `--allow-hardware` nor
+`--arm`.
+
+With the flag, a non-sim URI goes through `Robot.connect`, which wraps it in
+`SafetyGate` (caps, 300 ms command watchdog, 500 ms state watchdog, latched
+e-stop, sport allowlist, audit). The server does not call `arm()` or
+`release_stop()`. Stdin is the JSON-RPC pipe, so there is no interactive TTY
+and arming cannot succeed. `drive`, `connect.sendVelocity`,
+`pilot.applyJoystick`, and `autonomy.navigateTo` return `motion_refused` /
+`not_armed` and send zero velocity. The message tells the agent to ask the
+human to arm in their own terminal.
+
+`emergency_stop` and `connect.emergencyStop` work on simulation and on a
+gated link. They latch. A later velocity call returns `estop_latched`. No
+tool clears the latch.
+
+Registration rejects a tool whose name arms, releases an e-stop, or changes
+a profile or a limit. `tools/list` has no `arm`, `release_stop`,
+`release-stop`, `profile`, or `limit` tool. `emergency_stop` is allowed.
+
+Results that use a robot include `"backend": "sim"` or `"backend": "hardware"`.
+Velocity results include `requested`, `applied`, `clamped`, and `cap`. A
+2 m/s request comes out at or below the simulator cap (OmniBot 0.2 m/s) or
+the safety-profile cap (Go2 forward 0.5 m/s), whichever applies.
+
+`look` and `nav_goto` stay on the simulator even when hardware is allowed.
+`nav_goto` on a disarmed hardware link is refused before it drives.
+
+`ohho mcp connect` only records how to launch the server. It does not arm
+hardware and it does not call `Robot.connect`. See [safety.md](safety.md).
 
 ## Manual check
 
 A person should confirm, in Cursor and in Claude Code, that the `ohho` server
-shows up and that `tools/list` returns the five sim tools (`connect`, `drive`,
-`telemetry`, `nav_goto`, `look`). That check is not run by CI.
+shows up and that `tools/list` returns `connect`, `drive`, `telemetry`,
+`nav_goto`, `look`, and `emergency_stop`, and does not return `arm` or
+`release_stop`. That check is not run by CI.
+
+Supervised hardware check (Varun, not CI, not an agent): with the robot
+present and the area clear, start `ohho mcp serve --allow-hardware` against
+the real transport and confirm motion is refused until the robot is armed
+from a separate terminal. Do not arm from the MCP client. Confirm
+`emergency_stop` latches. This checkout does not run that check.

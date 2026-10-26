@@ -88,6 +88,39 @@ headless agent or CI job. It does not stop code that runs in the same Python
 process and reaches into private attributes; this is a software guard, not a
 replacement for the robot's own e-stop or the remote.
 
+## MCP server (OHH-278)
+
+`ohho mcp serve` accepts only `sim://`. A human can pass `--allow-hardware`
+on that command to let a tool open a non-sim URI. Nothing else turns hardware
+on: not `OHHO_ALLOW_HARDWARE`, not `OHHO_ARM_HARDWARE`, and not a tool
+argument such as `allowHardware`.
+
+With the flag, `Robot.connect` wraps the link in `SafetyGate` the same way
+`ohho connect` does (profile, caps, watchdogs, allowlist, audit). The process
+never calls `arm()` or `release_stop()`. Its stdin is the JSON-RPC pipe, not
+an interactive terminal, so arming would fail closed even if it tried. Motion
+tools return a structured error (`motion_refused` / `not_armed`) and send
+zero velocity. The message tells the agent to ask the human. The human arms
+from their own terminal
+(`OHHO_ARM_HARDWARE=1`, `ohho connect … --arm`, then the typed phrase).
+
+`emergency_stop` is always registered and always allowed, on `sim://` and on
+a gated link. It latches. There is no MCP tool to clear that latch.
+
+Tool registration rejects names that arm, release an e-stop, or change a
+safety profile or a limit (`arm`, `release_stop`, `release-stop`,
+`disarm-override`, `profile`, `limit`, and the same words inside a longer
+name). `emergency_stop` stays allowed.
+
+Every tool result that talks to a robot includes `"backend": "sim"` or
+`"backend": "hardware"`. A velocity result includes `requested`, `applied`,
+`clamped`, and `cap`. A 2 m/s request is clamped to the simulator limit or
+the safety-profile cap, whichever is lower. A disarmed hardware link does
+not accept that command (`sent: false`); the gate is left with zero velocity.
+
+`ohho mcp connect` records `ohho mcp serve` with no `--allow-hardware` and
+no `--arm`.
+
 ## Profiles
 
 | Robot | `max_vx` | `max_vy` | `max_wz` | accel x / y / yaw | Notes |
