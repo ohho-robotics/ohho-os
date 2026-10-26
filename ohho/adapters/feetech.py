@@ -24,6 +24,7 @@ import threading
 import time
 from typing import Callable, Optional, Sequence
 
+from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
@@ -35,6 +36,8 @@ from ..schema import (
 )
 from ..transport import BaseTransport
 from .errors import AdapterUnavailable
+
+_READER_HZ = 50.0
 
 TICKS_PER_REV: int = 4096
 HOME_TICKS: int = 2048
@@ -105,6 +108,7 @@ class FeetechTransport(BaseTransport):
         self._connected_since: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def _motors_dict(self) -> dict[str, tuple[int, str]]:
@@ -288,16 +292,31 @@ class FeetechTransport(BaseTransport):
         self._positions = self._read_positions()
         self._emit_telemetry(self._snapshot())
 
-    def _start_reader(self, hz: float = 50.0) -> None:
+    def loop_stats(self) -> LoopStats:
+        """Timing of the position reader thread."""
+        return self._loop_timer.stats()
+
+    def _start_reader(self, hz: float = _READER_HZ) -> None:
         if self._thread is not None:
             return
-        self._stop.clear()
         period = 1.0 / hz
+        if self._loop_timer.period_s != period:
+            self._loop_timer = LoopTimer(period)
+        self._stop.clear()
+        timer = self._loop_timer
 
         def loop() -> None:
+            timer.start()
             while not self._stop.is_set():
-                self._poll_once()
-                time.sleep(period)
+                timer.begin()
+                try:
+                    self._poll_once()
+                finally:
+                    delay = timer.end()
+                if self._stop.is_set():
+                    return
+                if delay > 0.0 and self._stop.wait(delay):
+                    return
 
         self._thread = threading.Thread(
             target=loop, name="ohho-feetech-rx", daemon=True

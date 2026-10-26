@@ -71,9 +71,13 @@ Example server message:
 
 ### 1. In-process simulation
 ```bash
-ohho sim-serve --backend sim --port 8765
+ohho sim-serve --backend sim --port 8790
 ```
 Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
+
+Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
+
+The default port is **8790**. Port 8765 is the Foxglove bridge in OmniBot (`robot.launch.py`, `simulation.launch.py`); sim-serve does not bind it unless you pass `--port 8765` yourself.
 
 ### 2. Live robot
 ```bash

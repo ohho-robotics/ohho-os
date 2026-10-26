@@ -11,6 +11,11 @@ tests never touch hardware; pass an explicit transport URI (``serial://…``,
 ``dds://…``, ``feetech://…``) to engage a real robot. For a mobile-manipulator
 that has ``manipulation`` capability, ``serial://<base_port>,<arm_port>``
 auto-composes a composite (Yahboom base + Feetech arm).
+
+Plugin registries are asked first. A scheme a plugin registered uses that
+factory. ``sim://`` (and auto) uses ``spec.sim_backend`` when it names a plugin
+sim backend, and otherwise keeps the simulator return below. Schemes no plugin
+registered — including entries added to ``_HARDWARE`` — still resolve here.
 """
 
 from __future__ import annotations
@@ -63,6 +68,26 @@ def _split_ports(address: str) -> tuple[str, str]:
     return address.strip(), DEFAULT_ARM_PORT
 
 
+def _plugins_first(
+    uri: Optional[str], spec: Optional[RobotSpec], runtime: object
+) -> Optional[Transport]:
+    """Plugin transport, or the spec's sim backend. ``None`` uses the dict below.
+
+    ``sim://`` and auto stay on the returns in :func:`resolve_transport` unless
+    the spec declares ``sim_backend``. That keeps an undeclared ``sim://`` on
+    today's simulator, including any later id-based sim branch in this function.
+    """
+    from ..plugins import plugin_sim_backend, plugin_transport
+
+    if uri is None:
+        return plugin_sim_backend(spec, "", runtime)
+    scheme, _sep, address = uri.partition("://")
+    scheme = scheme.lower()
+    if scheme in ("sim", "simulated"):
+        return plugin_sim_backend(spec, address, runtime)
+    return plugin_transport(scheme, spec, address, runtime)
+
+
 def resolve_transport(
     uri: Optional[str] = None,
     spec: Optional[RobotSpec] = None,
@@ -71,7 +96,8 @@ def resolve_transport(
     """Pick a transport for a robot.
 
     - ``uri=None`` (auto) → the simulator (explicit URIs engage hardware).
-    - ``uri="sim://"`` → the simulator.
+      A declared ``spec.sim_backend`` selects that plugin backend instead.
+    - ``uri="sim://"`` → the simulator, or the spec's declared sim backend.
     - ``uri="serial://<port>"`` → Yahboom serial adapter. If the robot has
       ``manipulation`` capability, ``<port>`` may be ``base_port,arm_port`` and
       a composite (Yahboom base + Feetech arm) is returned.
@@ -79,8 +105,12 @@ def resolve_transport(
     - ``uri="dds://<iface>"`` → Unitree DDS adapter.
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
+    - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
     """
+    routed = _plugins_first(uri, spec, runtime)
+    if routed is not None:
+        return routed
     if uri is None:
         return SimTransport(spec)
     scheme, _sep, address = uri.partition("://")
@@ -103,9 +133,12 @@ def resolve_transport(
 
     cls = _HARDWARE.get(scheme)
     if cls is None:
+        from ..plugins import describe_plugin_schemes
+
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation."
+            f"dds, ros2 — or omit the transport to run in simulation. "
+            f"{describe_plugin_schemes()}"
         )
     return cls(spec, address)
 
