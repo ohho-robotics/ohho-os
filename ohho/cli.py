@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
@@ -855,8 +856,43 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """Accept a second optional positional that follows options.
+
+    Python 3.10 and 3.11 mark a ``nargs='?'`` positional as consumed when it
+    matches no tokens and the next token is an option (CPython gh-59317). The
+    goal or skill name in ``ohho agent ROBOT --transport sim:// GOAL`` is then
+    an unrecognized argument. 3.12 leaves that empty match for later. This
+    class applies that 3.12 rule on older interpreters. Subparsers inherit it
+    (``parser_class`` defaults to ``type(self)``).
+    """
+
+    if sys.version_info < (3, 12):
+
+        def _match_arguments_partial(self, actions, arg_strings_pattern):
+            for i in range(len(actions), 0, -1):
+                actions_slice = actions[:i]
+                pattern = "".join(
+                    self._get_nargs_pattern(action) for action in actions_slice
+                )
+                match = re.match(pattern, arg_strings_pattern)
+                if match is None:
+                    continue
+                result = [len(group) for group in match.groups()]
+                # Next token is an option. Drop trailing positionals that
+                # matched nothing so they can still take a later argument.
+                if (
+                    match.end() < len(arg_strings_pattern)
+                    and arg_strings_pattern[match.end()] == "O"
+                ):
+                    while result and not result[-1]:
+                        del result[-1]
+                return result
+            return []
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
     )
     p.add_argument(
