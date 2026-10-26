@@ -14,6 +14,7 @@ from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
+from .sim_serve import DEFAULT_PORT
 
 
 def _cmd_version(args) -> int:
@@ -44,7 +45,7 @@ def _cmd_doctor(args) -> int:
     print(f"  device      : {resolve_device('auto')}")
     print(f"  robots      : {', '.join(s.id for s in list_specs())}")
     brain = (
-        "harness — full perceive→reason→act→reflect"
+        "harness -- full perceive->reason->act->reflect"
         if harness_available()
         else "scripted fallback  (install 'ohho-os[agent]' + repo agent_engine)"
     )
@@ -71,6 +72,13 @@ def _cmd_doctor(args) -> int:
 
 
 def _cmd_list(args) -> int:
+    if getattr(args, "plugins", False):
+        from .plugins import format_plugin_report
+
+        # Register clean plugins first so ``ohho list`` and ``--plugins`` agree.
+        list_specs()
+        print(format_plugin_report())
+        return 0
     for s in list_specs():
         caps = ", ".join(s.capabilities) or "—"
         print(f"{s.id:<14} {s.name:<18} {s.category:<20} [{caps}]")
@@ -173,10 +181,26 @@ def _cmd_drive(args) -> int:
         print(
             f"driving {bot.spec.id}: vx={args.vx} vy={args.vy} w={args.w} for {args.seconds:.0f}s"
         )
-        end = time.monotonic() + args.seconds
-        while time.monotonic() < end:
-            bot.drive(vx=args.vx, vy=args.vy, w=args.w)
-            time.sleep(0.1)
+        period = 0.1
+        tp = bot.transport
+        step_fn = getattr(tp, "step", None)
+        stepped = bot.simulated and callable(step_fn)
+        stop_sim = getattr(tp, "stop_sim", None)
+        start_sim = getattr(tp, "start_sim", None)
+        if stepped and callable(stop_sim):
+            stop_sim()
+        if stepped:
+            steps = max(1, int(round(args.seconds / period)))
+            for _ in range(steps):
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
+                step_fn(period)
+        else:
+            end = time.monotonic() + args.seconds
+            while time.monotonic() < end:
+                bot.drive(vx=args.vx, vy=args.vy, w=args.w)
+                time.sleep(period)
+        if stepped and callable(start_sim):
+            start_sim()
         bot.stop()
         time.sleep(0.1)
         t = bot.telemetry()
@@ -264,6 +288,24 @@ def _cmd_sim_loop(args) -> int:
         return 1
 
 
+def _cmd_sim_demo(args) -> int:
+    from .sim_demo import SimDemoHarness
+
+    harness = SimDemoHarness(
+        robot_id=args.robot,
+        transport_uri=args.transport,
+        sim_mode=args.sim_mode,
+        fast=args.fast,
+        goal=args.goal,
+        out_path=args.out if args.out else None,
+    )
+    if args.check_overlays:
+        harness.print_overlays_checklist()
+    res = harness.run()
+    overall = res.get("summary", {}).get("overall_result", "FAIL")
+    return 0 if overall == "PASS" else 1
+
+
 def _cmd_market(args) -> int:
     from .market import list_skills, run_skill, SkillRequirementsNotMet
 
@@ -298,7 +340,7 @@ def _cmd_market(args) -> int:
         finally:
             bot.disconnect()
         return 0
-    print("usage: ohho market [list|run]")
+    print("usage: ohho skills [list|run]  (alias: market)")
     return 1
 
 
@@ -592,6 +634,8 @@ def _cmd_selftest(args) -> int:
     print(f"Report saved to: {out_path}")
     if report.overall_status == "FAIL":
         return 1
+    if args.sim or report.mode == "sim":
+        return 0
     if report.mode == "hardware" and report.summary.get("passed", 0) == 0:
         if not getattr(args, "allow_all_skip", False):
             print(
@@ -740,7 +784,13 @@ def build_parser() -> argparse.ArgumentParser:
     # Not a way to select hardware. Any value other than sim:// is refused.
     verify.add_argument("--transport", default=None, help=argparse.SUPPRESS)
     verify.set_defaults(func=_cmd_verify)
-    sub.add_parser("list", help="list built-in robots").set_defaults(func=_cmd_list)
+    listed = sub.add_parser("list", help="list registered robots")
+    listed.add_argument(
+        "--plugins",
+        action="store_true",
+        help="show each robot plugin, its specs, and any load error",
+    )
+    listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
 
     login_p = sub.add_parser(
@@ -809,7 +859,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
     ss.add_argument(
-        "--port", type=int, default=8765, help="port to bind the WebSocket server"
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=(
+            "WebSocket port (default: 8790). "
+            "Do not use 8765: that is OmniBot's Foxglove bridge"
+        ),
     )
     ss.add_argument(
         "--rosbridge",
@@ -862,14 +918,63 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sl.set_defaults(func=_cmd_sim_loop)
 
-    mk = sub.add_parser("market", help="list and run robot skills")
-    mk_sub = mk.add_subparsers(dest="action")
-    mk_sub.add_parser("list", help="list registered skills").set_defaults(action="list")
-    mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
-    _add_robot_args(mk_run)
-    mk_run.add_argument("skill_name", help="skill name (see 'ohho market list')")
-    mk_run.set_defaults(action="run")
-    mk.set_defaults(func=_cmd_market)
+    sd = sub.add_parser(
+        "sim-demo",
+        help="run OHH-134 sim demo harness (typed goal -> agent -> Go2 in MuJoCo)",
+    )
+    sd.add_argument(
+        "--robot",
+        default="unitree-go2",
+        help="robot id to evaluate (default: unitree-go2)",
+    )
+    sd.add_argument(
+        "--transport",
+        default="dds://lo?domain=1",
+        help="transport URI (default: dds://lo?domain=1)",
+    )
+    sd.add_argument(
+        "--sim",
+        "--mock",
+        action="store_true",
+        dest="sim_mode",
+        help="run in simulated loopback mode (safe for CI and offline machines)",
+    )
+    sd.add_argument(
+        "--fast",
+        action="store_true",
+        help="run without sleep delays (fast execution for automated tests/CI)",
+    )
+    sd.add_argument(
+        "--goal",
+        default="Stand up, drive forward 0.3 m, then stop and lie down.",
+        help="typed natural language goal prompt",
+    )
+    sd.add_argument(
+        "--out",
+        default="",
+        help="path to write evaluation JSON report (default: print summary only)",
+    )
+    sd.add_argument(
+        "--check-overlays",
+        action="store_true",
+        help="print video recording and overlays checklist for Varun",
+    )
+    sd.set_defaults(func=_cmd_sim_demo)
+
+    for cmd_name, cmd_help in (
+        ("skills", "local skill registry — list and run registered skills"),
+        ("market", "alias for skills (local skill registry)"),
+    ):
+        mk = sub.add_parser(cmd_name, help=cmd_help)
+        mk_sub = mk.add_subparsers(dest="action")
+        mk_sub.add_parser("list", help="list registered skills").set_defaults(
+            action="list"
+        )
+        mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
+        _add_robot_args(mk_run)
+        mk_run.add_argument("skill_name", help="skill name (see 'ohho skills list')")
+        mk_run.set_defaults(action="run")
+        mk.set_defaults(func=_cmd_market)
 
     nv = sub.add_parser("nav", help="native navigation: goto / explore / map")
     nv_sub = nv.add_subparsers(dest="action")

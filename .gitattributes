@@ -2,3 +2,6 @@
 # (core.autocrlf) do not change the bytes the installer embeds.
 ohho/agent_rules/*.md text eol=lf
 tests/fixtures/rules/** text eol=lf
+scripts/ci/*.sh text eol=lf
+.github/workflows/multiarch.yml text eol=lf
+docs/ci-multiarch.md text eol=lf

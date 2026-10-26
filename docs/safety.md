@@ -25,7 +25,7 @@ bot.arm()            # re-arm before motion is accepted again
 ```
 
 From the CLI, every command that takes a robot (`connect`, `drive`, `agent`,
-`nav`, `look`, `market run`) accepts:
+`nav`, `look`, `skills run`) accepts:
 
 | Flag | Effect |
 |---|---|
@@ -77,6 +77,11 @@ all of:
 DDS link on a loopback interface with a non-zero DDS domain, e.g.
 `dds://lo?domain=1` for a local Unitree simulator. DDS domain 0 is the real
 robot's domain, so `dds://lo` (domain 0) still needs confirmation.
+
+A `ros2://` link still needs confirmation unless CI sets `OHHO_CI_FAKE_ROBOT=1`
+(exactly `1`), discovery is localhost-only (`ROS_LOCALHOST_ONLY` or
+`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`), `ROS_DOMAIN_ID` is non-zero, and
+`ROS_STATIC_PEERS` is unset. ROS env vars alone never skip arming.
 
 Agents never get `arm` or `release_stop` as tools. The TTY check stops a
 headless agent or CI job. It does not stop code that runs in the same Python
