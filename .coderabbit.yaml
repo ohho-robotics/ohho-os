@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-GB
+tone_instructions: "Be concise, direct and constructive. Flag real bugs, security gaps and edge cases first; skip nitpicks that tooling already catches."
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: true
+  path_instructions:
+    - path: "ohho/**/*.py"
+      instructions: |
+        Python runtime/CLI/MCP server. Check input and parameter validation, error handling, typing,
+        and that safety checks (safety.py, e-stop/limits) cannot be bypassed. Flag blocking calls in
+        async code, thread-safety issues, and auth or secrets mishandling in auth/serve/mcp modules.
+    - path: "evals/**"
+      instructions: |
+        Check eval schemas and examples stay consistent and results are reproducible.
+    - path: "tests/**"
+      instructions: |
+        Check tests are deterministic, cover edge cases and failure paths, and avoid real hardware/network.
+    - path: ".github/workflows/**"
+      instructions: |
+        Check actions are pinned (ideally to a commit SHA), permissions follow least privilege,
+        secrets are never echoed or exposed to untrusted PR code, and caching/matrix logic is correct.
+    - path: "**/*.md"
+      instructions: |
+        Check docs stay accurate against the code (commands, paths, flags). Flag unverifiable claims.
