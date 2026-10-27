@@ -15,8 +15,10 @@ from .adapters.errors import AdapterUnavailable
 from .agent import Agent
 from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
+from .adapters.unitree import dds_uri_is_hardware
 from .robot import Robot
 from .runtime import available_runtimes
+from .safety import SafetyGate
 from .sim_serve import DEFAULT_PORT
 
 
@@ -34,6 +36,7 @@ def _cmd_doctor(args) -> int:
             online=bool(getattr(args, "online", False)),
         )
     import importlib.util
+    import os
 
     from .brains import harness_available
 
@@ -71,7 +74,36 @@ def _cmd_doctor(args) -> int:
     )
     print("  rules       : ohho rules list  |  ohho rules install --client <id>")
     print(f"  recommended : runtime={'ros2' if 'ros2' in runtimes else 'native'}")
+    sdk = (
+        "importable"
+        if have("unitree_sdk2py")
+        else "missing  (add [unitree] + GitHub SDK)"
+    )
+    print(f"  unitree_sdk : {sdk}")
+    cdds = _cyclonedds_doctor_line()
+    print(f"  cyclonedds  : {cdds}")
+    home = os.environ.get("CYCLONEDDS_HOME", "")
+    uri = os.environ.get("CYCLONEDDS_URI", "")
+    print(f"  CYCLONEDDS  : HOME={home or '(unset)'}  URI={uri or '(unset)'}")
+    print("  dds         : sim-only (domain 1 / lo) until hardware is armed")
     return 0
+
+
+def _cyclonedds_doctor_line() -> str:
+    import importlib.util
+
+    if importlib.util.find_spec("cyclonedds") is None:
+        return "missing  (pip install 'ohho-os[unitree]')"
+    try:
+        from importlib.metadata import version
+
+        ver = version("cyclonedds")
+    except Exception:
+        return "installed (version unknown)"
+    warn = ""
+    if not ver.startswith("0.10."):
+        warn = "  (warn: prefer 0.10.x for unitree_sdk2py)"
+    return f"{ver}{warn}"
 
 
 def _cmd_list(args) -> int:
@@ -95,6 +127,7 @@ def _connect(args) -> Robot:
         runtime=args.runtime,
         safety_config=args.safety_config,
         estop_damp=args.estop_damp,
+        read_only=getattr(args, "read_only", False),
     )
     if bot.gated:
         if args.arm:
@@ -110,6 +143,37 @@ def _connect(args) -> Robot:
                 file=sys.stderr,
             )
     return bot
+
+
+def _hardware_dds_refused(bot: Robot, transport: Optional[str]) -> Optional[int]:
+    """Exit code when drive/agent use hardware ``dds://`` without a successful arm."""
+    if not dds_uri_is_hardware(transport):
+        return None
+    gate = bot.transport
+    if isinstance(gate, SafetyGate) and not gate.armed:
+        print(
+            "error: hardware DDS requires a successful --arm "
+            "(OHHO_ARM_HARDWARE=1 and interactive confirmation)",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
+def _go2_pose(bot: Robot, action: str, sim_label: str) -> None:
+    """Stand or lie down on Go2 (OHH-118 API, SafetyGate command, or sim log)."""
+    ohh118 = getattr(bot, "stand" if action == "stand_up" else "lie_down", None)
+    if callable(ohh118):
+        ohh118()
+        return
+    gate_cmd = getattr(bot.transport, "command", None)
+    if callable(gate_cmd) and gate_cmd(action):
+        return
+    sport = getattr(bot.transport, "sport_command", None)
+    if callable(sport):
+        sport(action)
+        return
+    print(f"  {sim_label} (sim)")
 
 
 def _cmd_connect(args) -> int:
@@ -154,6 +218,9 @@ def _cmd_sim(args) -> int:
     print(
         f"simulating {bot.spec.name} — driving a pattern for {args.seconds:.0f}s (Ctrl-C to stop)"
     )
+    if bot.spec.id == "unitree-go2":
+        _go2_pose(bot, "stand_up", "stand up")
+        time.sleep(0.3)
     try:
         i = 0
         end = time.monotonic() + args.seconds
@@ -180,6 +247,9 @@ def _cmd_sim(args) -> int:
         print("\nstopped.")
     finally:
         bot.stop()
+        if bot.spec.id == "unitree-go2":
+            _go2_pose(bot, "stand_down", "lie down")
+            time.sleep(0.3)
         bot.disconnect()
     return 0
 
@@ -190,6 +260,10 @@ def _cmd_drive(args) -> int:
     except UnknownRobot as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    refused = _hardware_dds_refused(bot, args.transport)
+    if refused is not None:
+        bot.disconnect()
+        return refused
     try:
         legged_sim = bot.spec.id == "unitree-go2" and bot.simulated
         if legged_sim:
@@ -239,6 +313,10 @@ def _cmd_agent(args) -> int:
     except UnknownRobot as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    refused = _hardware_dds_refused(bot, args.transport)
+    if refused is not None:
+        bot.disconnect()
+        return refused
     try:
         for line in Agent(bot).run(args.goal):
             print(f"  {line}")
@@ -799,7 +877,9 @@ def _add_robot_args(
 ) -> None:
     sp.add_argument("robot", help="robot id (see `ohho list`)")
     sp.add_argument(
-        "--transport", default=transport_default, help="transport URI, e.g. sim://"
+        "--transport",
+        default=transport_default,
+        help="transport URI (default in-process sim://); Go2: dds://<iface>?domain=<n>",
     )
     sp.add_argument("--runtime", default="auto", choices=["auto", "native", "ros2"])
     sp.add_argument(
@@ -965,6 +1045,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("connect", help="connect and print status + telemetry")
     _add_robot_args(c)
+    c.add_argument(
+        "--read-only",
+        action="store_true",
+        help="DDS state subscribe only — no SportClient or motion commands",
+    )
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")

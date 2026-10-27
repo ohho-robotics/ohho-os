@@ -94,6 +94,27 @@ def parse_dds_address(address: str, iface_kw: str = "") -> Tuple[str, int]:
     return iface, 0
 
 
+def dds_uri_is_sim_only(uri: Optional[str]) -> bool:
+    """True for ``dds://`` URIs that target local sim (``lo`` + domain ``1``)."""
+    if not uri:
+        return False
+    scheme, _sep, address = uri.partition("://")
+    if scheme.lower() not in ("dds", "unitree-dds"):
+        return False
+    iface, domain = parse_dds_address(address)
+    return iface == _DEFAULT_SIM_IFACE and domain == _DEFAULT_SIM_DOMAIN
+
+
+def dds_uri_is_hardware(uri: Optional[str]) -> bool:
+    """True for ``dds://`` URIs that are not the local sim-only pair."""
+    if not uri:
+        return False
+    scheme, _sep, _address = uri.partition("://")
+    if scheme.lower() not in ("dds", "unitree-dds"):
+        return False
+    return not dds_uri_is_sim_only(uri)
+
+
 # ── pure, testable protocol mapping ────────────────────────────────────────────
 def sport_mode_to_posture(mode: int) -> str:
     """Map Go2 ``SportModeState.mode`` (unitree_ros2 sportmodestate) to a label."""
@@ -144,6 +165,8 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
             custom[key] = state[key]
     if "mode" in state:
         custom["posture"] = sport_mode_to_posture(int(state["mode"]))
+    if "msg_timestamp" in state:
+        custom["device_stamp"] = float(state["msg_timestamp"])
     joints_in = state.get("joints") or []
     joints: list[JointReading] = []
     for item in joints_in:
@@ -161,9 +184,6 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
                     ),
                 )
             )
-    ts = state.get("msg_timestamp")
-    if ts is None:
-        ts = time.time()
     scan: Optional[Scan] = state.get("scan")
     if scan is None and "pointcloud" in state:
         scan = pointcloud_to_scan(state["pointcloud"])
@@ -173,7 +193,7 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
         battery=state.get("battery"),
         scan=scan,
         custom=custom,
-        timestamp=float(ts),
+        timestamp=time.time(),
     )
 
 
@@ -319,9 +339,11 @@ class UnitreeDdsTransport(BaseTransport):
         subscriber_factory: Optional[SubscriberFactory] = None,
         lowstate_factory: Optional[StateFactory] = None,
         pointcloud_factory: Optional[PointCloudFactory] = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
         self.spec = spec
+        self.read_only = read_only
         self._iface, self.domain_id = parse_dds_address(address, iface)
         self.address = self._iface
         self._state_factory = state_factory
@@ -343,6 +365,8 @@ class UnitreeDdsTransport(BaseTransport):
         self._odom_received = False
         self._sport_partial: Optional[dict] = None
         self._low_partial: Optional[dict] = None
+        self._sport_mono: Optional[float] = None
+        self._low_mono: Optional[float] = None
         self._lock = threading.Lock()
         self._latest = Telemetry(odom=Odometry())
         self._lidar_scan: Optional[Scan] = None
@@ -354,7 +378,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._lidar_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._last_msg_mono: Optional[float] = None
-        self._last_msg_timestamp: Optional[float] = None
+        self._connected_mono: Optional[float] = None
         self._recv_times: Deque[float] = deque()
         self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
@@ -371,6 +395,7 @@ class UnitreeDdsTransport(BaseTransport):
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
         self._stop.clear()
+        self._reset_link_session()
         if self._state_factory is not None:
             self._state_getter = self._state_factory()
         else:
@@ -381,12 +406,23 @@ class UnitreeDdsTransport(BaseTransport):
             self._lowstate_getter = self._lowstate_factory()
         self._state = ConnectionState.CONNECTED
         self._connected_since = time.time()
+        self._connected_mono = time.monotonic()
         self._start_reader()
         self._start_watchdog()
         self._start_lidar_reader()
         s = self.status()
         self._emit_status(s)
         return s
+
+    def _reset_link_session(self) -> None:
+        """Drop clocks and partials so a new session does not inherit a stall."""
+        self._last_msg_mono = None
+        self._connected_mono = None
+        self._sport_partial = None
+        self._low_partial = None
+        self._sport_mono = None
+        self._low_mono = None
+        self._recv_times.clear()
 
     def _connect_dds(self) -> None:
         # Fabricated state only for loopback on a non-zero domain. Any other
@@ -426,11 +462,15 @@ class UnitreeDdsTransport(BaseTransport):
                 ChannelFactoryInitialize,
                 ChannelSubscriber,
             )
-            from unitree_sdk2py.go2.sport.sport_client import SportClient  # type: ignore
             from unitree_sdk2py.idl.unitree_go.msg.dds_ import (  # type: ignore
                 LowState_,
                 SportModeState_,
             )
+
+            if not self.read_only:
+                from unitree_sdk2py.go2.sport.sport_client import (  # type: ignore
+                    SportClient,
+                )
         except Exception as e:
             raise AdapterUnavailable(
                 "The Unitree DDS adapter needs unitree_sdk2py (install from "
@@ -445,36 +485,48 @@ class UnitreeDdsTransport(BaseTransport):
                 f"DDS channel factory failed for domain={self.domain_id} "
                 f"iface={self._iface!r}: {e}"
             ) from e
-        client = SportClient()
-        set_timeout = getattr(client, "SetTimeout", None)
-        if callable(set_timeout):
-            set_timeout(_SPORT_RPC_TIMEOUT_SEC)
-        client.Init()
-        self._client = client
-
-        if self._subscriber_factory is not None:
-            self._sport_sub = self._subscriber_factory(
-                "rt/sportmodestate", SportModeState_, self._on_sport_message
-            )
-            self._low_sub = self._subscriber_factory(
-                "rt/lowstate", LowState_, self._on_low_message
-            )
-        else:
-            self._sport_sub = ChannelSubscriber("rt/sportmodestate", SportModeState_)
-            self._sport_sub.Init(self._on_sport_message, 10)
-            self._low_sub = ChannelSubscriber("rt/lowstate", LowState_)
-            self._low_sub.Init(self._on_low_message, 10)
         try:
-            from unitree_sdk2py.go2.video.video_client import VideoClient  # type: ignore
+            if not self.read_only:
+                client = SportClient()
+                set_timeout = getattr(client, "SetTimeout", None)
+                if callable(set_timeout):
+                    set_timeout(_SPORT_RPC_TIMEOUT_SEC)
+                self._client = client
+                client.Init()
 
-            vclient = VideoClient()
-            vclient.Init()
-            self._video_client = vclient
-            self._frame_getter = self._make_video_frame_getter(vclient)
-        except Exception as e:
-            _log.debug("VideoClient unavailable; no front-camera frames: %r", e)
-            self._video_client = None
-        self._connect_lidar_sub()
+            if self._subscriber_factory is not None:
+                self._sport_sub = self._subscriber_factory(
+                    "rt/sportmodestate", SportModeState_, self._on_sport_message
+                )
+                self._low_sub = self._subscriber_factory(
+                    "rt/lowstate", LowState_, self._on_low_message
+                )
+            else:
+                self._sport_sub = ChannelSubscriber(
+                    "rt/sportmodestate", SportModeState_
+                )
+                self._sport_sub.Init(self._on_sport_message, 10)
+                self._low_sub = ChannelSubscriber("rt/lowstate", LowState_)
+                self._low_sub.Init(self._on_low_message, 10)
+            # Camera setup is optional: a missing VideoClient must not abort
+            # the sport/low subscription or the read-only DDS path.
+            try:
+                from unitree_sdk2py.go2.video.video_client import (  # type: ignore
+                    VideoClient,
+                )
+
+                vclient = VideoClient()
+                vclient.Init()
+                self._video_client = vclient
+                self._frame_getter = self._make_video_frame_getter(vclient)
+            except Exception as e:
+                _log.debug("VideoClient unavailable; no front-camera frames: %r", e)
+                self._video_client = None
+            self._connect_lidar_sub()
+        except Exception:
+            self._close_subscribers()
+            self._client = None
+            raise
 
     def _connect_lidar_sub(self) -> None:
         """Subscribe to Go2 / sim DDS lidar (no-op when SDK or topic unavailable).
@@ -509,6 +561,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._sport_times.append(time.monotonic())
         with self._lock:
             self._sport_partial = partial
+            self._sport_mono = time.monotonic()
             self._merge_and_emit()
 
     def _on_low_message(self, msg: object) -> None:
@@ -516,21 +569,29 @@ class UnitreeDdsTransport(BaseTransport):
         self._on_lowstate(partial)
         with self._lock:
             self._low_partial = partial
+            self._low_mono = time.monotonic()
             self._merge_and_emit()
 
+    def _fresh_partial(
+        self, partial: Optional[dict], mono: Optional[float], now: float
+    ) -> Optional[dict]:
+        if partial is None or mono is None or now - mono > _STALE_STATE_SEC:
+            return None
+        return partial
+
     def _merge_and_emit(self) -> None:
-        merged = merge_state_dicts(self._sport_partial, self._low_partial)
+        now = time.monotonic()
+        merged = merge_state_dicts(
+            self._fresh_partial(self._sport_partial, self._sport_mono, now),
+            self._fresh_partial(self._low_partial, self._low_mono, now),
+        )
         if merged is None:
             return
-        now = time.monotonic()
         self._last_msg_mono = now
         self._recv_times.append(now)
         cutoff = now - _MSG_RATE_WINDOW_SEC
         while self._recv_times and self._recv_times[0] < cutoff:
             self._recv_times.popleft()
-        msg_ts = merged.get("msg_timestamp")
-        if msg_ts is not None:
-            self._last_msg_timestamp = float(msg_ts)
         self._on_state(merged)
 
     def _attach_lidar_scan(self, telem: Telemetry) -> Telemetry:
@@ -623,45 +684,64 @@ class UnitreeDdsTransport(BaseTransport):
                 scan = pointcloud2_to_scan(cloud)
         except Exception:
             return
-        self._lidar_scan = scan
-        self._latest = self._attach_lidar_scan(self._latest)
-        self._emit_telemetry(self._latest)
+        with self._lock:
+            self._lidar_scan = scan
+            self._latest = self._attach_lidar_scan(self._latest)
+            self._emit_telemetry(self._latest)
+
+    def _close_subscribers(self) -> None:
+        for sub in (self._sport_sub, self._low_sub, self._lidar_sub):
+            if sub is None:
+                continue
+            close = getattr(sub, "Close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    _log.debug("subscriber close failed", exc_info=True)
+        self._sport_sub = None
+        self._low_sub = None
+        self._lidar_sub = None
 
     def disconnect(self) -> None:
         self._stop_reader()
         self._stop_watchdog()
         self._stop_lidar_reader()
-        for sub in (self._sport_sub, self._low_sub, self._lidar_sub):
-            if sub is not None:
-                close = getattr(sub, "Close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        _log.debug("subscriber close failed", exc_info=True)
-        self._sport_sub = None
-        self._low_sub = None
-        self._lidar_sub = None
+        self._close_subscribers()
         if self._client is not None:
             self._call_stop_move()
         self._state = ConnectionState.DISCONNECTED
         self._emit_status(self.status())
+
+    def _link_baseline(self) -> Optional[float]:
+        if self._last_msg_mono is not None:
+            return self._last_msg_mono
+        return self._connected_mono
+
+    def _dds_state_stale(self) -> bool:
+        baseline = self._link_baseline()
+        if baseline is None:
+            return False
+        return time.monotonic() - baseline > _STALE_STATE_SEC
 
     def status(self) -> TransportStatus:
         link_state = self._state
         err: Optional[str] = None
         latency = 0.0
         rate = 0.0
-        if self._connected_since is not None and self._last_msg_mono is not None:
-            span = max(time.monotonic() - self._last_msg_mono, 0.0)
-            if span > _STALE_STATE_SEC and link_state == ConnectionState.CONNECTED:
-                link_state = ConnectionState.ERROR
-                err = f"no DDS state for {span:.1f}s"
+        if self._dds_state_stale() and link_state in (
+            ConnectionState.CONNECTED,
+            ConnectionState.ERROR,
+        ):
+            baseline = self._link_baseline()
+            span = 0.0 if baseline is None else max(time.monotonic() - baseline, 0.0)
+            link_state = ConnectionState.ERROR
+            err = f"no DDS state for {span:.1f}s"
         if self._recv_times:
             window = max(time.monotonic() - self._recv_times[0], _MSG_RATE_WINDOW_SEC)
             rate = len(self._recv_times) / window if window > 0 else 0.0
-        if self._last_msg_timestamp is not None:
-            latency = max((time.time() - self._last_msg_timestamp) * 1000.0, 0.0)
+        if self._last_msg_mono is not None:
+            latency = max((time.monotonic() - self._last_msg_mono) * 1000.0, 0.0)
         return TransportStatus(
             protocol=self.protocol,
             state=link_state,
@@ -697,6 +777,7 @@ class UnitreeDdsTransport(BaseTransport):
                             self._sport_times.append(time.monotonic())
                             with self._lock:
                                 self._sport_partial = dict(state)
+                                self._sport_mono = time.monotonic()
                                 self._merge_and_emit()
                     if self._lowstate_getter is not None:
                         low = self._lowstate_getter()
@@ -727,17 +808,27 @@ class UnitreeDdsTransport(BaseTransport):
 
         def loop() -> None:
             while not self._stop.is_set():
-                if self._state == ConnectionState.CONNECTED:
-                    st = self.status()
-                    if st.state == ConnectionState.ERROR:
-                        self._state = ConnectionState.ERROR
-                        self._emit_status(st)
+                self._poll_link_health()
                 time.sleep(0.2)
 
         self._watchdog = threading.Thread(
             target=loop, name="ohho-unitree-wd", daemon=True
         )
         self._watchdog.start()
+
+    def _poll_link_health(self) -> None:
+        """Latch ERROR while DDS state is stale, and restore CONNECTED when it resumes."""
+        stale = self._dds_state_stale()
+        if self._state == ConnectionState.CONNECTED and stale:
+            self._state = ConnectionState.ERROR
+            self._emit_status(self.status())
+        elif (
+            self._state == ConnectionState.ERROR
+            and self._last_msg_mono is not None
+            and not stale
+        ):
+            self._state = ConnectionState.CONNECTED
+            self._emit_status(self.status())
 
     def _stop_watchdog(self) -> None:
         self._stop.set()
@@ -795,8 +886,13 @@ class UnitreeDdsTransport(BaseTransport):
             try:
                 code = move(vx, vy, vyaw)
                 _log_rpc_result("Move", code)
+                if code is not None and int(code) != 0:
+                    raise RuntimeError(
+                        f"Unitree SportClient.Move returned error code {code}"
+                    )
             except Exception as e:
                 _log.warning("Unitree SportClient.Move failed: %s", e)
+                raise
 
     def send_joint_command(self, name: str, position: float) -> None:
         return  # Go2 has no arm; low-level joint control is a future adapter

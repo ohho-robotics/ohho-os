@@ -44,6 +44,7 @@ _DRONE_SIM_IDS = frozenset({"px4-sitl", "crazyflie-sim"})
 _SPEC_ONLY_IDS = frozenset({"px4-x500"})
 
 # transport scheme -> hardware adapter class (sim/composite handled separately)
+_READ_ONLY_SCHEMES = frozenset({"dds", "unitree-dds"})
 _HARDWARE = {
     "serial": YahboomTransport,
     "yahboom-serial": YahboomTransport,
@@ -74,6 +75,15 @@ def _split_ports(address: str) -> tuple[str, str]:
         base, arm = address.split(",", 1)
         return base.strip(), arm.strip()
     return address.strip(), DEFAULT_ARM_PORT
+
+
+def _uri_scheme(uri: Optional[str]) -> Optional[str]:
+    if not uri:
+        return None
+    scheme, sep, _address = uri.partition("://")
+    if not sep:
+        return None
+    return scheme.lower()
 
 
 def _sim_transport(spec: Optional[RobotSpec]) -> Transport:
@@ -108,6 +118,8 @@ def resolve_transport(
     uri: Optional[str] = None,
     spec: Optional[RobotSpec] = None,
     runtime=None,
+    *,
+    read_only: bool = False,
 ) -> Transport:
     """Pick a transport for a robot.
 
@@ -127,6 +139,9 @@ def resolve_transport(
       /arm/joint_states; requires ``runtime="ros2"``).
     - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
+    - ``read_only=True`` is only valid for ``dds://`` and ``unitree-dds://``.
+      Any other scheme raises :class:`AdapterUnavailable` before a transport
+      that could still send motion is built.
     """
     if spec is not None and spec.id in _SPEC_ONLY_IDS:
         raise AdapterUnavailable(
@@ -134,8 +149,21 @@ def resolve_transport(
             "requires_hardware_arming applies to non-loopback px4+dds:// and "
             "mavlink+serial:// URIs, which are not implemented."
         )
+    scheme = _uri_scheme(uri)
+    if read_only and scheme not in _READ_ONLY_SCHEMES:
+        shown = scheme if scheme else "sim"
+        raise AdapterUnavailable(
+            f"read_only is only supported for dds:// transports, not '{shown}'."
+        )
     routed = _plugins_first(uri, spec, runtime)
     if routed is not None:
+        if read_only:
+            if not isinstance(routed, UnitreeDdsTransport):
+                shown = scheme if scheme else "sim"
+                raise AdapterUnavailable(
+                    f"read_only is only supported for dds:// transports, not '{shown}'."
+                )
+            routed.read_only = True
         return routed
     if uri is None:
         return _sim_transport(spec)
@@ -166,6 +194,8 @@ def resolve_transport(
             f"dds, ros2 — or omit the transport to run in simulation. "
             f"{describe_plugin_schemes()}"
         )
+    if cls is UnitreeDdsTransport:
+        return UnitreeDdsTransport(spec, address, read_only=read_only)
     return cls(spec, address)
 
 
