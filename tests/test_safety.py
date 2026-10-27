@@ -1572,14 +1572,15 @@ def load_tests(loader, standard_tests, pattern):
 
     Drone profile coverage lives in ``tests.test_drone_safety``. The sim-only
     CI arming tests live in ``tests.test_ci_sim_arming``. Load both when this
-    module is named directly (``pattern is None``). Discovery passes a file
-    pattern and loads those modules on its own. Paths are loaded from this
-    directory so a third-party ``tests`` package on ``sys.path`` cannot hide
-    them.
+    module is named directly (``pattern is None``) and when discovery is
+    narrowed to this file (``pattern == "test_safety.py"``). A directory
+    discovery pattern such as ``test*.py`` loads those modules on its own.
+    Paths are loaded from this directory so a third-party ``tests`` package
+    on ``sys.path`` cannot hide them.
     """
     suite = unittest.TestSuite()
     suite.addTests(standard_tests)
-    if pattern is not None:
+    if pattern not in (None, "test_safety.py"):
         return suite
     import importlib.util
 
