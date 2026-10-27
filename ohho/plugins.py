@@ -306,7 +306,7 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         sim_backends=tuple(backends),
         error=None,
         fallback=fallback,
-            distribution=_distribution_name(entry),
+        distribution=_distribution_name(entry),
         plugin=plugin,
         transport_factories=MappingProxyType(schemes),
         sim_factories=MappingProxyType(backends),

@@ -267,6 +267,7 @@ class SimServe:
                 runtime="native",
                 **extra,
             )
+            await self._arm_sim_link()
         elif self.backend == "ros2":
             self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
             await self._rosbridge_ws.send(
@@ -294,6 +295,26 @@ class SimServe:
             self.port = self._server.sockets[0].getsockname()[1]
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+
+    async def _arm_sim_link(self) -> None:
+        """Arm a simulator or loopback link. A hardware link stays disarmed."""
+        bot = self._bot
+        if bot is None or not getattr(bot, "gated", False):
+            return
+        gate = getattr(bot, "transport", None)
+        if getattr(gate, "requires_hardware_arming", True):
+            return
+        arm = getattr(bot, "arm", None)
+        if not callable(arm):
+            return
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                if arm():
+                    return
+            except Exception:
+                return
+            await asyncio.sleep(0.05)
 
     async def stop(self) -> None:
         """Shut down the server and disconnect backends."""
@@ -625,8 +646,8 @@ def serve_sim(
 
     Parameters:
         backend: "sim", "ros2", or "robot".
-        robot: robot spec id (e.g. "omnibot", "unitree-go2"). Omit it to use
-            the shared resolver.
+        robot: robot spec id (e.g. "omnibot", "unitree-go2", "legged-base").
+            Omit it to use the shared resolver.
         transport: transport URI for the "robot" backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
         port: WebSocket server port. Defaults to 8790 so it does not clash
