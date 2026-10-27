@@ -58,6 +58,10 @@ class Robot:
         ``safety_config`` is a safety config JSON path (default:
         ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
         e-stop even when standing.
+        ``read_only`` is only valid for ``dds://`` and ``unitree-dds://``. It
+        opens the Unitree link without a SportClient, so motion commands are
+        not sent. Any other transport raises
+        :class:`~ohho.adapters.errors.AdapterUnavailable`.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)

@@ -9,6 +9,8 @@ import unittest
 from unittest import mock
 
 from ohho import cli
+from ohho.adapters import resolve_transport
+from ohho.adapters.errors import AdapterUnavailable
 from ohho.adapters.unitree import (
     UnitreeDdsTransport,
     dds_uri_is_hardware,
@@ -188,6 +190,50 @@ class TestReadOnlyDdsConnect(unittest.TestCase):
             cli._connect(args)
         conn.assert_called_once()
         self.assertTrue(conn.call_args.kwargs.get("read_only"))
+
+    def test_resolve_transport_forwards_read_only_on_dds(self):
+        tp = resolve_transport(
+            "dds://lo?domain=1", get_spec("unitree-go2"), read_only=True
+        )
+        self.assertIsInstance(tp, UnitreeDdsTransport)
+        self.assertTrue(tp.read_only)
+        alias = resolve_transport(
+            "unitree-dds://lo", get_spec("unitree-go2"), read_only=True
+        )
+        self.assertTrue(alias.read_only)
+
+    def test_resolve_transport_rejects_read_only_on_other_schemes(self):
+        spec = get_spec("sim")
+        for uri in (None, "sim://", "serial:///dev/ttyUSB0", "ros2://"):
+            with self.subTest(uri=uri):
+                with self.assertRaises(AdapterUnavailable):
+                    resolve_transport(uri, spec, read_only=True)
+
+    def test_connect_dds_closes_subscribers_when_setup_fails(self):
+        closed: list[str] = []
+
+        class Sub:
+            def __init__(self, topic: str, _typ: object) -> None:
+                self.topic = topic
+
+            def Init(self, *_args: object, **_kwargs: object) -> None:
+                if "lowstate" in self.topic:
+                    raise RuntimeError("low init failed")
+
+            def Close(self) -> None:
+                closed.append(self.topic)
+
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"), "lo?domain=1", read_only=True)
+        mods = self._fake_unitree_sdk_modules(mock.Mock())
+        mods.pop("_channel_init")
+        mods["unitree_sdk2py.core.channel"].ChannelSubscriber = Sub
+        with mock.patch.dict(sys.modules, mods):
+            with self.assertRaises(RuntimeError):
+                tp._connect_dds()
+        self.assertIn("rt/sportmodestate", closed)
+        self.assertIsNone(tp._sport_sub)
+        self.assertIsNone(tp._low_sub)
+        self.assertIsNone(tp._client)
 
 
 if __name__ == "__main__":

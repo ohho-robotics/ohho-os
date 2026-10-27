@@ -177,7 +177,12 @@ class _FakeSportClient:
         if name == "Move":
             return lambda vx, vy, vyaw: self.move_code
         if name == "StopMove":
-            return lambda: self.stop_code
+
+            def stop() -> int:
+                self.calls.append(("StopMove", ()))
+                return self.stop_code
+
+            return stop
 
         def call(*args):
             self.calls.append((name, args))
@@ -256,10 +261,8 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         self.assertEqual((tp.iface, tp.domain_id), ("lo", 1))
 
     def test_stale_state_reports_error(self):
-        tp = UnitreeDdsTransport(
-            get_spec("unitree-go2"), state_factory=lambda: lambda: None
-        )
-        tp.connect()
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        tp._connected_since = 1.0
         tp._last_msg_mono = 0.0
         tp._state = ConnectionState.CONNECTED
         with patch("ohho.adapters.unitree.time") as mtime:
@@ -268,7 +271,93 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
             st = tp.status()
         self.assertEqual(st.state, ConnectionState.ERROR)
         self.assertIsNotNone(st.error)
-        tp.disconnect()
+
+    def test_no_dds_message_reports_error(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        tp._connected_since = 1.0
+        tp._connected_mono = 0.0
+        tp._state = ConnectionState.CONNECTED
+        with patch("ohho.adapters.unitree.time") as mtime:
+            mtime.monotonic.return_value = 2.0
+            st = tp.status()
+        self.assertEqual(st.state, ConnectionState.ERROR)
+        self.assertIsNotNone(st.error)
+        self.assertIn("no DDS state", st.error)
+
+    def test_link_health_recovers_when_state_resumes(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        tp._state = ConnectionState.ERROR
+        tp._connected_mono = 0.0
+        tp._last_msg_mono = 1.5
+        with patch("ohho.adapters.unitree.time") as mtime:
+            mtime.monotonic.return_value = 2.0
+            tp._poll_link_health()
+            self.assertEqual(tp._state, ConnectionState.CONNECTED)
+            self.assertEqual(tp.status().state, ConnectionState.CONNECTED)
+
+    def test_link_health_stays_error_without_a_message(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        tp._state = ConnectionState.CONNECTED
+        tp._connected_mono = 0.0
+        with patch("ohho.adapters.unitree.time") as mtime:
+            mtime.monotonic.return_value = 2.0
+            tp._poll_link_health()
+        self.assertEqual(tp._state, ConnectionState.ERROR)
+
+    def test_device_stamp_is_not_telemetry_time(self):
+        with patch("ohho.adapters.unitree.time") as mtime:
+            mtime.time.return_value = 1_700_000_000.0
+            t = sportstate_to_telemetry(
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "imu_rpy": [0.0, 0.0, 0.0],
+                    "msg_timestamp": 12.5,
+                }
+            )
+        self.assertEqual(t.timestamp, 1_700_000_000.0)
+        self.assertEqual(t.custom["device_stamp"], 12.5)
+
+    def test_stale_sport_partial_is_dropped(self):
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"))
+        tp._sport_partial = {
+            "position": [1.0, 0.0, 0.0],
+            "velocity": [0.0, 0.0, 0.0],
+            "yaw_speed": 0.0,
+            "imu_rpy": [0.9, 0.0, 0.0],
+        }
+        tp._sport_mono = 0.0
+        tp._low_partial = {"joints": [{"name": "FR_hip", "position": 0.2}]}
+        tp._low_mono = 10.0
+        with patch("ohho.adapters.unitree.time") as mtime:
+            mtime.monotonic.return_value = 10.0
+            mtime.time.return_value = 1_700_000_000.0
+            tp._merge_and_emit()
+        t = tp.read()
+        self.assertNotIn("roll", t.custom)
+        self.assertAlmostEqual(t.joints[0].position, 0.2)
+        self.assertEqual(t.timestamp, 1_700_000_000.0)
+
+    def test_connect_clears_previous_session_clocks(self):
+        tp = UnitreeDdsTransport(
+            get_spec("unitree-go2"), state_factory=lambda: lambda: None
+        )
+        tp._last_msg_mono = 0.0
+        tp._sport_partial = {"mode": 1}
+        tp._low_partial = {"battery": 1.0}
+        tp._sport_mono = 0.0
+        tp._low_mono = 0.0
+        tp._recv_times.append(0.0)
+        tp.connect()
+        try:
+            self.assertIsNone(tp._last_msg_mono)
+            self.assertIsNone(tp._sport_partial)
+            self.assertIsNone(tp._low_partial)
+            self.assertIsNone(tp._sport_mono)
+            self.assertIsNone(tp._low_mono)
+            self.assertEqual(len(tp._recv_times), 0)
+            self.assertIsNotNone(tp._connected_mono)
+        finally:
+            tp.disconnect()
 
     def test_subscriber_callbacks_update_telemetry(self):
         tp = UnitreeDdsTransport(get_spec("unitree-go2"), "lo?domain=1")
@@ -303,8 +392,13 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         client.move_code = 7
         tp._client = client
         with self.assertLogs("ohho.adapters.unitree", level="WARNING") as logs:
-            tp.send_velocity(Velocity(0.1))
+            with self.assertRaises(RuntimeError):
+                tp.send_velocity(Velocity(0.1))
         self.assertTrue(any("Move" in line and "7" in line for line in logs.output))
+        client.move_code = 0
+        tp.send_velocity(Velocity(0.1))
+        client.move_code = None
+        tp.send_velocity(Velocity(0.1))
 
     def test_sport_command_maps_to_client(self):
         tp = UnitreeDdsTransport(get_spec("unitree-go2"))
@@ -335,7 +429,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         tp.sport_command("stand_up")
         tp.sport_command("stop_move")
         tp.sport_command("damp")
-        self.assertEqual(client.calls, [("Damp", ())])
+        self.assertEqual(client.calls, [("StopMove", ()), ("Damp", ())])
 
     def test_sport_command_without_client_is_noop(self):
         tp = UnitreeDdsTransport(get_spec("unitree-go2"))
@@ -440,7 +534,7 @@ class TestUnitreeLidarScan(unittest.TestCase):
         tp = UnitreeDdsTransport(
             get_spec("unitree-go2"),
             "lo?domain=1",
-            state_factory=lambda: (lambda: state),
+            state_factory=lambda: lambda: state,
             read_only=True,
         )
         self.assertTrue(tp.read_only)
@@ -476,8 +570,13 @@ class TestUnitreeLidarScan(unittest.TestCase):
         try:
             import time as _t
 
-            _t.sleep(0.2)
+            deadline = _t.monotonic() + 2.0
             t = tp.read()
+            while (t.odom is None or t.odom.x == 0.0 or t.scan is None) and (
+                _t.monotonic() < deadline
+            ):
+                _t.sleep(0.05)
+                t = tp.read()
             self.assertAlmostEqual(t.odom.x, 0.4)
             self.assertIsNotNone(t.scan)
             self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 1.1, places=3)
