@@ -12,7 +12,12 @@ from ohho.adapters.unitree import (
     sportstate_to_telemetry,
     velocity_to_move,
 )
+from ohho.lidar import DEFAULT_NUM_RAYS
+from ohho.nav import Navigator
 from ohho.registry import get_spec
+from ohho.robot import Robot
+from ohho.runtime import NativeRuntime
+from ohho.safety import AuditLog, SafetyGate
 from ohho.schema import ConnectionState, Velocity
 
 
@@ -329,6 +334,123 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
     def test_sport_command_without_client_is_noop(self):
         tp = UnitreeDdsTransport(get_spec("unitree-go2"))
         tp.sport_command("stand_up")
+
+
+class TestUnitreeLidarScan(unittest.TestCase):
+    def test_sportstate_pointcloud_to_scan(self):
+        t = sportstate_to_telemetry(
+            {
+                "position": [0.0, 0.0, 0.0],
+                "imu_rpy": [0.0, 0.0, 0.0],
+                "pointcloud": [(2.0, 0.0, 0.2)],
+            }
+        )
+        self.assertIsNotNone(t.scan)
+        self.assertEqual(len(t.scan.ranges), DEFAULT_NUM_RAYS)
+        self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 2.0, places=3)
+
+    def test_state_factory_feeds_scan(self):
+        state = {
+            "position": [0.0, 0.0, 0.0],
+            "imu_rpy": [0.0, 0.0, 0.0],
+            "pointcloud": [(1.5, 0.0, 0.25)],
+        }
+
+        def factory():
+            return lambda: state
+
+        tp = UnitreeDdsTransport(
+            get_spec("unitree-go2"), "lo?domain=1", state_factory=factory
+        )
+        tp.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.15)
+            scan = tp.read().scan
+            self.assertIsNotNone(scan)
+            self.assertAlmostEqual(scan.ranges[DEFAULT_NUM_RAYS // 2], 1.5, places=3)
+        finally:
+            tp.disconnect()
+
+    def test_scan_visible_through_safety_gate(self):
+        state = {
+            "position": [0.0, 0.0, 0.0],
+            "imu_rpy": [0.0, 0.0, 0.0],
+            "pointcloud": [(2.5, 0.0, 0.2)],
+        }
+
+        def factory():
+            return lambda: state
+
+        inner = UnitreeDdsTransport(
+            get_spec("unitree-go2"), "lo?domain=1", state_factory=factory
+        )
+        spec = get_spec("unitree-go2")
+        gate = SafetyGate(
+            inner,
+            spec,
+            audit=AuditLog(None, wall_clock=lambda: 0.0),
+            auto_tick=False,
+            clock=lambda: 0.0,
+            isatty=lambda: False,
+        )
+        gate.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.15)
+            scan = gate.read().scan
+            self.assertIsNotNone(scan)
+            nav = Navigator(Robot(spec, gate, NativeRuntime()))
+            nav.update_map()
+            self.assertGreater(nav.grid.counts()["occupied"], 0)
+        finally:
+            gate.disconnect()
+
+    def test_subscriber_path_keeps_lidar_scan(self):
+        """Pose subscribers and the lidar callback both feed one telemetry snapshot."""
+        tp = UnitreeDdsTransport(get_spec("unitree-go2"), "lo?domain=1")
+        tp._on_lidar([(1.7, 0.0, 0.2)])
+        tp._on_sport_message(
+            SimpleNamespace(
+                position=[1.0, 0.0, 0.0],
+                velocity=[0.0, 0.0, 0.0],
+                yaw_speed=0.0,
+                imu_state=SimpleNamespace(rpy=[0.0, 0.0, 0.0]),
+            )
+        )
+        t = tp.read()
+        self.assertAlmostEqual(t.odom.x, 1.0)
+        self.assertIsNotNone(t.scan)
+        self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 1.7, places=3)
+
+    def test_pointcloud_factory_publishes_scan_with_state_factory(self):
+        state = {
+            "position": [0.4, 0.0, 0.0],
+            "imu_rpy": [0.0, 0.0, 0.0],
+        }
+
+        def state_factory():
+            return lambda: state
+
+        tp = UnitreeDdsTransport(
+            get_spec("unitree-go2"),
+            "lo?domain=1",
+            state_factory=state_factory,
+            pointcloud_factory=lambda: [(1.1, 0.0, 0.2)],
+        )
+        tp.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.2)
+            t = tp.read()
+            self.assertAlmostEqual(t.odom.x, 0.4)
+            self.assertIsNotNone(t.scan)
+            self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 1.1, places=3)
+        finally:
+            tp.disconnect()
 
 
 if __name__ == "__main__":
