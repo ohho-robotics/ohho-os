@@ -14,9 +14,19 @@ importing ``ohho.agent`` never touches this module. It loads only when
 
 from __future__ import annotations
 
-from typing import List
+import json
+from typing import List, Optional
 
 from . import capabilities as caps
+from .planner import (
+    DEFAULT_MAX_STEPS,
+    DEFAULT_MAX_TRAVEL_M,
+    PLANNER_SYSTEM_TEMPLATE,
+    agent_max_linear_speed,
+    build_robot_card,
+    goal_blockers,
+    wrap_drive_with_travel_limit,
+)
 from .robot import Robot
 
 
@@ -36,7 +46,16 @@ def harness_available() -> bool:
     return True
 
 
-def build_tool_registry(robot: Robot, *, navigator=None, memory=None, perceptor=None):
+def build_tool_registry(
+    robot: Robot,
+    *,
+    navigator=None,
+    memory=None,
+    perceptor=None,
+    logger=None,
+    travel_origin: Optional[tuple[float, float]] = None,
+    max_travel_m: float = DEFAULT_MAX_TRAVEL_M,
+):
     """Build an ``agent_engine.ToolRegistry`` from the robot's capabilities.
 
     Each capability maps to a callable tool the LLM can invoke:
@@ -53,12 +72,31 @@ def build_tool_registry(robot: Robot, *, navigator=None, memory=None, perceptor=
     reg = ToolRegistry()
 
     if robot.has(caps.BASE_DRIVE):
+
+        def _drive(vx=0.0, vy=0.0, w=0.0):
+            return robot.drive(vx=float(vx), vy=float(vy), w=float(w))
+
+        drive_handler = _drive
+        if travel_origin is not None:
+            drive_handler = wrap_drive_with_travel_limit(
+                robot,
+                drive_handler,
+                origin=travel_origin,
+                max_travel_m=max_travel_m,
+                log=logger,
+            )
+        lin_cap = agent_max_linear_speed(robot)
         reg.register(
             ToolSpec(
                 name="drive",
                 description=(
                     "Drive the robot base. vx=forward m/s, vy=left m/s "
-                    "(holonomic only), w=angular rad/s. Clamped to limits."
+                    f"(holonomic only), w=angular rad/s. Clamped to {lin_cap} m/s."
+                    + (
+                        " Quadruped: call stand first; motion is ignored while lying."
+                        if robot.has(caps.LEGGED_POSE)
+                        else ""
+                    )
                 ),
                 params=[
                     ToolParam("vx", "forward velocity m/s", type="number"),
@@ -67,10 +105,49 @@ def build_tool_registry(robot: Robot, *, navigator=None, memory=None, perceptor=
                     ),
                     ToolParam("w", "angular velocity rad/s", type="number"),
                 ],
-                handler=lambda vx=0.0, vy=0.0, w=0.0: robot.drive(
-                    vx=float(vx), vy=float(vy), w=float(w)
-                ),
+                handler=drive_handler,
                 low_level=True,
+            )
+        )
+
+    if robot.has(caps.LEGGED_POSE):
+        from .safety import EULER_LIMIT_RAD
+
+        lim = EULER_LIMIT_RAD
+        for name, desc, method in (
+            ("stand", "Stand up on four feet (required before driving).", robot.stand),
+            (
+                "lie_down",
+                "Lie flat on the ground (use when the goal is done).",
+                robot.lie_down,
+            ),
+            ("sit", "Sit pose.", robot.sit),
+            ("recover", "Recovery stand after a fall or awkward pose.", robot.recover),
+        ):
+            reg.register(
+                ToolSpec(
+                    name=name,
+                    description=desc,
+                    params=[],
+                    handler=lambda m=method, n=name: (
+                        (m() and f"{n}: ok") or f"{n}: refused"
+                    ),
+                )
+            )
+        reg.register(
+            ToolSpec(
+                name="set_body_pose",
+                description=(f"Set body roll/pitch/yaw (rad), each clamped to ±{lim}."),
+                params=[
+                    ToolParam("roll", "roll rad", type="number"),
+                    ToolParam("pitch", "pitch rad", type="number"),
+                    ToolParam("yaw", "yaw rad", type="number"),
+                ],
+                handler=lambda roll=0.0, pitch=0.0, yaw=0.0: (
+                    "set_body_pose: ok"
+                    if robot.set_body_pose(float(roll), float(pitch), float(yaw))
+                    else "set_body_pose: refused"
+                ),
             )
         )
 
@@ -284,15 +361,33 @@ class RobotPerceptor:
         )
 
 
-def build_reasoner(tools):
-    """Build a ``ClaudeToolCallingReasoner`` over a ``ReasoningRouter``.
-
-    Cloud Claude is preferred when ``ANTHROPIC_API_KEY`` + ``anthropic`` are
-    available; an ``EchoBackend`` that returns a goal-complete stub is the
-    always-available fallback (so the loop runs offline / in tests).
-    """
+def build_reasoner(
+    tools,
+    robot: Robot,
+    *,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    max_travel_m: float = DEFAULT_MAX_TRAVEL_M,
+):
+    """Build a quadruped-aware tool-calling reasoner over a ``ReasoningRouter``."""
     from agent_engine.reasoners.claude_tool_caller import ClaudeToolCallingReasoner
     from agent_engine.reasoning.router import EchoBackend, ReasoningRouter
+
+    card = build_robot_card(robot)
+    system = PLANNER_SYSTEM_TEMPLATE.format(
+        robot_card=card,
+        max_steps=max_steps,
+        max_travel_m=max_travel_m,
+        tools=json.dumps(tools.to_anthropic_schema(), indent=1),
+    )
+
+    class _OhhoReasoner(ClaudeToolCallingReasoner):
+        def plan(self, goal, world, memory_context, history):
+            reply = self.router.complete(
+                self._user_prompt(goal, world, memory_context, history),
+                system=system,
+                kind=self.call_kind,
+            )
+            return self._parse(reply)
 
     backends = []
     try:
@@ -304,8 +399,6 @@ def build_reasoner(tools):
     except Exception:
         pass
 
-    # Echo fallback — returns a goal-complete JSON stub so the harness
-    # completes gracefully when no LLM is wired.
     echo = EchoBackend(
         responder=lambda prompt, system: (
             '{"rationale":"no LLM available — completing goal",'
@@ -315,7 +408,7 @@ def build_reasoner(tools):
     backends.append(echo)
 
     router = ReasoningRouter(backends)
-    return ClaudeToolCallingReasoner(router, tools)
+    return _OhhoReasoner(router, tools)
 
 
 class HarnessBrain:
@@ -346,6 +439,17 @@ class HarnessBrain:
             ]
             return log + ScriptedBrain().run(robot, goal, max_steps)
 
+        blockers = goal_blockers(robot, goal)
+        log: list[str] = [
+            f"goal: {goal}",
+            f"robot: {robot.spec.name} ({robot.spec.category})",
+            f"capabilities: {', '.join(robot.spec.capabilities) or 'none'}",
+        ]
+        if blockers:
+            log.append(f"refused: {'; '.join(blockers)}")
+            log.append("done (harness brain — goal infeasible)")
+            return log
+
         from .memory import SpatialMemory, default_memory_path
         from .nav import Navigator
         from .perception import SimPerceptor
@@ -353,15 +457,27 @@ class HarnessBrain:
         memory = SpatialMemory(path=default_memory_path(robot.spec.id))
         navigator = Navigator(robot) if robot.has(caps.BASE_DRIVE) else None
         sim_perceptor = SimPerceptor(robot) if robot.simulated else None
+        t0 = robot.telemetry()
+        origin = (t0.odom.x, t0.odom.y) if t0.odom else (0.0, 0.0)
+        step_budget = min(max_steps, self.max_steps)
         tools = build_tool_registry(
-            robot, navigator=navigator, memory=memory, perceptor=sim_perceptor
+            robot,
+            navigator=navigator,
+            memory=memory,
+            perceptor=sim_perceptor,
+            logger=log.append,
+            travel_origin=origin,
+            max_travel_m=DEFAULT_MAX_TRAVEL_M,
         )
         perceptor = RobotPerceptor(robot)
-        reasoner = build_reasoner(tools)
-        log: list[str] = [
-            f"goal: {goal}",
-            f"robot: {robot.spec.name} ({robot.spec.category})",
-            f"capabilities: {', '.join(robot.spec.capabilities) or 'none'}",
+        reasoner = build_reasoner(
+            tools,
+            robot,
+            max_steps=step_budget,
+            max_travel_m=DEFAULT_MAX_TRAVEL_M,
+        )
+        log += [
+            build_robot_card(robot),
             f"tools: {', '.join(tools.names())}",
             memory.describe(),
         ]
@@ -369,8 +485,8 @@ class HarnessBrain:
             perceptor=perceptor,
             reasoner=reasoner,
             tools=tools,
-            max_steps_per_goal=min(max_steps, self.max_steps),
-            logger=lambda msg: log.append(msg),
+            max_steps_per_goal=step_budget,
+            logger=log.append,
         )
         harness.submit_goal(goal)
         reports = harness.run_until_idle(max_ticks=max_steps * 4)

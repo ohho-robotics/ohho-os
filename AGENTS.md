@@ -9,6 +9,7 @@
 > Paths written below as `sdk/` refer to that root (`tests/`, not `sdk/tests/`).
 > The TypeScript SDK moved to [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk);
 > `ts/README.md` points there. The licence is Apache-2.0 (OHH-18).
+> JSON schemas in `schemas/` are checked by `python scripts/export_json_schemas.py --check`.
 
 - **Package:** `ohho-os` (imports as `ohho`) — repository root of
   [ohho-os](https://github.com/ohho-robotics/ohho-os).
@@ -598,9 +599,10 @@ AGENTS.md needs the same rules section (not edited from here).
 - **Language:** Python-first; the web `Transport` types are the shared contract.
 - **License:** Apache-2.0 (OHH-18). `pyproject.toml` sets
   `license = "Apache-2.0"` and `license-files = ["LICENSE"]`.
-- **OSS home:** the canonical public package is
-  https://github.com/ohho-robotics/ohho-sdk. `pyproject.toml` `Homepage`
-  and `Source` point there.
+- **OSS home:** the canonical public Python repo is
+  https://github.com/ohho-robotics/ohho-os. `pyproject.toml` `Homepage`,
+  `Source`, `Issues`, and `Documentation` point at ohho.com / ohho-os.
+  TypeScript packages live at https://github.com/ohho-robotics/ohho-sdk.
 
 ---
 
