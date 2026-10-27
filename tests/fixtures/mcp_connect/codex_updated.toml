@@ -1,0 +1,9 @@
+model = "gpt-5.1"
+
+[mcp_servers.ohho]
+command = "/opt/ohho/bin/ohho"
+args = ["mcp", "serve"]
+
+[mcp_servers.other]
+command = "npx"
+args = ["-y", "other-server"]
