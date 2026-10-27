@@ -488,11 +488,11 @@ def _cmd_look(args) -> int:
         return 2
     _maybe_world(bot, args.world)
     try:
-        # If robot is simulated without camera frames, use SimPerceptor
-        use_camera = callable(getattr(bot.transport, "get_camera_frame", None)) or (
-            bot.has("perception.rgb") and not bot.simulated
-        )
-        if not use_camera and callable(getattr(bot.transport, "world_objects", None)):
+        # Simulated robots that expose a world model stay on SimPerceptor.
+        # Transport.get_camera_frame exists on every adapter and returns None
+        # unless a subclass supplies frames, so a callable check is not enough.
+        world_fn = getattr(bot.transport, "world_objects", None)
+        if bot.simulated and callable(world_fn):
             detections = SimPerceptor(bot).look()
         else:
             client = None
