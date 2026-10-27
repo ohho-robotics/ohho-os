@@ -6,8 +6,10 @@ lazily inside ``connect()`` (the ``[unitree]`` extra), so importing this module 
 free and the pure mapping functions below are unit-testable without any DDS.
 
 State arrives on DDS topics ``rt/sportmodestate`` (pose, IMU, gait) and
-``rt/lowstate`` (joints, battery). A ``state_factory`` or ``subscriber_factory``
-can be injected for tests (no DDS, no hardware).
+``rt/lowstate`` (joints, battery). The lidar cloud topic is sliced into a planar
+``Scan`` (see :func:`ohho.lidar.pointcloud_to_scan`) whether state is polled or
+delivered by subscribers. A ``state_factory``, ``subscriber_factory``, or
+``pointcloud_factory`` can be injected for tests (no DDS, no hardware).
 """
 
 from __future__ import annotations
@@ -18,12 +20,14 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Optional, Tuple
 
+from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
     JointReading,
     Odometry,
+    Scan,
     Telemetry,
     TransportStatus,
     Velocity,
@@ -32,6 +36,8 @@ from ..transport import BaseTransport
 from .errors import AdapterUnavailable
 
 _log = logging.getLogger(__name__)
+
+_READER_HZ = 20.0
 
 # Go2 motor order: FR, FL, RR, RL × (hip, thigh, calf) — indices 0..11 in LowState.
 _GO2_JOINT_NAMES: Tuple[str, ...] = (
@@ -54,7 +60,6 @@ _DEFAULT_SIM_DOMAIN = 1
 _STALE_STATE_SEC = 1.0
 _MSG_RATE_WINDOW_SEC = 5.0
 _SPORT_RPC_TIMEOUT_SEC = 1.0
-_READER_HZ = 20.0
 
 
 def parse_dds_address(address: str, iface_kw: str = "") -> Tuple[str, int]:
@@ -114,9 +119,10 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     Expected keys (all optional): ``position`` [x,y,z], ``velocity`` [vx,vy,vz],
     ``yaw_speed`` (rad/s), ``imu_rpy`` [roll,pitch,yaw], ``battery`` (0..1),
     ``joints`` [{name, position, velocity?}, …], ``error_code``, ``body_height``,
-    ``mode``, ``gait_type``, ``foot_force``. Roll/pitch and fault fields go into
-    ``Telemetry.custom`` only when present — the SafetyGate treats missing
-    orientation as "no fresh state".
+    ``mode``, ``gait_type``, ``foot_force``, ``scan`` (a :class:`Scan`), and
+    ``pointcloud`` (body-frame xyz points synthesized into a planar scan).
+    Roll/pitch and fault fields go into ``Telemetry.custom`` only when present —
+    the SafetyGate treats missing orientation as "no fresh state".
     """
     pos = state.get("position") or [0.0, 0.0, 0.0]
     vel = state.get("velocity") or [0.0, 0.0, 0.0]
@@ -158,10 +164,14 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     ts = state.get("msg_timestamp")
     if ts is None:
         ts = time.time()
+    scan: Optional[Scan] = state.get("scan")
+    if scan is None and "pointcloud" in state:
+        scan = pointcloud_to_scan(state["pointcloud"])
     return Telemetry(
         odom=odom,
         joints=joints,
         battery=state.get("battery"),
+        scan=scan,
         custom=custom,
         timestamp=float(ts),
     )
@@ -280,6 +290,7 @@ _SPORT_WHILE_ESTOPPED = frozenset({"stop_move", "damp"})
 
 StateFactory = Callable[[], Callable[[], Optional[dict]]]
 SubscriberFactory = Callable[[str, Any, Callable[[Any], None]], Any]
+PointCloudFactory = Callable[[], Optional[object]]
 
 
 class UnitreeDdsTransport(BaseTransport):
@@ -293,6 +304,7 @@ class UnitreeDdsTransport(BaseTransport):
         iface: str = "",
         state_factory: Optional[StateFactory] = None,
         subscriber_factory: Optional[SubscriberFactory] = None,
+        pointcloud_factory: Optional[PointCloudFactory] = None,
         read_only: bool = False,
     ) -> None:
         super().__init__()
@@ -302,19 +314,23 @@ class UnitreeDdsTransport(BaseTransport):
         self.address = self._iface
         self._state_factory = state_factory
         self._subscriber_factory = subscriber_factory
+        self._pointcloud_factory = pointcloud_factory
         self._client: Optional[object] = None
         self._state_getter: Optional[Callable[[], Optional[dict]]] = None
         self._sport_sub: Optional[object] = None
         self._low_sub: Optional[object] = None
+        self._lidar_sub: Optional[object] = None
         self._sport_partial: Optional[dict] = None
         self._low_partial: Optional[dict] = None
         self._lock = threading.Lock()
         self._latest = Telemetry(odom=Odometry())
+        self._lidar_scan: Optional[Scan] = None
         self._estopped = False
         self._state = ConnectionState.IDLE
         self._connected_since: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
         self._watchdog: Optional[threading.Thread] = None
+        self._lidar_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._last_msg_mono: Optional[float] = None
         self._last_msg_timestamp: Optional[float] = None
@@ -337,6 +353,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._connected_since = time.time()
         self._start_reader()
         self._start_watchdog()
+        self._start_lidar_reader()
         s = self.status()
         self._emit_status(s)
         return s
@@ -390,6 +407,35 @@ class UnitreeDdsTransport(BaseTransport):
             self._sport_sub.Init(self._on_sport_message, 10)
             self._low_sub = ChannelSubscriber("rt/lowstate", LowState_)
             self._low_sub.Init(self._on_low_message, 10)
+        self._connect_lidar_sub()
+
+    def _connect_lidar_sub(self) -> None:
+        """Subscribe to Go2 / sim DDS lidar (no-op when SDK or topic unavailable).
+
+        Uses ``subscriber_factory`` when the sport/low transport was injected, so
+        the planar scan is produced on the same transport as pose state. A
+        ``pointcloud_factory`` replaces the subscription.
+        """
+        if self._pointcloud_factory is not None:
+            return
+        try:
+            from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_  # type: ignore
+
+            from ..lidar import lidar_dds_topic
+
+            topic = lidar_dds_topic()
+            if self._subscriber_factory is not None:
+                self._lidar_sub = self._subscriber_factory(
+                    topic, PointCloud2_, self._on_lidar
+                )
+                return
+            from unitree_sdk2py.core.channel import ChannelSubscriber  # type: ignore
+
+            sub = ChannelSubscriber(topic, PointCloud2_)
+            sub.Init()
+            self._lidar_sub = sub
+        except Exception:
+            self._lidar_sub = None
 
     def _on_sport_message(self, msg: object) -> None:
         partial = sport_message_to_dict(msg)
@@ -418,14 +464,40 @@ class UnitreeDdsTransport(BaseTransport):
             self._last_msg_timestamp = float(msg_ts)
         self._on_state(merged)
 
+    def _attach_lidar_scan(self, telem: Telemetry) -> Telemetry:
+        if self._lidar_scan is None:
+            return telem
+        return Telemetry(
+            odom=telem.odom,
+            joints=telem.joints,
+            battery=telem.battery,
+            scan=self._lidar_scan,
+            custom=telem.custom,
+            timestamp=telem.timestamp,
+        )
+
     def _on_state(self, state: dict) -> None:
-        self._latest = sportstate_to_telemetry(state)
+        self._latest = self._attach_lidar_scan(sportstate_to_telemetry(state))
+        self._emit_telemetry(self._latest)
+
+    def _on_lidar(self, cloud: object) -> None:
+        """Decode a point cloud and refresh ``Telemetry.scan`` on any transport."""
+        try:
+            if isinstance(cloud, (list, tuple)):
+                scan = pointcloud_to_scan(cloud)
+            else:
+                scan = pointcloud2_to_scan(cloud)
+        except Exception:
+            return
+        self._lidar_scan = scan
+        self._latest = self._attach_lidar_scan(self._latest)
         self._emit_telemetry(self._latest)
 
     def disconnect(self) -> None:
         self._stop_reader()
         self._stop_watchdog()
-        for sub in (self._sport_sub, self._low_sub):
+        self._stop_lidar_reader()
+        for sub in (self._sport_sub, self._low_sub, self._lidar_sub):
             if sub is not None:
                 close = getattr(sub, "Close", None)
                 if callable(close):
@@ -435,6 +507,7 @@ class UnitreeDdsTransport(BaseTransport):
                         _log.debug("subscriber close failed", exc_info=True)
         self._sport_sub = None
         self._low_sub = None
+        self._lidar_sub = None
         if self._client is not None:
             self._call_stop_move()
         self._state = ConnectionState.DISCONNECTED
@@ -533,6 +606,42 @@ class UnitreeDdsTransport(BaseTransport):
         if t is not None:
             t.join(timeout=1.0)
             self._watchdog = None
+
+    def _start_lidar_reader(self, hz: float = 10.0) -> None:
+        if self._lidar_thread is not None:
+            return
+        if self._pointcloud_factory is None and self._lidar_sub is None:
+            return
+        period = 1.0 / hz
+
+        def loop() -> None:
+            while not self._stop.is_set():
+                if self._pointcloud_factory is not None:
+                    cloud = self._pointcloud_factory()
+                    if cloud is not None:
+                        self._on_lidar(cloud)
+                elif self._lidar_sub is not None:
+                    read = getattr(self._lidar_sub, "Read", None)
+                    if callable(read):
+                        try:
+                            msg = read(timeout=period)
+                        except TypeError:
+                            msg = read()
+                        if msg is not None:
+                            self._on_lidar(msg)
+                if self._stop.wait(period):
+                    return
+
+        self._lidar_thread = threading.Thread(
+            target=loop, name="ohho-unitree-lidar", daemon=True
+        )
+        self._lidar_thread.start()
+
+    def _stop_lidar_reader(self) -> None:
+        t = self._lidar_thread
+        if t is not None:
+            t.join(timeout=1.0)
+            self._lidar_thread = None
 
     # ── commands / telemetry ──────────────────────────────────────────────────
     def read(self) -> Telemetry:

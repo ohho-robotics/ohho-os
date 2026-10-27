@@ -312,8 +312,8 @@ disconnects. It does not send a velocity.
 Text (illustrative; install method and Python version vary):
 
 ```text
-OhhO OS 1.1.3 agent readiness
-  cli     pass  ohho-os 1.1.3 (editable source)
+OhhO OS 1.2.0 agent readiness
+  cli     pass  ohho-os 1.2.0 (editable source)
   python  pass  3.12.10
   login   skip  not signed in (optional for sim)
   rules   fail  rules missing: claude-code, codex, cursor, vscode, gemini, windsurf, opencode
@@ -347,14 +347,14 @@ further keys are sorted by name.
 ```json
 {
   "ok": false,
-  "version": "1.1.3",
+  "version": "1.2.0",
   "checks": [
     {
       "id": "cli",
       "status": "pass",
-      "detail": "ohho-os 1.1.3 (editable source)",
+      "detail": "ohho-os 1.2.0 (editable source)",
       "install": "editable source",
-      "version": "1.1.3"
+      "version": "1.2.0"
     },
     {
       "id": "python",

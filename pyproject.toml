@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ohho-os"
-version = "1.1.3"
+version = "1.2.0"
 description = "OhhO OS — the open-source, robot-agnostic engine for any robot, with or without ROS."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,7 +39,7 @@ arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101, Omni
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
 # cyclonedds is a build/runtime dep of unitree_sdk2py (not on PyPI — install from GitHub).
-unitree = ["cyclonedds>=0.10"]
+unitree = ["cyclonedds>=0.10"]               # Unitree DDS adapter (G1, Go2, H1, B2 …)
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
