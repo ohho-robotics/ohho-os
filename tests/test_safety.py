@@ -1554,6 +1554,7 @@ class TestCliSafetyFlags(unittest.TestCase):
             runtime="auto",
             safety_config="s.json",
             estop_damp=True,
+            read_only=False,
         )
         fake.arm.assert_called_once_with()
 

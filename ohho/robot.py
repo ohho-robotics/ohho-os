@@ -45,6 +45,7 @@ class Robot:
         *,
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
+        read_only: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -57,10 +58,14 @@ class Robot:
         ``safety_config`` is a safety config JSON path (default:
         ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
         e-stop even when standing.
+        ``read_only`` is only valid for ``dds://`` and ``unitree-dds://``. It
+        opens the Unitree link without a SportClient, so motion commands are
+        not sent. Any other transport raises
+        :class:`~ohho.adapters.errors.AdapterUnavailable`.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
-        tp = resolve_transport(transport, spec, rt)
+        tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
             tp = SafetyGate(
                 tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
@@ -419,6 +424,7 @@ def connect(
     *,
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
+    read_only: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -427,4 +433,5 @@ def connect(
         runtime=runtime,
         safety_config=safety_config,
         estop_damp=estop_damp,
+        read_only=read_only,
     )
