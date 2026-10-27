@@ -85,7 +85,7 @@ The default port is **8790**. Port 8765 is the Foxglove bridge in OmniBot (`robo
 ```bash
 ohho sim-serve --backend robot --robot unitree-go2 --transport 'dds://lo?domain=1'
 ```
-Connects through `Robot.connect` with the given transport URI. Hardware links use `SafetyGate` (disarmed until `bot.arm()` in an interactive session).
+Connects through `Robot.connect` with the given transport URI. Hardware links use `SafetyGate` and stay disarmed until an operator arms them. A loopback or simulated link (`dds://lo` on a domain other than 0, or `sim://`) is armed automatically so teleop can drive the sim.
 
 ### 3. ROS 2 bridge
 ```bash
