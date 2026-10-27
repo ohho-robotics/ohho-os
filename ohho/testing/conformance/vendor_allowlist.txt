@@ -12,12 +12,18 @@
 #
 # path	token	issue
 ohho/__init__.py	omnibot	R-01
+ohho/adapters/__init__.py	crazyflie	R-03
 ohho/adapters/__init__.py	feetech	R-01
 ohho/adapters/__init__.py	go2	R-02
 ohho/adapters/__init__.py	omnibot	R-01
+ohho/adapters/__init__.py	px4	R-03
 ohho/adapters/__init__.py	unitree	R-02
 ohho/adapters/__init__.py	yahboom	R-01
+ohho/adapters/_link_resilience.py	feetech	R-01
+ohho/adapters/_link_resilience.py	yahboom	R-01
 ohho/adapters/_yahboom_proto.py	yahboom	R-01
+ohho/adapters/drone_sim.py	crazyflie	R-03
+ohho/adapters/drone_sim.py	px4	R-03
 ohho/adapters/composite.py	feetech	R-01
 ohho/adapters/composite.py	omnibot	R-01
 ohho/adapters/composite.py	yahboom	R-01
@@ -38,10 +44,13 @@ ohho/planner.py	go2	R-02
 ohho/planner.py	unitree	R-02
 ohho/plugins.py	go2	R-02
 ohho/plugins.py	omnibot	R-01
+ohho/registry.py	crazyflie	R-03
 ohho/registry.py	go2	R-02
 ohho/registry.py	omnibot	R-01
+ohho/registry.py	px4	R-03
 ohho/registry.py	unitree	R-02
 ohho/registry.py	yahboom	R-01
+ohho/robot.py	unitree	R-02
 ohho/safety.py	feetech	R-01
 ohho/safety.py	go2	R-02
 ohho/safety.py	omnibot	R-01
@@ -49,7 +58,9 @@ ohho/safety.py	unitree	R-02
 ohho/safety_policy.py	go2	R-02
 ohho/safety_policy.py	omnibot	R-01
 ohho/safety_policy.py	unitree	R-02
+ohho/selftest.py	go2	R-02
 ohho/selftest.py	omnibot	R-01
+ohho/selftest.py	unitree	R-02
 ohho/sim_loop.py	omnibot	R-01
 ohho/sim_serve.py	omnibot	R-01
 ohho/sim_serve.py	go2	R-02
