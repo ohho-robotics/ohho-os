@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from dataclasses import replace
 
 from ohho.plugins import loaded_plugins
 from ohho.registry import RobotSpec, builtin_specs
@@ -14,6 +15,7 @@ from ohho_runtime.manifest import (
     CLASS_DEFAULTS,
     ROLE_AUTOPILOT_HEARTBEAT,
     ROLE_MODE_MONITOR,
+    ROLE_POLICY,
     ROLE_SAFETY_WATCHDOG,
     ROLE_TELEMETRY,
     ROLE_TELEOP_GATEWAY,
@@ -324,11 +326,34 @@ class ResolveTest(unittest.TestCase):
             self.assertIsNone(getattr(plugin, "services", None))
             self.assertNotIsInstance(plugin, ServicesProvider)
             resolved = resolve_manifest(spec)
-            self.assertEqual(resolved, class_default_manifest(spec.robot_class))
-            self.assertFalse(resolved.service(ROLE_TRANSPORT).do_not_operate)
+            default = class_default_manifest(spec.robot_class)
+            if spec.robot_class is RobotClass.AERIAL:
+                # Built-in aircraft stay experimental and not flight_ready.
+                # They still use the aerial class default; the gate only
+                # sets do_not_operate on motion services.
+                self.assertTrue(spec.experimental)
+                self.assertFalse(spec.flight_ready)
+                self.assertEqual(resolved.roles(), default.roles())
+                self.assertEqual(resolved.log_level, default.log_level)
+                self.assertEqual(resolved.log_format, default.log_format)
+                self.assertEqual(resolved.state_dir, default.state_dir)
+                motion_roles = {ROLE_TRANSPORT, ROLE_TELEOP_GATEWAY, ROLE_POLICY}
+                for role in default.roles():
+                    got = resolved.service(role)
+                    base = default.service(role)
+                    if role in motion_roles or base.commands_motion:
+                        self.assertEqual(replace(got, do_not_operate=False), base)
+                        self.assertTrue(got.do_not_operate)
+                    else:
+                        self.assertEqual(got, base)
+                        self.assertFalse(got.do_not_operate)
+            else:
+                self.assertEqual(resolved, default)
+                self.assertFalse(resolved.service(ROLE_TRANSPORT).do_not_operate)
         self.assertIn(RobotClass.MOBILE_BASE, seen)
         self.assertIn(RobotClass.MOBILE_MANIPULATOR, seen)
         self.assertIn(RobotClass.QUADRUPED, seen)
+        self.assertIn(RobotClass.AERIAL, seen)
 
     def test_builtin_plugin_without_services_still_loads(self) -> None:
         infos = loaded_plugins()
