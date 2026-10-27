@@ -440,8 +440,9 @@ class TestMcpSafety(unittest.TestCase):
     def test_allow_hardware_uses_safety_gate_and_does_not_arm(self) -> None:
         inner = _RecordingTransport()
 
-        def resolve(uri, spec, runtime):
+        def resolve(uri, spec, runtime, read_only=False):
             self.assertEqual(uri, "serial://fake")
+            self.assertFalse(read_only)
             return inner
 
         with tempfile.TemporaryDirectory() as tmp:

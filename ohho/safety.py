@@ -18,11 +18,13 @@ nothing above it changes; it decides what actually reaches the motors:
   actions; flips, jumps, pounce, dance, handstand, walk-upright, ``free_*`` and
   cross-step are refused even if a config file lists them. Aerial robots use a
   separate allowlist (``hold``, ``land``, ``rtl``, ``offboard_velocity``,
-  ``offboard_position``). They do not reuse the Go2 set.
-- **Tilt / fault guard.** On ground robots, ``|roll|`` or ``|pitch|`` over
-  0.6 rad, a non-zero ``error_code``, or unreadable orientation values → stop
-  + latch. The 0.6 rad tilt latch is quadruped-only. A non-zero ``error_code``
-  still latches an aircraft.
+  ``offboard_position``). They do not reuse the Go2 set. Humanoid action
+  names are not on the built-in lists, so they are refused unless a profile
+  names them, and they are never sport calls. ``move_joints`` stays refused.
+- **Tilt / fault guard.** ``|roll|`` or ``|pitch|`` over 0.6 rad, a non-zero
+  ``error_code``, or unreadable orientation values → stop + latch. The 0.6 rad
+  tilt latch is quadruped-only. A non-zero ``error_code`` still latches an
+  aircraft.
 - **Arming.** Motion is refused until ``arm()``. On hardware (anything except a
   simulator or a loopback interface on a non-zero DDS domain) arming needs
   ``OHHO_ARM_HARDWARE=1``, an interactive TTY and the typed confirmation
@@ -159,6 +161,24 @@ TAKEOFF_MIN_BATTERY = 0.3
 _FENCE_EPS = 1e-6
 _CRAZYFLIE_BACKENDS = frozenset({"crazyflie", "crazyflie-cf21"})
 _SIM_BACKENDS = frozenset({"drone-sim", "sim", "px4-sitl", "crazyflie-sim"})
+
+# High-level humanoid actions. Absent from the built-in allowlists, so
+# command() refuses them until a profile names them. ``move_joints`` stays
+# refused even then. These are never forwarded to sport_command.
+HUMANOID_ACTIONS = frozenset(
+    {
+        "prepare",
+        "walk_mode",
+        "damp",
+        "get_up",
+        "lie_down",
+        "look",
+        "move_ee",
+        "gripper",
+        "hand",
+        "move_joints",
+    }
+)
 
 _DENIED_FRAGMENTS = (
     "flip",
@@ -332,10 +352,12 @@ class SafetyProfile:
         if self.aerial and self.takeoff_alt_m > self.fence_max_alt_m + _FENCE_EPS:
             raise ValueError("safety profile: takeoff altitude exceeds the geofence")
 
-        universe = DRONE_ACTIONS if self.aerial else GO2_ACTIONS
         allow = frozenset(normalize_action(str(a)) for a in self.allowlist)
+        allowable = (
+            DRONE_ACTIONS if self.aerial else (GO2_ACTIONS | HUMANOID_ACTIONS)
+        )
         for a in allow:
-            if is_denied(a) or a not in universe:
+            if is_denied(a) or a not in allowable:
                 raise ValueError(f"safety profile: action '{a}' cannot be allowlisted")
 
         joints: dict[str, tuple[float, float]] = {}
@@ -1402,12 +1424,15 @@ class SafetyGate(BaseTransport):
             self._forward(lambda: fn(name, applied), cmd)
 
     def command(self, action: Any, *args: Any) -> bool:
-        """Run a high-level (sport-mode) action if it is allowlisted.
+        """Run a high-level action if it is allowlisted.
 
         ``stop_move`` is always accepted. ``move`` goes through the velocity
         caps; ``euler`` angles are clamped to ``profile.euler_limit_rad``.
         Aerial profiles dispatch flight requests instead of sport actions.
-        Returns True when the action was forwarded.
+        Humanoid names are refused unless the profile lists them, and then
+        they go to ``send_humanoid`` rather than ``sport_command``.
+        ``move_joints`` is refused even when listed. Returns True when the
+        action was forwarded.
         """
         cmd = "command"
         with self._lock:
@@ -1418,6 +1443,8 @@ class SafetyGate(BaseTransport):
                 return self._reject(cmd, "denied", action=a)
             if self._profile.aerial:
                 return self._aerial_command(a, args)
+            if a in HUMANOID_ACTIONS:
+                return self._humanoid_command(a, args)
             if a not in self._policy.allowlist:
                 return self._reject(cmd, "not_allowlisted", action=a)
             if a == "stop_move":
@@ -1832,11 +1859,51 @@ class SafetyGate(BaseTransport):
             frame=frame,
         )
 
+    def _humanoid_command(self, action: str, args: tuple[Any, ...]) -> bool:
+        """Allowlisted humanoid actions only. Never a sport-mode call.
+
+        ``move_joints`` is refused here. CUSTOM mode, a simulated link and the
+        class policy are required before low-level joints can be sent, and
+        that policy is not this gate.
+        """
+        if action == "move_joints" or action not in self._policy.allowlist:
+            return self._reject("command", "not_allowlisted", action=action)
+        if not self._motion_allowed("command", action=action):
+            return False
+        send = getattr(self._inner, "send_humanoid", None)
+        if not callable(send):
+            return self._reject("command", "unsupported_by_transport", action=action)
+        return self._forward(lambda: send(action, *args), f"command:{action}")
+
     def _sport(self, action: str, *args: float) -> bool:
         fn = getattr(self._inner, "sport_command", None)
-        if not callable(fn):
-            return self._reject("command", "unsupported_by_transport", action=action)
-        return self._forward(lambda: fn(action, *args), f"command:{action}")
+        if callable(fn):
+            return self._forward(lambda: fn(action, *args), f"command:{action}")
+        mode = getattr(self._inner, "send_mode", None)
+        if callable(mode) and type(self._inner).send_mode is not BaseTransport.send_mode:
+            if action == "euler" and len(args) == 3:
+                r, p, y = args
+                return self._forward(
+                    lambda: mode("euler", roll=r, pitch=p, yaw=y),
+                    f"command:{action}",
+                )
+            if args:
+                return self._reject("command", "bad_arguments", action=action)
+            return self._forward(lambda: mode(action), f"command:{action}")
+        return self._reject("command", "unsupported_by_transport", action=action)
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Forward a legged posture command through the sport allowlist."""
+        action = normalize_action(name)
+        if action == "euler":
+            self.command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+        else:
+            self.command(action)
 
 
 __all__ = [
@@ -1860,6 +1927,7 @@ __all__ = [
     "DRONE_TAKEOFF_ALT_M",
     "DRONE_TTY_ACTIONS",
     "GO2_PROFILE",
+    "HUMANOID_ACTIONS",
     "HARD_MAX_ANG",
     "HARD_MAX_LIN",
     "OMNIBOT_PROFILE",
