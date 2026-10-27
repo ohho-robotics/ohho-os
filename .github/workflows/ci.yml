@@ -35,5 +35,13 @@ jobs:
           python -m pip install "coverage>=7"
           python -m coverage run --branch --include=ohho/safety.py -m unittest tests.test_safety
           python -m coverage report -m --include=ohho/safety.py --fail-under=95
+      - name: CLI smoke (doctor)
+        run: ohho doctor
+      - name: CLI smoke (sim)
+        run: ohho sim --robot omnibot --seconds 2
+      - name: CLI smoke (selftest sim)
+        run: |
+          ohho selftest --sim
+          ohho selftest --sim --robot unitree-go2
       - name: CLI smoke (documented commands, sim/mock only)
         run: python -m unittest discover -s tests/cli_smoke -v

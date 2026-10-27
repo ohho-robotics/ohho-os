@@ -654,10 +654,13 @@ def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_selftest(args) -> int:
+    from .registry import get_spec
     from .selftest import default_report_path, format_report_text, run_selftest
 
     allow_spin = getattr(args, "allow_spin", False)
-    if not args.sim and not allow_spin:
+    allow_stand = getattr(args, "allow_stand", False)
+    spec = get_spec(args.robot)
+    if not args.sim and spec.category != "legged" and not allow_spin:
         if sys.stdin.isatty():
             try:
                 ans = (
@@ -678,10 +681,12 @@ def _cmd_selftest(args) -> int:
             robot=args.robot,
             sim=args.sim,
             allow_spin=allow_spin,
+            allow_stand=allow_stand,
             out_path=out_path,
             base_port=getattr(args, "base_port", ""),
             arm_port=getattr(args, "arm_port", ""),
             camera_idx=getattr(args, "camera_idx", 0),
+            transport_uri=getattr(args, "transport", "") or "",
         )
     except Exception as e:
         print(f"error running selftest: {e}", file=sys.stderr)
@@ -1151,6 +1156,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="allow_spin",
         help="allow bench wheel spin check (low-speed, short pulse)",
+    )
+    st.add_argument(
+        "--allow-stand",
+        action="store_true",
+        dest="allow_stand",
+        help="allow Go2 stand/lie cycle (legged robots only)",
+    )
+    st.add_argument(
+        "--transport",
+        default="",
+        help="transport URI (e.g. dds://lo?domain=1, serial:///dev/ttyUSB0)",
     )
     st.add_argument(
         "--out",

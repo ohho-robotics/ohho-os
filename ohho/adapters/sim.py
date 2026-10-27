@@ -12,6 +12,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from .. import capabilities as caps
 from ..registry import RobotSpec
@@ -252,6 +253,23 @@ class SimTransport(BaseTransport):
 
     def get_imu_rate(self) -> float:
         return 20.0
+
+    def read_legged_diagnostics(self) -> dict[str, Any]:
+        """Synthetic Go2-style bench diagnostics for ``ohho selftest --sim``."""
+        if self.spec.category != "legged":
+            return {}
+        motors = [
+            {"id": i + 1, "temperature": 36.0 + (i % 3), "lost": 0} for i in range(12)
+        ]
+        return {
+            "sport_hz": 52.0,
+            "lowstate_hz": 105.0,
+            "motors": motors,
+            "imu_rpy": [0.01, -0.02, 0.0],
+            "battery_soc": 0.85,
+            "error_code": 0,
+            "camera_jpeg_len": 4096,
+        }
 
     def read_servo_diagnostics(self) -> list[dict]:
         out = []
