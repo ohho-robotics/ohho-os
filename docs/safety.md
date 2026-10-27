@@ -25,7 +25,7 @@ bot.arm()            # re-arm before motion is accepted again
 ```
 
 From the CLI, every command that takes a robot (`connect`, `drive`, `agent`,
-`nav`, `look`, `market run`) accepts:
+`nav`, `look`, `skills run`) accepts:
 
 | Flag | Effect |
 |---|---|
@@ -78,10 +78,70 @@ DDS link on a loopback interface with a non-zero DDS domain, e.g.
 `dds://lo?domain=1` for a local Unitree simulator. DDS domain 0 is the real
 robot's domain, so `dds://lo` (domain 0) still needs confirmation.
 
+A `ros2://` link still needs confirmation unless CI sets `OHHO_CI_FAKE_ROBOT=1`
+(exactly `1`), discovery is localhost-only (`ROS_LOCALHOST_ONLY` or
+`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`), `ROS_DOMAIN_ID` is non-zero, and
+`ROS_STATIC_PEERS` is unset. ROS env vars alone never skip arming.
+
 Agents never get `arm` or `release_stop` as tools. The TTY check stops a
 headless agent or CI job. It does not stop code that runs in the same Python
 process and reaches into private attributes; this is a software guard, not a
 replacement for the robot's own e-stop or the remote.
+
+## Class policies
+
+`SafetyGate` delegates the allowlist, clamping, the command-watchdog action,
+e-stop mapping, arming and the tilt latch to a `SafetyPolicy`
+(`ohho/safety_policy.py`). The policy is chosen from `spec.robot_class`:
+
+| Class | Policy | Name |
+|---|---|---|
+| `mobile_base` (`sim`) | `GroundPolicy` | `ground` |
+| `mobile_manipulator` (`omnibot`) | `GroundArmPolicy` | `ground+arm` |
+| `arm` | `ArmPolicy` | `arm` |
+| `quadruped` (`unitree-go2`) | `LeggedPolicy` | `legged` |
+
+The numbers in the table below are unchanged. A class with no built-in
+profile still gets the conservative caps. Aerial and humanoid policies are
+not in this release; those classes keep today's generic rules.
+
+A plugin's `safety_policy(spec)` may return `None` (the class default) or a
+stricter policy. Velocity, acceleration, joint, effort, timeout, tilt and
+euler caps, and the allowlist, may only get tighter. A policy that loosens a
+class cap is refused when the gate loads it. Discovery does not call the hook.
+
+## MCP server (OHH-278)
+
+`ohho mcp serve` accepts only `sim://`. A human can pass `--allow-hardware`
+on that command to let a tool open a non-sim URI. Nothing else turns hardware
+on: not `OHHO_ALLOW_HARDWARE`, not `OHHO_ARM_HARDWARE`, and not a tool
+argument such as `allowHardware`.
+
+With the flag, `Robot.connect` wraps the link in `SafetyGate` the same way
+`ohho connect` does (profile, caps, watchdogs, allowlist, audit). The process
+never calls `arm()` or `release_stop()`. Its stdin is the JSON-RPC pipe, not
+an interactive terminal, so arming would fail closed even if it tried. Motion
+tools return a structured error (`motion_refused` / `not_armed`) and send
+zero velocity. The message tells the agent to ask the human. The human arms
+from their own terminal
+(`OHHO_ARM_HARDWARE=1`, `ohho connect … --arm`, then the typed phrase).
+
+`emergency_stop` is always registered and always allowed, on `sim://` and on
+a gated link. It latches. There is no MCP tool to clear that latch.
+
+Tool registration rejects names that arm, release an e-stop, or change a
+safety profile or a limit (`arm`, `release_stop`, `release-stop`,
+`disarm-override`, `profile`, `limit`, and the same words inside a longer
+name). `emergency_stop` stays allowed.
+
+Every tool result that talks to a robot includes `"backend": "sim"` or
+`"backend": "hardware"`. A velocity result includes `requested`, `applied`,
+`clamped`, and `cap`. A 2 m/s request is clamped to the simulator limit or
+the safety-profile cap, whichever is lower. A disarmed hardware link does
+not accept that command (`sent: false`); the gate is left with zero velocity.
+
+`ohho mcp connect` records `ohho mcp serve` with no `--allow-hardware` and
+no `--arm`.
 
 ## Profiles
 
@@ -115,7 +175,8 @@ instead of running with a half-read config.
 
 Each event is one JSON object per line in `~/.ohho/safety/<UTC date>.jsonl`
 (override the directory with `OHHO_SAFETY_DIR`). Every record has `ts`
-(ISO 8601 UTC), `t` (epoch seconds), `event`, `robot` and `protocol`.
+(ISO 8601 UTC), `t` (epoch seconds), `event`, `robot` and `protocol`. Records
+written by the gate also include `policy` (the policy name).
 
 | `event` | When |
 |---|---|
@@ -132,7 +193,7 @@ Each event is one JSON object per line in `~/.ohho/safety/<UTC date>.jsonl`
 ## Tests and coverage
 
 ```bash
-python -m unittest tests.test_safety
+python -m unittest tests.test_safety tests.test_safety_policy
 python -m coverage run --branch --include=ohho/safety.py -m unittest tests.test_safety
 python -m coverage report -m --include=ohho/safety.py --fail-under=95
 ```
