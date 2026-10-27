@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install LeRobot and OhhO SDK
+      - name: Install LeRobot and OhhO OS
         run: |
           pip install "lerobot[dataset]==0.3.3"
           pip install -e '.[data,serve,train]'

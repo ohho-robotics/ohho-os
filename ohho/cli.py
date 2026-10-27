@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from . import __version__
+from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .agent import Agent
 from .hardware import resolve_device
@@ -20,7 +21,7 @@ from .sim_serve import DEFAULT_PORT
 
 
 def _cmd_version(args) -> int:
-    print(f"OhhO OS {__version__}")
+    print(f"OhhO OS {__version__}  (protocol {PROTOCOL_VERSION})")
     return 0
 
 
@@ -41,7 +42,7 @@ def _cmd_doctor(args) -> int:
         return importlib.util.find_spec(mod) is not None
 
     runtimes = available_runtimes()
-    print(f"OhhO OS {__version__}")
+    print(f"OhhO OS {__version__}  (protocol {PROTOCOL_VERSION})")
     print(f"  python      : {sys.version.split()[0]}")
     print(f"  runtimes    : {', '.join(runtimes)}")
     print(f"  adapters    : {', '.join(available_adapters())}  (others via extras)")
@@ -262,6 +263,10 @@ def _cmd_drive(args) -> int:
         bot.disconnect()
         return refused
     try:
+        legged_sim = bot.spec.id == "unitree-go2" and bot.simulated
+        if legged_sim:
+            bot.stand()
+            time.sleep(0.05)
         print(
             f"driving {bot.spec.id}: vx={args.vx} vy={args.vy} w={args.w} for {args.seconds:.0f}s"
         )
@@ -292,6 +297,9 @@ def _cmd_drive(args) -> int:
             print(
                 f"final odom: x={t.odom.x:.3f} y={t.odom.y:.3f} theta={t.odom.theta:.3f}"
             )
+        if legged_sim:
+            bot.lie_down()
+            time.sleep(0.05)
     finally:
         bot.disconnect()
     return 0
@@ -724,10 +732,13 @@ def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_selftest(args) -> int:
+    from .registry import get_spec
     from .selftest import default_report_path, format_report_text, run_selftest
 
     allow_spin = getattr(args, "allow_spin", False)
-    if not args.sim and not allow_spin:
+    allow_stand = getattr(args, "allow_stand", False)
+    spec = get_spec(args.robot)
+    if not args.sim and spec.category != "legged" and not allow_spin:
         if sys.stdin.isatty():
             try:
                 ans = (
@@ -748,10 +759,12 @@ def _cmd_selftest(args) -> int:
             robot=args.robot,
             sim=args.sim,
             allow_spin=allow_spin,
+            allow_stand=allow_stand,
             out_path=out_path,
             base_port=getattr(args, "base_port", ""),
             arm_port=getattr(args, "arm_port", ""),
             camera_idx=getattr(args, "camera_idx", 0),
+            transport_uri=getattr(args, "transport", "") or "",
         )
     except Exception as e:
         print(f"error running selftest: {e}", file=sys.stderr)
@@ -1228,6 +1241,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="allow_spin",
         help="allow bench wheel spin check (low-speed, short pulse)",
+    )
+    st.add_argument(
+        "--allow-stand",
+        action="store_true",
+        dest="allow_stand",
+        help="allow Go2 stand/lie cycle (legged robots only)",
+    )
+    st.add_argument(
+        "--transport",
+        default="",
+        help="transport URI (e.g. dds://lo?domain=1, serial:///dev/ttyUSB0)",
     )
     st.add_argument(
         "--out",

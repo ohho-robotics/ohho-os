@@ -23,6 +23,7 @@ from typing import Any, Callable, Deque, Optional, Tuple
 from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
+from ..safety import normalize_action
 from ..schema import (
     ConnectionState,
     JointReading,
@@ -108,6 +109,17 @@ def dds_uri_is_hardware(uri: Optional[str]) -> bool:
 
 
 # ── pure, testable protocol mapping ────────────────────────────────────────────
+def sport_mode_to_posture(mode: int) -> str:
+    """Map Go2 ``SportModeState.mode`` (unitree_ros2 sportmodestate) to a label."""
+    if mode in (5, 7):
+        return "lying"
+    if mode == 10:
+        return "sitting"
+    if mode in (0, 1, 2, 3, 8):
+        return "standing"
+    return "unknown"
+
+
 def velocity_to_move(vel: Velocity) -> Tuple[float, float, float]:
     """Map a unified ``Velocity`` to Unitree ``SportClient.Move(vx, vy, vyaw)``."""
     return (vel.linear_x, vel.linear_y, vel.angular_z)
@@ -144,6 +156,8 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     for key in ("error_code", "body_height", "mode", "gait_type", "foot_force"):
         if key in state:
             custom[key] = state[key]
+    if "mode" in state:
+        custom["posture"] = sport_mode_to_posture(int(state["mode"]))
     joints_in = state.get("joints") or []
     joints: list[JointReading] = []
     for item in joints_in:
@@ -231,6 +245,7 @@ def low_message_to_dict(msg: object) -> dict:
     d: dict = {}
     motors = getattr(msg, "motor_state", None)
     joints: list[dict] = []
+    motor_diag: list[dict] = []
     if motors is not None:
         for i, name in enumerate(_GO2_JOINT_NAMES):
             try:
@@ -244,8 +259,18 @@ def low_message_to_dict(msg: object) -> dict:
                     "velocity": float(getattr(m, "dq", 0.0)),
                 }
             )
+            temp = getattr(m, "temperature", None)
+            motor_diag.append(
+                {
+                    "id": i + 1,
+                    "temperature": None if temp is None else float(temp),
+                    "lost": getattr(m, "lost", 0) or 0,
+                }
+            )
     if joints:
         d["joints"] = joints
+    if motor_diag:
+        d["motors"] = motor_diag
     bms = getattr(msg, "bms_state", None)
     if bms is not None:
         soc = getattr(bms, "soc", None)
@@ -304,6 +329,7 @@ class UnitreeDdsTransport(BaseTransport):
         iface: str = "",
         state_factory: Optional[StateFactory] = None,
         subscriber_factory: Optional[SubscriberFactory] = None,
+        lowstate_factory: Optional[StateFactory] = None,
         pointcloud_factory: Optional[PointCloudFactory] = None,
         read_only: bool = False,
     ) -> None:
@@ -314,9 +340,14 @@ class UnitreeDdsTransport(BaseTransport):
         self.address = self._iface
         self._state_factory = state_factory
         self._subscriber_factory = subscriber_factory
+        self._lowstate_factory = lowstate_factory
         self._pointcloud_factory = pointcloud_factory
         self._client: Optional[object] = None
         self._state_getter: Optional[Callable[[], Optional[dict]]] = None
+        self._lowstate_getter: Optional[Callable[[], Optional[dict]]] = None
+        self._latest_lowstate: Optional[dict] = None
+        self._sport_times: Deque[float] = deque(maxlen=256)
+        self._lowstate_times: Deque[float] = deque(maxlen=512)
         self._sport_sub: Optional[object] = None
         self._low_sub: Optional[object] = None
         self._lidar_sub: Optional[object] = None
@@ -349,6 +380,8 @@ class UnitreeDdsTransport(BaseTransport):
             self._state_getter = self._state_factory()
         else:
             self._connect_dds()
+        if self._lowstate_factory is not None:
+            self._lowstate_getter = self._lowstate_factory()
         self._state = ConnectionState.CONNECTED
         self._connected_since = time.time()
         self._start_reader()
@@ -439,12 +472,14 @@ class UnitreeDdsTransport(BaseTransport):
 
     def _on_sport_message(self, msg: object) -> None:
         partial = sport_message_to_dict(msg)
+        self._sport_times.append(time.monotonic())
         with self._lock:
             self._sport_partial = partial
             self._merge_and_emit()
 
     def _on_low_message(self, msg: object) -> None:
         partial = low_message_to_dict(msg)
+        self._on_lowstate(partial)
         with self._lock:
             self._low_partial = partial
             self._merge_and_emit()
@@ -477,8 +512,69 @@ class UnitreeDdsTransport(BaseTransport):
         )
 
     def _on_state(self, state: dict) -> None:
+        """Bridge a merged state dict to telemetry and emit."""
         self._latest = self._attach_lidar_scan(sportstate_to_telemetry(state))
         self._emit_telemetry(self._latest)
+
+    def _on_lowstate(self, state: dict) -> None:
+        self._lowstate_times.append(time.monotonic())
+        self._latest_lowstate = state
+
+    def _stream_rate_hz(self, times: Deque[float], window_s: float = 1.0) -> float:
+        if not times:
+            return 0.0
+        now = time.monotonic()
+        cutoff = now - window_s
+        while times and times[0] < cutoff:
+            times.popleft()
+        if len(times) < 2:
+            return float(len(times)) / window_s if window_s > 0 else 0.0
+        span = times[-1] - times[0]
+        if span <= 0:
+            return 0.0
+        return (len(times) - 1) / span
+
+    def read_legged_diagnostics(self) -> dict:
+        """Snapshot for ``ohho selftest`` (sport/lowstate rates, motors, BMS, IMU)."""
+        t = self._latest
+        custom = dict(t.custom or {})
+        err = custom.get("error_code", 0)
+        rpy = [custom.get("roll", 0.0), custom.get("pitch", 0.0)]
+        if t.odom is not None:
+            rpy.append(float(t.odom.theta))
+        else:
+            rpy.append(0.0)
+        motors: list[dict] = []
+        if self._latest_lowstate:
+            raw = self._latest_lowstate.get("motors")
+            if isinstance(raw, list):
+                motors = list(raw)
+        return {
+            "sport_hz": round(self._stream_rate_hz(self._sport_times), 2),
+            "lowstate_hz": round(self._stream_rate_hz(self._lowstate_times), 2),
+            "motors": motors,
+            "imu_rpy": rpy,
+            "battery_soc": t.battery,
+            "error_code": err,
+            "camera_jpeg_len": None,
+        }
+
+    def capture_front_camera_jpeg(self) -> Optional[bytes]:
+        """Front camera frame via Unitree VideoClient (hardware only)."""
+        if self._client is None or self._state_factory is not None:
+            return None
+        try:
+            from unitree_sdk2py.go2.video.video_client import VideoClient  # type: ignore
+
+            vc = VideoClient()
+            vc.SetTimeout(3.0)
+            vc.Init()
+            code, data = vc.GetImageSample()
+            if code == 0 and data:
+                return bytes(data)
+        except Exception:
+            return None
+        return None
 
     def _on_lidar(self, cloud: object) -> None:
         """Decode a point cloud and refresh ``Telemetry.scan`` on any transport."""
@@ -560,9 +656,14 @@ class UnitreeDdsTransport(BaseTransport):
                     if self._state_getter is not None:
                         state = self._state_getter()
                         if state is not None:
+                            self._sport_times.append(time.monotonic())
                             with self._lock:
                                 self._sport_partial = dict(state)
                                 self._merge_and_emit()
+                    if self._lowstate_getter is not None:
+                        low = self._lowstate_getter()
+                        if low is not None:
+                            self._on_lowstate(low)
                 finally:
                     delay = timer.end()
                 if self._stop.is_set():
@@ -661,6 +762,21 @@ class UnitreeDdsTransport(BaseTransport):
 
     def send_joint_command(self, name: str, position: float) -> None:
         return  # Go2 has no arm; low-level joint control is a future adapter
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Map unified mode names to ``SportClient`` methods."""
+        action = normalize_action(name)
+        if action == "euler":
+            self.sport_command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+            return
+        if action not in _SPORT_METHODS:
+            raise ValueError(f"unsupported sport mode '{name}'")
+        self.sport_command(action)
 
     def sport_command(self, name: str, *args: float) -> None:
         method = _SPORT_METHODS.get(name)

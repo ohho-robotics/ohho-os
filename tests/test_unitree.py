@@ -202,6 +202,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         self.assertEqual(t.custom["error_code"], 0)
         self.assertAlmostEqual(t.custom["body_height"], 0.31)
         self.assertEqual(t.custom["mode"], 1)
+        self.assertEqual(t.custom["posture"], "standing")
 
     def test_missing_safety_fields_are_not_invented(self):
         t = sportstate_to_telemetry({"position": [0.0, 0.0, 0.0]})
@@ -414,6 +415,7 @@ class TestUnitreeLidarScan(unittest.TestCase):
             gate.disconnect()
 
     def test_subscriber_path_keeps_lidar_scan(self):
+        """Pose subscribers and the lidar callback both feed one telemetry snapshot."""
         tp = UnitreeDdsTransport(get_spec("unitree-go2"), "lo?domain=1")
         tp._on_lidar([(1.7, 0.0, 0.2)])
         tp._on_sport_message(
@@ -452,6 +454,33 @@ class TestUnitreeLidarScan(unittest.TestCase):
             self.assertIsNotNone(t.scan)
             self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 1.1, places=3)
             self.assertIsNone(tp._client)
+        finally:
+            tp.disconnect()
+
+    def test_pointcloud_factory_publishes_scan_with_state_factory(self):
+        state = {
+            "position": [0.4, 0.0, 0.0],
+            "imu_rpy": [0.0, 0.0, 0.0],
+        }
+
+        def state_factory():
+            return lambda: state
+
+        tp = UnitreeDdsTransport(
+            get_spec("unitree-go2"),
+            "lo?domain=1",
+            state_factory=state_factory,
+            pointcloud_factory=lambda: [(1.1, 0.0, 0.2)],
+        )
+        tp.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.2)
+            t = tp.read()
+            self.assertAlmostEqual(t.odom.x, 0.4)
+            self.assertIsNotNone(t.scan)
+            self.assertAlmostEqual(t.scan.ranges[DEFAULT_NUM_RAYS // 2], 1.1, places=3)
         finally:
             tp.disconnect()
 
