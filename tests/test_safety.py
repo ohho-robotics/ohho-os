@@ -1401,6 +1401,7 @@ class TestGatePlumbing(GateCase):
         self.assertTrue(bot.gated)
         sim._emit_telemetry(sim.read())
         self.assertTrue(bot.arm())  # simulated link: no TTY needed
+        bot.stand()  # Go2 sim starts lying; drive is refused until standing
         self.clock.advance(0.01)
         bot.stand()
         bot.drive(vx=2.0)
@@ -1553,6 +1554,7 @@ class TestCliSafetyFlags(unittest.TestCase):
             runtime="auto",
             safety_config="s.json",
             estop_damp=True,
+            read_only=False,
         )
         fake.arm.assert_called_once_with()
 

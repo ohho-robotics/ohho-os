@@ -1,6 +1,8 @@
 # Changelog
 
-All notable changes to **ohho-os** (import `ohho`) are documented here.
+All notable changes to **ohho-os** (PyPI package `ohho-os`, import `ohho`) are
+documented here. The TypeScript SDK is versioned independently in
+[ohho-sdk](https://github.com/ohho-robotics/ohho-sdk).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -15,6 +17,11 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
+  semver; `ohho version` / `ohho doctor` print it.
+- **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
+  CI fails when stale. Release workflow uploads them as a GitHub artifact.
+- **sim-serve** — WebSocket telemetry includes `protocolVersion` on every frame.
 - **`ohho login` / `ohho whoami` / `ohho logout`** — RFC 8628 device-flow client
   for the OhhO console (OHH-273). `login` requests a code, prints the user code
   and verification URL, and polls until the code is approved, denied, or
