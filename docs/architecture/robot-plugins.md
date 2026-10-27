@@ -222,15 +222,19 @@ scenario on the plugin's sim backend only. The kit calls
 A new plugin runs it like this:
 
 1. Register a sim backend from `sim_backends()` and set `RobotSpec.sim_backend`,
-   or leave it empty to use the class default (`kinematic` for a ground robot
-   or an arm the built-in backend can run).
+   or leave it empty to use the class default (`kinematic` for a ground robot,
+   a quadruped, or an arm the built-in backend can run).
 2. Run `python -m ohho.testing.conformance --robot <id>`.
 3. `mobile_base` and `mobile_manipulator` drive a 1 m square, then check that a
    stale command zeros velocity and that e-stop latches.
 4. An `arm` moves to home, clamps a joint command to the safety profile, and
    disables torque on e-stop in sim.
-5. `quadruped`, `aerial` and `humanoid` stay in the kit registry with no sim
-   backend. The report is skipped, with the reason, and is not a pass.
+5. `quadruped` runs `quadruped_walk` on the kinematic backend. The sim starts
+   lying; velocity is ignored until stand; sit and lie-down block drive; body
+   euler is clamped to the safety limit (never widened); a stale command zeros
+   velocity and e-stop latches. `aerial` and `humanoid` stay in the kit
+   registry with no sim backend. That report is skipped, with the reason, and
+   is not a pass.
 
 Every run also checks the telemetry schema, that MCP payloads carry `backend`
 and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that

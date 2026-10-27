@@ -34,6 +34,8 @@ ohho/adapters/yahboom.py	yahboom	R-01
 ohho/cli.py	omnibot	R-01
 ohho/data/writer.py	omnibot	R-01
 ohho/demo_drive.py	omnibot	R-01
+ohho/planner.py	go2	R-02
+ohho/planner.py	unitree	R-02
 ohho/plugins.py	go2	R-02
 ohho/plugins.py	omnibot	R-01
 ohho/registry.py	go2	R-02
@@ -71,6 +73,8 @@ ohho/descriptor.py	yahboom	R-01
 ohho/drone/estop.py	px4	R-03
 ohho/drone/telemetry.py	crazyflie	R-03
 ohho/drone/telemetry.py	px4	R-03
+ohho/evals.py	go2	R-02
+ohho/evals.py	unitree	R-02
 ohho/lidar.py	go2	R-02
 ohho/mcp_tools.py	omnibot	R-01
 ohho/profiles.py	omnibot	R-01

@@ -6,7 +6,8 @@ transport whose protocol is not ``simulated``. It does not call
 
 Classes with no sim backend on this branch are registered here with
 ``sim_backend=None``. Running one reports skipped and a reason. That is not
-a pass.
+a pass. Quadruped uses the kinematic backend: the sim starts lying, ignores
+drive until it stands, and clamps body euler to the safety limit.
 """
 
 from __future__ import annotations
@@ -22,9 +23,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from ohho import capabilities as caps
 from ohho.registry import RobotSpec, UnknownRobot, get_spec, list_specs
 from ohho.robot_spec import RobotClass
-from ohho.schema import JointReading, Odometry, Telemetry, Velocity
+from ohho.safety import EULER_LIMIT_RAD
+from ohho.schema import JointReading, Odometry, Telemetry, Velocity, clamp
 from ohho.transport import Transport
 
 from .vendors import (
@@ -71,7 +74,9 @@ CLASS_SCENARIOS: dict[RobotClass, ClassScenario] = {
         RobotClass.MOBILE_MANIPULATOR, "drive_square", "kinematic", ""
     ),
     RobotClass.ARM: ClassScenario(RobotClass.ARM, "arm_home", "kinematic", ""),
-    RobotClass.QUADRUPED: _missing(RobotClass.QUADRUPED, "quadruped_walk"),
+    RobotClass.QUADRUPED: ClassScenario(
+        RobotClass.QUADRUPED, "quadruped_walk", "kinematic", ""
+    ),
     RobotClass.AERIAL: _missing(RobotClass.AERIAL, "aerial_square"),
     RobotClass.HUMANOID: _missing(RobotClass.HUMANOID, "humanoid_walk"),
 }
@@ -203,6 +208,179 @@ def _drive_square(transport: Transport, spec: RobotSpec) -> Check:
     return Check("drive_square", "pass")
 
 
+def _posture(transport: Transport) -> str:
+    getter = getattr(transport, "legged_posture", None)
+    if callable(getter):
+        return str(getter())
+    custom = getattr(transport.read(), "custom", None) or {}
+    return str(custom.get("legged_posture", "unknown"))
+
+
+def _sport(transport: Transport, name: str, *args: float) -> None:
+    sport = getattr(transport, "sport_command", None)
+    if not callable(sport):
+        raise RuntimeError("legged sim has no sport_command")
+    sport(name, *args)
+
+
+def _stand_for_drive(transport: Transport, spec: RobotSpec) -> str | None:
+    """Stand a legged sim so later drive checks see the stand-before-drive rule.
+
+    Returns an error string, or None when the base may be commanded. A
+    non-legged spec is unchanged.
+    """
+    if caps.LEGGED_POSE not in spec.capabilities:
+        return None
+    if _posture(transport) == "standing":
+        return None
+    try:
+        _sport(transport, "stand_up")
+    except (RuntimeError, ValueError) as exc:
+        return str(exc)
+    posture = _posture(transport)
+    if posture != "standing":
+        return f"stand_up left posture {posture}"
+    return None
+
+
+def _motion_delta(
+    transport: Transport, speed: float, duration: float = 0.4
+) -> tuple[float, float]:
+    before = _pose(transport)
+    _integrate(transport, Velocity(linear_x=speed), duration)
+    after = _pose(transport)
+    return after[0] - before[0], after[1] - before[1]
+
+
+def _fail_if_moved(name: str, delta: tuple[float, float], why: str) -> Check | None:
+    dx, dy = delta
+    if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+        return Check(name, "fail", f"{why} ({dx:.4f}, {dy:.4f})")
+    return None
+
+
+def _quadruped_checks(transport: Transport, spec: RobotSpec) -> list[Check]:
+    """Legged behaviour on the kinematic sim: lie, sit, stand, clamp, recover.
+
+    Body-euler requests past ``EULER_LIMIT_RAD`` must come back clamped.
+    The limit itself is not widened.
+    """
+    checks: list[Check] = []
+    if caps.LEGGED_POSE not in spec.capabilities:
+        return [Check("quadruped_walk", "fail", "quadruped spec has no legged.pose")]
+    speed = min(0.25, spec.max_lin)
+    if speed <= 0:
+        return [Check("quadruped_walk", "fail", "spec has no linear speed")]
+    try:
+        posture = _posture(transport)
+        if posture != "lying":
+            return [
+                Check(
+                    "lie_blocks_drive",
+                    "fail",
+                    f"legged sim started {posture}, want lying",
+                )
+            ]
+        moved = _fail_if_moved(
+            "lie_blocks_drive",
+            _motion_delta(transport, speed),
+            "base moved while lying",
+        )
+        if moved is not None:
+            return [moved]
+        checks.append(Check("lie_blocks_drive", "pass"))
+
+        _sport(transport, "sit")
+        posture = _posture(transport)
+        if posture != "sitting":
+            checks.append(Check("sit_blocks_drive", "fail", f"sit left {posture}"))
+            return checks
+        moved = _fail_if_moved(
+            "sit_blocks_drive",
+            _motion_delta(transport, speed),
+            "base moved while sitting",
+        )
+        if moved is not None:
+            checks.append(moved)
+            return checks
+        checks.append(Check("sit_blocks_drive", "pass"))
+
+        _sport(transport, "stand_up")
+        posture = _posture(transport)
+        if posture != "standing":
+            checks.append(
+                Check("stand_before_drive", "fail", f"stand_up left {posture}")
+            )
+            return checks
+        checks.append(Check("stand_before_drive", "pass"))
+
+        square = _drive_square(transport, spec)
+        checks.append(square)
+        if square.status != "pass":
+            return checks
+
+        _sport(transport, "stop_move")
+        held = _pose(transport)
+        _step(transport, 0.3)
+        later = _pose(transport)
+        if abs(later[0] - held[0]) > 1e-6 or abs(later[1] - held[1]) > 1e-6:
+            checks.append(
+                Check(
+                    "stop_move",
+                    "fail",
+                    f"base moved after stop_move ({held} -> {later})",
+                )
+            )
+            return checks
+        checks.append(Check("stop_move", "pass"))
+
+        requested = (1.0, -1.0, 2.0)
+        _sport(transport, "euler", *requested)
+        rpy = transport.read().custom.get("body_rpy")
+        expected = tuple(
+            clamp(value, -EULER_LIMIT_RAD, EULER_LIMIT_RAD) for value in requested
+        )
+        if not isinstance(rpy, tuple) or len(rpy) != 3:
+            checks.append(Check("euler_clamped", "fail", f"body_rpy was {rpy!r}"))
+            return checks
+        if any(abs(got - want) > 1e-9 for got, want in zip(rpy, expected)):
+            checks.append(
+                Check(
+                    "euler_clamped",
+                    "fail",
+                    f"body_rpy {rpy} is outside {EULER_LIMIT_RAD} (want {expected})",
+                )
+            )
+            return checks
+        checks.append(Check("euler_clamped", "pass"))
+
+        _sport(transport, "stand_down")
+        posture = _posture(transport)
+        if posture != "lying":
+            checks.append(Check("lie_down", "fail", f"stand_down left {posture}"))
+            return checks
+        moved = _fail_if_moved(
+            "lie_down",
+            _motion_delta(transport, speed),
+            "base moved after lie down",
+        )
+        if moved is not None:
+            checks.append(moved)
+            return checks
+        checks.append(Check("lie_down", "pass"))
+
+        _sport(transport, "recovery_stand")
+        posture = _posture(transport)
+        if posture != "standing":
+            checks.append(Check("recover", "fail", f"recovery_stand left {posture}"))
+            return checks
+        checks.append(Check("recover", "pass"))
+        return checks
+    except (RuntimeError, ValueError) as exc:
+        checks.append(Check("quadruped_walk", "fail", str(exc)))
+        return checks
+
+
 class _Clock:
     def __init__(self) -> None:
         self.t = 0.0
@@ -263,6 +441,10 @@ def _watchdog_zeroes(spec: RobotSpec, scenario: ClassScenario) -> Check:
         transport = _open_connected(spec, scenario)
     except RuntimeError as exc:
         return Check("watchdog_zeroes", "fail", str(exc))
+    stood = _stand_for_drive(transport, spec)
+    if stood:
+        transport.disconnect()
+        return Check("watchdog_zeroes", "fail", stood)
     gate, clock, directory = _with_gate(transport, spec)
     try:
         gate.connect()
@@ -323,6 +505,10 @@ def _estop_latches(spec: RobotSpec, scenario: ClassScenario) -> Check:
         transport = _open_connected(spec, scenario)
     except RuntimeError as exc:
         return Check("estop_latches", "fail", str(exc))
+    stood = _stand_for_drive(transport, spec)
+    if stood:
+        transport.disconnect()
+        return Check("estop_latches", "fail", stood)
     gate, clock, directory = _with_gate(transport, spec)
     try:
         gate.connect()
@@ -465,6 +651,71 @@ def _estop_torque(spec: RobotSpec, scenario: ClassScenario) -> Check:
         _close_gate(gate, directory)
 
 
+def _euler_gate_clamp(spec: RobotSpec, scenario: ClassScenario) -> Check:
+    """The gate clamps euler to its profile, which cannot exceed the ceiling."""
+    try:
+        transport = _open_connected(spec, scenario)
+    except RuntimeError as exc:
+        return Check("euler_gate_clamp", "fail", str(exc))
+    gate, clock, directory = _with_gate(transport, spec)
+    try:
+        gate.connect()
+        clock.t = 0.0
+        _fresh(transport)
+        if not gate.arm():
+            return Check("euler_gate_clamp", "fail", "sim gate did not arm")
+        limit = float(gate.profile.euler_limit_rad)
+        if limit > EULER_LIMIT_RAD + 1e-12:
+            return Check(
+                "euler_gate_clamp",
+                "fail",
+                f"profile euler limit {limit} exceeds {EULER_LIMIT_RAD}",
+            )
+        requested = (limit + 1.0, -(limit + 1.0), limit + 2.0)
+        if not gate.command("euler", *requested):
+            return Check("euler_gate_clamp", "fail", "euler command was refused")
+        rpy = transport.read().custom.get("body_rpy")
+        expected = tuple(clamp(value, -limit, limit) for value in requested)
+        if not isinstance(rpy, tuple) or len(rpy) != 3:
+            return Check("euler_gate_clamp", "fail", f"body_rpy was {rpy!r}")
+        if any(abs(got - want) > 1e-9 for got, want in zip(rpy, expected)):
+            return Check(
+                "euler_gate_clamp",
+                "fail",
+                f"body_rpy {rpy} is outside profile limit {limit} (want {expected})",
+            )
+        return Check("euler_gate_clamp", "pass")
+    except (AssertionError, RuntimeError) as exc:
+        return Check("euler_gate_clamp", "fail", str(exc))
+    finally:
+        _close_gate(gate, directory)
+
+
+def _denied_sport(spec: RobotSpec, scenario: ClassScenario) -> Check:
+    """Denied sport actions stay refused and do not change posture."""
+    try:
+        transport = _open_connected(spec, scenario)
+    except RuntimeError as exc:
+        return Check("denied_sport", "fail", str(exc))
+    gate, clock, directory = _with_gate(transport, spec)
+    try:
+        gate.connect()
+        clock.t = 0.0
+        _fresh(transport)
+        if not gate.arm():
+            return Check("denied_sport", "fail", "sim gate did not arm")
+        before = _posture(transport)
+        if gate.command("front_flip") or gate.command("dance"):
+            return Check("denied_sport", "fail", "denied sport action was accepted")
+        if _posture(transport) != before:
+            return Check("denied_sport", "fail", "denied action changed posture")
+        return Check("denied_sport", "pass")
+    except (AssertionError, RuntimeError) as exc:
+        return Check("denied_sport", "fail", str(exc))
+    finally:
+        _close_gate(gate, directory)
+
+
 def open_sim_backend(spec: RobotSpec, backend: str) -> Transport:
     """Build ``backend`` from a plugin sim factory. Never a hardware scheme.
 
@@ -512,6 +763,8 @@ def _scenario_checks(spec: RobotSpec, scenario: ClassScenario) -> list[Check]:
         checks = [Check("sim_backend", "pass", backend), _check_telemetry(transport)]
         if scenario.name == "arm_home":
             checks.append(_move_home(transport, spec))
+        elif scenario.name == "quadruped_walk":
+            checks.extend(_quadruped_checks(transport, spec))
         else:
             checks.append(_drive_square(transport, spec))
     finally:
@@ -522,6 +775,9 @@ def _scenario_checks(spec: RobotSpec, scenario: ClassScenario) -> list[Check]:
     else:
         checks.append(_watchdog_zeroes(spec, scenario))
         checks.append(_estop_latches(spec, scenario))
+    if scenario.name == "quadruped_walk":
+        checks.append(_euler_gate_clamp(spec, scenario))
+        checks.append(_denied_sport(spec, scenario))
     return checks
 
 
