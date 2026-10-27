@@ -41,6 +41,7 @@ The server periodically broadcasts robot telemetry to all connected clients:
 
 | Field | Type | Description |
 |---|---|---|
+| `protocolVersion` | `string` | OhhO wire protocol semver (`ohho.PROTOCOL_VERSION`, see `schemas/manifest.json`). |
 | `odom` | `object` | Current pose containing `{"x": float, "y": float, "yaw": float}`. |
 | `joints` | `object` | Present joint positions `{"<name>": float, ...}`. |
 | `backend` | `string` | Active backend identifier (`"sim"`, `"ros2"`, or `"robot"`). |
@@ -52,6 +53,7 @@ The server periodically broadcasts robot telemetry to all connected clients:
 Example server message:
 ```json
 {
+  "protocolVersion": "1.0.0",
   "odom": {
     "x": 0.125,
     "y": 0.0,

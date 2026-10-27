@@ -12,6 +12,7 @@ from typing import Any
 import unittest
 
 from ohho.cli import build_parser, main
+from ohho.protocol import PROTOCOL_VERSION
 from ohho.schema import Odometry, Telemetry
 from ohho.sim_serve import (
     DEFAULT_PORT,
@@ -374,6 +375,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                 async with websockets.connect(uri) as client:
                     # Initial state
                     init_msg = await drain_latest(client)
+                    self.assertEqual(init_msg["protocolVersion"], PROTOCOL_VERSION)
                     self.assertEqual(init_msg["backend"], "sim")
                     self.assertTrue(init_msg.get("no_camera"))
                     x0 = init_msg["odom"]["x"]

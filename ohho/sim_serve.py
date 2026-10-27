@@ -15,6 +15,7 @@ Protocol:
     Server sends:
         - ``odom``: ``{"x": float, "y": float, "yaw": float}``
         - ``joints``: ``{"<joint_name>": float, ...}``
+        - ``protocolVersion``: ``ohho.PROTOCOL_VERSION``
         - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
         - ``posture`` / ``battery`` (optional, when the robot reports them)
         - either ``camera``: base64-encoded JPEG or ``no_camera: true``
@@ -35,6 +36,7 @@ import threading
 import time
 from typing import Any, Optional
 
+from .protocol import PROTOCOL_VERSION
 from .schema import Telemetry
 
 # Browser / VR teleop posture commands → SafetyGate allowlisted sport actions.
@@ -444,6 +446,7 @@ class SimServe:
         self, odom: dict[str, float], joints: dict[str, float]
     ) -> dict[str, Any]:
         msg: dict[str, Any] = {
+            "protocolVersion": PROTOCOL_VERSION,
             "odom": odom,
             "joints": joints,
             "backend": self.backend,
@@ -602,7 +605,7 @@ def serve_sim(
 
     Parameters:
         backend: "sim", "ros2", or "robot".
-        robot: robot spec id (e.g. "omnibot", "legged-base").
+        robot: robot spec id (e.g. "omnibot", "unitree-go2", "legged-base").
         transport: transport URI for the "robot" backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
         port: WebSocket server port. Defaults to 8790 so it does not clash
