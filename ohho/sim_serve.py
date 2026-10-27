@@ -1,9 +1,11 @@
 """WebSocket server for simulated and ROS 2 robot telemetry and teleoperation.
 
 Exposes one JSON WebSocket session. The in-process ``sim://`` backend needs no
-ROS. The ``ros2`` backend bridges that same session to rosbridge topics the
-Connect console already uses (``/cmd_vel``, ``/odom``, joint state, front
-camera, ``/emergency_stop``).
+ROS. The ``robot`` backend connects through :class:`~ohho.robot.Robot` (and
+therefore :class:`~ohho.safety.SafetyGate` on a non-sim transport). The
+``ros2`` backend bridges that same session to rosbridge topics the Connect
+console already uses (``/cmd_vel``, ``/odom``, joint state, front camera,
+``/emergency_stop``).
 
 Client JSON:
     - ``velocity``: Twist-like ``{"linear": {"x", "y"}, "angular": {"z"}}``
@@ -11,11 +13,14 @@ Client JSON:
     - ``joints``: ``{"<joint_name>": radians, ...}``
     - ``deadman``: boolean. Missing, false, or any other value is not held.
     - ``estop``: boolean. ``true`` latches; only ``false`` clears it.
+    - ``mode`` (optional): ``"stand"`` | ``"lie_down"`` | ``"recover"`` — mapped to
+      allowlisted high-level actions on a connected :class:`~ohho.robot.Robot`.
 
 Server JSON:
     - ``odom``: ``{"x": float, "y": float, "yaw": float}``
     - ``joints``: ``{"<joint_name>": float, ...}``
-    - ``backend``: ``"sim"`` or ``"ros2"``
+    - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
+    - ``posture`` / ``battery`` (optional, when the robot reports them)
     - ``camera``: base64 JPEG when a front-camera frame has arrived, otherwise
       ``no_camera: true`` (never both)
 
@@ -41,6 +46,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .schema import Telemetry
+
 # Commanded velocity is zero once this long has passed with no client message.
 DEADMAN_TIMEOUT_S = 0.300
 
@@ -63,6 +70,13 @@ ROS_SUBSCRIPTIONS: tuple[tuple[str, str], ...] = (
     (f"{FRONT_CAMERA_TOPIC}/compressed", "sensor_msgs/CompressedImage"),
 )
 
+# Browser / VR teleop posture commands → SafetyGate allowlisted sport actions.
+TELEOP_CLIENT_MODES: dict[str, str] = {
+    "stand": "stand_up",
+    "lie_down": "stand_down",
+    "recover": "recovery_stand",
+}
+
 
 class SimServeUnavailable(RuntimeError):
     """Raised when sim-serve requirements are missing or a backend is not implemented."""
@@ -72,9 +86,10 @@ def backend_entry(backend: str) -> str:
     """Return ``available`` or ``not-implemented`` for a sim-serve backend name.
 
     Isaac Sim and MuJoCo have no runtime here. Callers must not import those
-    packages; this function only classifies the name.
+    packages; this function only classifies the name. ``robot`` is available
+    and connects through :class:`~ohho.robot.Robot`.
     """
-    if backend in ("sim", "ros2"):
+    if backend in ("sim", "ros2", "robot"):
         return "available"
     return "not-implemented"
 
@@ -371,6 +386,41 @@ def estop_rosbridge(estopped: bool) -> dict[str, Any]:
     }
 
 
+def teleop_mode_to_action(mode: Any) -> Optional[str]:
+    """Map a client ``mode`` string to a sport action name, or ``None`` if unknown."""
+    if not isinstance(mode, str) or not mode.strip():
+        return None
+    return TELEOP_CLIENT_MODES.get(mode.strip().lower())
+
+
+def posture_from_telemetry(t: Telemetry) -> Optional[str]:
+    """Best-effort human-readable posture for teleop UI (robot-agnostic)."""
+    custom = t.custom or {}
+    if "posture" in custom:
+        return str(custom["posture"])
+    body_h = custom.get("body_height")
+    if isinstance(body_h, (int, float)):
+        if body_h < 0.12:
+            return "lying"
+        if body_h > 0.2:
+            return "standing"
+    mode = custom.get("mode")
+    if mode is not None:
+        return str(mode)
+    return None
+
+
+def telemetry_extras(t: Telemetry) -> dict[str, Any]:
+    """Optional fields merged into WebSocket telemetry broadcasts."""
+    out: dict[str, Any] = {}
+    if t.battery is not None:
+        out["battery"] = float(t.battery)
+    posture = posture_from_telemetry(t)
+    if posture is not None:
+        out["posture"] = posture
+    return out
+
+
 def is_ros2_available() -> bool:
     """True if rclpy or ROS environment or OHHO_ROSBRIDGE is set."""
     import importlib.util
@@ -383,22 +433,26 @@ def is_ros2_available() -> bool:
 
 
 class SimServe:
-    """Manages the WebSocket server and the simulation or rosbridge backend."""
+    """Manages the WebSocket server and the simulation, robot, or rosbridge backend."""
 
     def __init__(
         self,
         backend: str = "sim",
         robot: str = "omnibot",
+        transport: Optional[str] = None,
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
         rosbridge: str = "ws://localhost:9090",
         rate_hz: float = 20.0,
     ) -> None:
+        if backend == "robot" and not transport:
+            raise ValueError("backend 'robot' requires a transport URI (--transport)")
         if backend_entry(backend) != "available":
             raise SimServeUnavailable(f"backend '{backend}' is not-implemented")
 
         self.backend = backend
         self.robot_id = robot
+        self._transport_uri = transport
         self.host = host
         self.port = port
         self.rosbridge_url = rosbridge
@@ -449,12 +503,12 @@ class SimServe:
         self._loop = asyncio.get_running_loop()
         self._running = True
 
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             from .robot import Robot
 
-            self._bot = Robot.connect(
-                self.robot_id, transport="sim://", runtime="native"
-            )
+            uri = "sim://" if self.backend == "sim" else self._transport_uri
+            assert uri is not None
+            self._bot = Robot.connect(self.robot_id, transport=uri, runtime="native")
         elif self.backend == "ros2":
             self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
             for topic, msg_type in ROS_SUBSCRIPTIONS:
@@ -592,6 +646,9 @@ class SimServe:
             self._target_joints = command.joints
             self._apply_joints(command.joints)
 
+        if "mode" in data:
+            self._apply_teleop_mode(data["mode"])
+
         self._arm_timeout()
         self._schedule_gated_velocity()
 
@@ -631,12 +688,18 @@ class SimServe:
 
     def _telemetry_message(self) -> dict[str, Any]:
         odom, joints = self._get_telemetry()
-        return build_telemetry_message(
+        msg = build_telemetry_message(
             odom=odom,
             joints=joints,
             backend=self.backend,
             camera=self._camera_frame,
         )
+        if self._bot is not None:
+            try:
+                msg.update(telemetry_extras(self._bot.telemetry()))
+            except Exception:
+                pass
+        return msg
 
     async def _broadcast_loop(self) -> None:
         interval = 1.0 / max(1.0, self.rate_hz)
@@ -650,9 +713,20 @@ class SimServe:
 
     # ── Backend dispatch ──────────────────────────────────────────────────────
 
+    def _apply_teleop_mode(self, mode: Any) -> None:
+        if self._estopped:
+            return
+        action = teleop_mode_to_action(mode)
+        if action is None or self._bot is None:
+            return
+        transport = self._bot.transport
+        command = getattr(transport, "command", None)
+        if callable(command):
+            command(action)
+
     async def _send_velocity(self) -> None:
         vx, vy, w = self._current_velocity()
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 self._bot.drive(vx=vx, vy=vy, w=w)
         elif self.backend == "ros2":
@@ -665,7 +739,7 @@ class SimServe:
                     pass
 
     def _apply_joints(self, joints: dict[str, float]) -> None:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 for name, pos in joints.items():
                     self._bot.transport.send_joint_command(name, pos)
@@ -675,7 +749,7 @@ class SimServe:
                 self._loop.create_task(self._send_ros(payload))
 
     def _on_estop_changed(self, estopped: bool) -> None:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 if estopped:
                     self._bot.emergency_stop()
@@ -695,7 +769,7 @@ class SimServe:
             pass
 
     def _get_telemetry(self) -> tuple[dict[str, float], dict[str, float]]:
-        if self.backend == "sim":
+        if self.backend in ("sim", "robot"):
             if self._bot is not None:
                 t = (
                     self._bot.transport.read()
@@ -758,18 +832,20 @@ class SimServe:
 def serve_sim(
     backend: str = "sim",
     robot: str = "omnibot",
+    transport: Optional[str] = None,
     host: str = "0.0.0.0",
     port: int = DEFAULT_PORT,
     rosbridge: str = "ws://localhost:9090",
     rate_hz: float = 20.0,
     stop_event: Optional[threading.Event] = None,
 ) -> None:
-    """Serve a robot simulation or rosbridge gateway over WebSocket.
+    """Serve a robot simulation, live robot, or rosbridge gateway over WebSocket.
 
     Parameters:
-        backend: ``sim`` or ``ros2``. ``isaac`` and ``mujoco`` raise
+        backend: ``sim``, ``ros2``, or ``robot``. ``isaac`` and ``mujoco`` raise
             ``SimServeUnavailable`` with the text ``not-implemented``.
-        robot: robot spec id (e.g. "omnibot").
+        robot: robot spec id (e.g. "omnibot", "unitree-go2").
+        transport: transport URI for the ``robot`` backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
         port: WebSocket server port. Defaults to 8790 so it does not clash
             with OmniBot's Foxglove bridge on 8765.
@@ -777,11 +853,14 @@ def serve_sim(
         rate_hz: telemetry broadcast rate in Hz (default 20.0).
         stop_event: optional threading.Event to request server shutdown.
     """
+    if backend == "robot" and not transport:
+        raise ValueError("backend 'robot' requires a transport URI (--transport)")
     if backend_entry(backend) != "available":
         raise SimServeUnavailable(f"backend '{backend}' is not-implemented")
     server = SimServe(
         backend=backend,
         robot=robot,
+        transport=transport,
         host=host,
         port=port,
         rosbridge=rosbridge,
