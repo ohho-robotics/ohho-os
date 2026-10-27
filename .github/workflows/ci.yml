@@ -24,7 +24,7 @@ jobs:
           python -m pip install trove-classifiers tomli
           python scripts/check_classifiers.py
       - name: Install
-        run: python -m pip install -e .
+        run: python -m pip install -e '.[serve]'
       - name: Install ohho-booster plugin
         run: python -m pip install -e plugins/ohho-booster --no-deps
       - name: Unit tests
@@ -35,6 +35,8 @@ jobs:
           python -m pip install "coverage>=7"
           python -m coverage run --branch --include=ohho/safety.py -m unittest tests.test_safety
           python -m coverage report -m --include=ohho/safety.py --fail-under=95
+      - name: CLI smoke (documented commands, sim/mock only)
+        run: python -m unittest discover -s tests/cli_smoke -v
       - name: CLI smoke (doctor)
         run: ohho doctor
       - name: CLI smoke (sim)

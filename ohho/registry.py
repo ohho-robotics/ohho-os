@@ -58,8 +58,10 @@ class RobotSpec:
 
     ``category`` is the legacy free string. ``robot_class`` is derived from it
     when omitted. ``joint_groups``, ``limits``, ``assets``, ``ci_sim``,
-    ``source`` and ``capability_params`` all default, so existing constructors
-    and manifests keep working.
+    ``source``, ``capability_params`` and ``sim_backend`` all default, so
+    existing constructors and manifests keep working. An empty ``sim_backend``
+    means ``sim://`` keeps today's simulator. A name selects a plugin sim
+    backend (``kinematic``, and whatever else a plugin registers).
 
     ``limits`` describes the class. It is not a safety cap. ``SafetyGate`` still
     uses ``SafetyProfile``, and ``Robot.drive`` still clamps with ``max_lin``
@@ -83,6 +85,7 @@ class RobotSpec:
     ci_sim: CiSim | None = None
     source: str = ""
     capability_params: Mapping[str, Any] | None = field(default=None, hash=False)
+    sim_backend: str = ""
 
     def __post_init__(self) -> None:
         robot_class = self.robot_class
@@ -96,6 +99,9 @@ class RobotSpec:
 
         if not isinstance(self.source, str):
             raise TypeError("source must be a string")
+        if not isinstance(self.sim_backend, str):
+            raise TypeError("sim_backend must be a string")
+        object.__setattr__(self, "sim_backend", self.sim_backend.strip())
 
         assets = self.assets if self.assets is not None else RobotAssets()
         if not isinstance(assets, RobotAssets):
@@ -171,6 +177,7 @@ class RobotSpec:
             "assets": assets_to_dict(assets),
             "ci_sim": ci_sim_to_dict(ci_sim),
             "source": self.source,
+            "sim_backend": self.sim_backend,
         }
 
     def _aerial_limits(self) -> AerialLimits | None:
@@ -330,6 +337,7 @@ def register(spec: RobotSpec) -> RobotSpec:
     against their schemas. The parameters describe the robot; they do not
     change safety caps.
     """
+    _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
     _ensure_plugins()
     _REGISTRY[spec.id] = spec
@@ -397,6 +405,11 @@ def spec_from_dict(d: dict) -> RobotSpec:
         source = ""
     if not isinstance(source, str):
         raise ValueError("source must be a string")
+    sim_backend = d.get("sim_backend", "")
+    if sim_backend is None:
+        sim_backend = ""
+    if not isinstance(sim_backend, str):
+        raise ValueError("sim_backend must be a string")
 
     return RobotSpec(
         id=d["id"],
@@ -416,6 +429,7 @@ def spec_from_dict(d: dict) -> RobotSpec:
         assets=assets_from_dict(d.get("assets")),
         ci_sim=ci_sim_from_dict(d.get("ci_sim")),
         source=source,
+        sim_backend=sim_backend,
     )
 
 
