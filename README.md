@@ -253,6 +253,9 @@ Apache-2.0. The full text is [`LICENSE`](LICENSE).
 
 ## Releasing
 
+See [docs/RELEASING.md](docs/RELEASING.md) for PyPI trusted-publisher settings
+(owner `ohho-robotics`, repo `ohho-os`, workflow `release.yml`, environment
+`pypi`) and the TestPyPI `workflow_dispatch` dry run.
 The 1.2.0 checklist (merge order, tag, post-release checks) is
 [`docs/releases/ohho-os-1.2.0.md`](docs/releases/ohho-os-1.2.0.md).
 Do not push a `v*` tag until that checklist says to. Pushing a `v*` tag
