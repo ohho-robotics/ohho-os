@@ -12,6 +12,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from .. import capabilities as caps
 from ..registry import RobotSpec
@@ -130,6 +131,29 @@ class SimTransport(BaseTransport):
     def legged_posture(self) -> str:
         return self._legged_posture
 
+    def send_mode(self, name: str, **params: float) -> None:
+        """Legged posture hook. No-op without ``legged.pose``.
+
+        Body angles go through :meth:`sport_command`, which clamps them to
+        ``EULER_LIMIT_RAD``.
+        """
+        if caps.LEGGED_POSE not in self.spec.capabilities:
+            return
+        action = name.strip().lower().replace("-", "_").replace(" ", "_")
+        if action == "euler":
+            self.sport_command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+            return
+        if action == "damp":
+            self._legged_posture = "lying"
+            self._cmd = Velocity()
+            return
+        self.sport_command(action)
+
     def sport_command(self, name: str, *args: float) -> None:
         """Simulate allowlisted Go2 sport-mode actions for agent / safety tests."""
         if caps.LEGGED_POSE not in self.spec.capabilities:
@@ -242,6 +266,23 @@ class SimTransport(BaseTransport):
     def get_imu_rate(self) -> float:
         return 20.0
 
+    def read_legged_diagnostics(self) -> dict[str, Any]:
+        """Synthetic Go2-style bench diagnostics for ``ohho selftest --sim``."""
+        if self.spec.category != "legged":
+            return {}
+        motors = [
+            {"id": i + 1, "temperature": 36.0 + (i % 3), "lost": 0} for i in range(12)
+        ]
+        return {
+            "sport_hz": 52.0,
+            "lowstate_hz": 105.0,
+            "motors": motors,
+            "imu_rpy": [0.01, -0.02, 0.0],
+            "battery_soc": 0.85,
+            "error_code": 0,
+            "camera_jpeg_len": 4096,
+        }
+
     def read_servo_diagnostics(self) -> list[dict]:
         out = []
         joints = self.spec.joint_names or (
@@ -288,6 +329,7 @@ class SimTransport(BaseTransport):
             "pitch": self._body_rpy[1],
         }
         if caps.LEGGED_POSE in self.spec.capabilities:
+            custom["posture"] = self._legged_posture
             custom["legged_posture"] = self._legged_posture
             custom["body_rpy"] = self._body_rpy
         return Telemetry(

@@ -18,6 +18,12 @@ from typing import Callable, Optional
 
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
+from ._link_resilience import (
+    DEFAULT_RECONNECT_INTERVAL_S,
+    DEFAULT_TELEMETRY_TIMEOUT_S,
+    LinkResilience,
+    MonotonicFn,
+)
 from ..schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
 from ..transport import BaseTransport
 from . import _yahboom_proto as proto
@@ -41,13 +47,23 @@ class YahboomTransport(BaseTransport):
         *,
         baud: int = 115200,
         serial_factory: Optional[SerialFactory] = None,
+        telemetry_timeout_s: float = DEFAULT_TELEMETRY_TIMEOUT_S,
+        reconnect_interval_s: float = DEFAULT_RECONNECT_INTERVAL_S,
+        monotonic: MonotonicFn = time.monotonic,
     ) -> None:
         super().__init__()
         self.spec = spec
         self.port = address or "/dev/ttyUSB0"
         self.baud = baud
         self._serial_factory = serial_factory
+        self._monotonic = monotonic
+        self._link = LinkResilience(
+            telemetry_timeout_s=telemetry_timeout_s,
+            reconnect_interval_s=reconnect_interval_s,
+            monotonic=monotonic,
+        )
         self._ser: Optional[object] = None
+        self._disconnecting = False
         self._odom = Odometry()
         self._battery: Optional[float] = None
         self._estopped = False
@@ -75,18 +91,20 @@ class YahboomTransport(BaseTransport):
         return serial.Serial(self.port, self.baud, timeout=0.05)
 
     def connect(self) -> TransportStatus:
+        self._disconnecting = False
+        self._link.reset()
         self._ser = self._open_serial()
-        # The board wants its car-type set a few times at startup.
-        for _ in range(3):
-            self._write(proto.packet_set_car_type(proto.CAR_TYPE_MECANUM_X3))
+        self._bootstrap_board()
         self._state = ConnectionState.CONNECTED
         self._connected_since = time.time()
+        self._link.on_connected()
         self._start_reader()
         s = self.status()
         self._emit_status(s)
         return s
 
     def disconnect(self) -> None:
+        self._disconnecting = True
         self._stop_reader()
         if self._ser is not None:
             self._write(proto.packet_motion(0.0, 0.0, 0.0))
@@ -96,15 +114,25 @@ class YahboomTransport(BaseTransport):
                     close()
                 except Exception:
                     pass
+        self._link.reset()
         self._state = ConnectionState.DISCONNECTED
         self._emit_status(self.status())
 
+    def _bootstrap_board(self) -> None:
+        # The board wants its car-type set a few times at startup.
+        for _ in range(3):
+            self._write(proto.packet_set_car_type(proto.CAR_TYPE_MECANUM_X3))
+
     def status(self) -> TransportStatus:
+        err: Optional[str] = None
+        if self._state == ConnectionState.RECONNECTING:
+            err = "serial link lost — reconnecting"
         return TransportStatus(
             protocol=self.protocol,
             state=self._state,
             label=f"Yahboom serial · {self.port}",
             connected_since=self._connected_since,
+            error=err,
         )
 
     # ── commands ──────────────────────────────────────────────────────────────
@@ -117,7 +145,7 @@ class YahboomTransport(BaseTransport):
             pass
 
     def send_velocity(self, vel: Velocity) -> None:
-        if self._estopped:
+        if self._estopped or self._state != ConnectionState.CONNECTED:
             return
         self._write(proto.packet_motion(vel.linear_x, vel.linear_y, vel.angular_z))
 
@@ -180,7 +208,8 @@ class YahboomTransport(BaseTransport):
             del self._buf[:-256]
         if not packets:
             return
-        now = time.monotonic()
+        self._link.on_rx()
+        now = self._monotonic()
         for pkt in packets:
             if isinstance(pkt, proto.VelocityPacket):
                 if self._last_vel_t is not None:
@@ -204,6 +233,43 @@ class YahboomTransport(BaseTransport):
                         self._imu_timestamps = self._imu_timestamps[-50:]
         self._emit_telemetry(self._snapshot())
 
+    def _watchdog_stop(self) -> None:
+        """Zero base motion when the serial link drops (not a latched e-stop)."""
+        self._write(proto.packet_motion(0.0, 0.0, 0.0))
+
+    def _close_serial(self) -> None:
+        if self._ser is None:
+            return
+        close = getattr(self._ser, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        self._ser = None
+
+    def _on_link_lost(self) -> None:
+        if self._disconnecting or self._state == ConnectionState.RECONNECTING:
+            return
+        self._watchdog_stop()
+        self._close_serial()
+        self._link.on_link_lost()
+        self._state = ConnectionState.RECONNECTING
+        self._emit_status(self.status())
+
+    def _try_reconnect(self) -> None:
+        if self._disconnecting:
+            return
+        try:
+            self._ser = self._open_serial()
+            self._bootstrap_board()
+        except Exception:
+            self._link.on_reconnect_failed()
+            return
+        self._state = ConnectionState.CONNECTED
+        self._link.on_connected()
+        self._emit_status(self.status())
+
     def loop_stats(self) -> LoopStats:
         """Timing of the serial reader thread."""
         return self._loop_timer.stats()
@@ -219,22 +285,38 @@ class YahboomTransport(BaseTransport):
             while not self._stop.is_set():
                 timer.begin()
                 chunk = b""
+                wait_s: Optional[float] = None
                 try:
-                    read = getattr(self._ser, "read", None)
-                    if callable(read):
-                        try:
-                            chunk = read(64)
-                        except Exception:
-                            chunk = b""
-                    if chunk:
-                        self._ingest(chunk)
+                    if self._disconnecting:
+                        return
+                    if self._state == ConnectionState.RECONNECTING:
+                        if self._link.should_reconnect():
+                            self._try_reconnect()
+                        wait_s = 0.01
+                    elif self._link.telemetry_stale():
+                        self._on_link_lost()
+                        wait_s = 0.0
+                    else:
+                        read = getattr(self._ser, "read", None)
+                        if callable(read):
+                            try:
+                                chunk = read(64) or b""
+                            except Exception:
+                                self._on_link_lost()
+                                chunk = b""
+                                wait_s = 0.0
+                        if chunk and wait_s is None:
+                            self._ingest(chunk)
                 finally:
                     # Bytes still in the buffer: record the cycle and keep
                     # reading. An empty read waits until the next deadline.
                     delay = timer.end(wait=not chunk)
                 if self._stop.is_set():
                     return
-                if not chunk and delay > 0.0 and self._stop.wait(delay):
+                if wait_s is not None:
+                    if wait_s > 0.0 and self._stop.wait(wait_s):
+                        return
+                elif not chunk and delay > 0.0 and self._stop.wait(delay):
                     return
 
         self._thread = threading.Thread(

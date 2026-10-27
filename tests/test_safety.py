@@ -28,8 +28,11 @@ from ohho.runtime import NativeRuntime
 from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
+    BASE_ACTIONS,
     CI_FAKE_ROBOT_ENV,
+    GO2_ACTIONS,
     GO2_PROFILE,
+    HUMANOID_ACTIONS,
     OMNIBOT_PROFILE,
     RELEASE_PHRASE,
     AuditLog,
@@ -129,6 +132,16 @@ class FakeGo2(FakeTransport):
 
     def sport_command(self, name: str, *args) -> None:
         self._rec("sport", name, *args)
+
+
+class FakeHumanoid(FakeTransport):
+    """Simulated link with the humanoid hook and no sport client."""
+
+    def __init__(self) -> None:
+        super().__init__("simulated")
+
+    def send_humanoid(self, action: str, *args: object) -> None:
+        self._rec("humanoid", action, args)
 
 
 class FakeEffortArm(FakeTransport):
@@ -976,6 +989,63 @@ class TestAllowlist(GateCase):
         self.assertFalse(hasattr(gate, "sport_command"))
         self.assertFalse(hasattr(gate, "send_motor"))
 
+    def test_humanoid_actions_are_refused_by_default(self):
+        self.assertTrue(HUMANOID_ACTIONS.isdisjoint(BASE_ACTIONS))
+        self.assertTrue(HUMANOID_ACTIONS.isdisjoint(GO2_ACTIONS))
+        self.assertTrue(HUMANOID_ACTIONS.isdisjoint(GO2_PROFILE.allowlist))
+        self.assertTrue(HUMANOID_ACTIONS.isdisjoint(SafetyProfile().allowlist))
+        gate, inner = self.make()
+        for name in sorted(HUMANOID_ACTIONS):
+            self.assertFalse(gate.command(name, 0.2, -0.1))
+        self.assertNotIn("sport", inner.names())
+        self.assertNotIn("humanoid", inner.names())
+        reasons = [r["reason"] for r in self.events("reject")]
+        self.assertEqual(reasons, ["not_allowlisted"] * len(HUMANOID_ACTIONS))
+
+    def test_humanoid_names_can_be_allowlisted_except_the_denylist(self):
+        named = SafetyProfile(allowlist=HUMANOID_ACTIONS)
+        self.assertEqual(named.allowlist, HUMANOID_ACTIONS)
+        normalised = SafetyProfile(allowlist=frozenset({"WalkMode", "GetUp"}))
+        self.assertEqual(normalised.allowlist, frozenset({"walk_mode", "get_up"}))
+        with self.assertRaises(ValueError):
+            SafetyProfile(allowlist=frozenset({"handstand"}))
+
+    def test_allowlisted_humanoid_action_is_not_a_sport_call(self):
+        prof = SafetyProfile(allowlist=frozenset({"prepare", "look", "move_joints"}))
+        gate, inner = self.make(FakeHumanoid(), profile=prof)
+        self.assertTrue(gate.command("look", 0.2, -0.1))
+        self.assertEqual(inner.calls, [("humanoid", "look", (0.2, -0.1))])
+        self.assertFalse(gate.command("move_joints", "left_arm", (0.1,), 1.0, 0.2))
+        self.assertEqual(inner.names().count("humanoid"), 1)
+        self.assertNotIn("sport", inner.names())
+        self.assertEqual(self.events("reject")[-1]["reason"], "not_allowlisted")
+        self.assertEqual(self.events("reject")[-1]["action"], "move_joints")
+
+    def test_allowlisted_humanoid_action_needs_arming_and_a_hook(self):
+        prof = SafetyProfile(allowlist=frozenset({"prepare", "damp"}))
+        gate, inner = self.make(FakeHumanoid(), profile=prof, arm=False)
+        self.assertFalse(gate.command("prepare"))
+        self.assertEqual(self.events("reject")[-1]["reason"], "not_armed")
+        self.assertEqual(inner.names(), ["vel"])
+
+        go2, sport = self.make(FakeGo2(), profile=prof)
+        self.assertFalse(go2.command("damp"))
+        self.assertNotIn("sport", sport.names())
+        self.assertNotIn("humanoid", sport.names())
+        self.assertEqual(
+            self.events("reject")[-1]["reason"], "unsupported_by_transport"
+        )
+        self.assertEqual(self.events("reject")[-1]["action"], "damp")
+
+    def test_humanoid_hook_failure_latches(self):
+        prof = SafetyProfile(allowlist=frozenset({"damp"}))
+        gate, inner = self.make(FakeHumanoid(), profile=prof)
+        inner.fail.add("humanoid")
+        self.assertFalse(gate.command("damp"))
+        self.assertTrue(gate.latched)
+        self.assertEqual(gate.latch_reason, "transport_error")
+        self.assertNotIn("sport", inner.names())
+
 
 # ── tilt / fall / fault guard ─────────────────────────────────────────────────
 class TestTiltGuard(GateCase):
@@ -1401,6 +1471,7 @@ class TestGatePlumbing(GateCase):
         self.assertTrue(bot.gated)
         sim._emit_telemetry(sim.read())
         self.assertTrue(bot.arm())  # simulated link: no TTY needed
+        bot.stand()  # Go2 sim starts lying; drive is refused until standing
         self.clock.advance(0.01)
         bot.stand()
         bot.drive(vx=2.0)
@@ -1553,6 +1624,7 @@ class TestCliSafetyFlags(unittest.TestCase):
             runtime="auto",
             safety_config="s.json",
             estop_damp=True,
+            read_only=False,
         )
         fake.arm.assert_called_once_with()
 
