@@ -10,6 +10,8 @@ jobs:
   demo-drive-fake-robot:
     name: demo_drive.py vs fake ROS 2 robot
     runs-on: ubuntu-latest
+    env:
+      OHHO_CI_FAKE_ROBOT: "1"
     container:
       image: ros:jazzy
     timeout-minutes: 10
