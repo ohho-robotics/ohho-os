@@ -1131,9 +1131,33 @@ class SafetyGate(BaseTransport):
 
     def _sport(self, action: str, *args: float) -> bool:
         fn = getattr(self._inner, "sport_command", None)
-        if not callable(fn):
-            return self._reject("command", "unsupported_by_transport", action=action)
-        return self._forward(lambda: fn(action, *args), f"command:{action}")
+        if callable(fn):
+            return self._forward(lambda: fn(action, *args), f"command:{action}")
+        mode = getattr(self._inner, "send_mode", None)
+        if callable(mode) and type(self._inner).send_mode is not BaseTransport.send_mode:
+            if action == "euler" and len(args) == 3:
+                r, p, y = args
+                return self._forward(
+                    lambda: mode("euler", roll=r, pitch=p, yaw=y),
+                    f"command:{action}",
+                )
+            if args:
+                return self._reject("command", "bad_arguments", action=action)
+            return self._forward(lambda: mode(action), f"command:{action}")
+        return self._reject("command", "unsupported_by_transport", action=action)
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Forward a legged posture command through the sport allowlist."""
+        action = normalize_action(name)
+        if action == "euler":
+            self.command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+        else:
+            self.command(action)
 
 
 __all__ = [

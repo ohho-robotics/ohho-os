@@ -50,6 +50,7 @@ class Robot:
         *,
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
+        read_only: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -62,10 +63,14 @@ class Robot:
         ``safety_config`` is a safety config JSON path (default:
         ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
         e-stop even when standing.
+        ``read_only`` is only valid for ``dds://`` and ``unitree-dds://``. It
+        opens the Unitree link without a SportClient, so motion commands are
+        not sent. Any other transport raises
+        :class:`~ohho.adapters.errors.AdapterUnavailable`.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
-        tp = resolve_transport(transport, spec, rt)
+        tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
             tp = SafetyGate(
                 tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
@@ -215,41 +220,52 @@ class Robot:
         """Command one dexterous hand. No-op without ``end_effector.dex_hand``."""
         return humanoid.hand(self, side, fingers)
 
-    # ── legged pose (SafetyGate / sim sport_command only — OHH-127) ───────────
-    def stand(self) -> bool:
-        """Stand up (quadruped). No-op when ``legged.pose`` is absent."""
-        return self._legged_action("stand_up")
+    # ── legged pose (chainable; humanoid lie_down when legged.pose is absent) ─
+    def stand(self) -> "Robot":
+        """Stand up (quadruped). No-op unless ``legged.pose`` is supported."""
+        self._legged_action("stand_up")
+        return self
 
-    def lie_down(self):
+    def lie_down(self) -> "Robot":
         """Lie down.
 
-        With ``legged.pose`` this is the quadruped ``stand_down`` and returns
-        whether the action was sent. Otherwise it is the humanoid lie-down
-        recovery (a no-op that returns self when ``humanoid.posture`` is absent).
+        With ``legged.pose`` this is the quadruped ``stand_down``. Otherwise it
+        is the humanoid lie-down recovery (a no-op that returns self when
+        ``humanoid.posture`` is absent).
         """
         if self.has(caps.LEGGED_POSE):
-            return self._legged_action("stand_down")
+            self._legged_action("stand_down")
+            return self
         return humanoid.lie_down(self)
 
-    def sit(self) -> bool:
-        return self._legged_action("sit")
+    def sit(self) -> "Robot":
+        """Sit. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("sit")
+        return self
 
-    def recover(self) -> bool:
-        return self._legged_action("recovery_stand")
+    def recover(self) -> "Robot":
+        """Recovery stand from prone. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("recovery_stand")
+        return self
 
     def set_body_pose(
         self, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0
-    ) -> bool:
-        """Set body orientation (radians), clamped to the safety euler limit."""
+    ) -> "Robot":
+        """Set body orientation (radians), clamped to the safety euler limit.
+
+        No-op unless ``legged.pose`` is supported. The clamp is the module
+        ceiling; it is not widened.
+        """
         if not self.has(caps.LEGGED_POSE):
-            return False
+            return self
         from .safety import EULER_LIMIT_RAD
 
         lim = EULER_LIMIT_RAD
         r = clamp(float(roll), -lim, lim)
         p = clamp(float(pitch), -lim, lim)
         y = clamp(float(yaw), -lim, lim)
-        return self._legged_action("euler", r, p, y)
+        self._legged_action("euler", r, p, y)
+        return self
 
     def legged_posture(self) -> str:
         """Simulator / telemetry hint: ``standing``, ``lying``, ``sitting``, or ``unknown``."""
@@ -260,7 +276,7 @@ class Robot:
         if callable(getter):
             return str(getter())
         custom = self._t.read().custom or {}
-        return str(custom.get("legged_posture", "unknown"))
+        return str(custom.get("legged_posture", custom.get("posture", "unknown")))
 
     def _legged_ready_to_drive(self) -> bool:
         if not self.has(caps.LEGGED_POSE):
@@ -279,6 +295,13 @@ class Robot:
         sport = getattr(gate, "sport_command", None)
         if callable(sport):
             sport(action, *args)
+            return True
+        mode = getattr(gate, "send_mode", None)
+        if callable(mode):
+            if action == "euler" and len(args) == 3:
+                mode("euler", roll=args[0], pitch=args[1], yaw=args[2])
+            else:
+                mode(action)
             return True
         return False
 
@@ -474,6 +497,7 @@ def connect(
     *,
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
+    read_only: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -482,4 +506,5 @@ def connect(
         runtime=runtime,
         safety_config=safety_config,
         estop_damp=estop_damp,
+        read_only=read_only,
     )
