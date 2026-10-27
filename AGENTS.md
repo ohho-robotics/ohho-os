@@ -64,11 +64,12 @@
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **Go2 MuJoCo Sim Demo (`sim-demo`)** | ✅ **OHH-134 complete** — `ohho.sim_demo` (6-shot scripted demo harness: doctor -> sim connection -> typed goal -> tool-call log -> SafetyGate clamp/e-stop demo -> end card; eval JSON schema + example log; recording checklist; labeled Simulation only everywhere; video recording pending Varun). CLI `ohho sim-demo` + `python scripts/sim_demo_harness.py`. |
 | **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. **OHH-313** delegates those decisions to a `SafetyPolicy` per `robot_class` (Ground, Arm, Legged) without changing caps or behaviour. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
+| **Session registry** | ✅ **OHH-206** — `robot_sessions` migration (owner-only RLS) + `ohho sim up --target local` / `ohho sim down` / `ohho robot announce`. Heartbeat every 10s; stale rows hidden after 30s. Gateway token stored as SHA-256 only. `--target cloud` errors with `needs OHH-216` and does not provision a VM. Local compose is an OHH-204 stub. Contract: `docs/sessions.md`. |
 | **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`, plus `emergency_stop`. **OHH-278**: hardware URIs need a human `--allow-hardware`; the process never arms or releases an e-stop; results carry `backend` and velocity clamps. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). Docs `docs/mcp.md` |
 | **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
 | **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
-| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo market profile nav look memory selftest mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`) |
-| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo market profile nav look memory selftest mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`), `sim up` / `sim down`, `robot announce` |
+| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_sessions.py` covers the OHH-206 session registry. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`) + `.github/workflows/sim-loop.yml` (nightly CPU sim loop designed for CPU runners, first run pending). |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -189,6 +190,8 @@ sdk/
 │   │   ├── __init__.py   # serve(), build_app(), ServeUnavailable, _MockModel
 │   │   └── act.py        # ACTModel inference adapter
 │   ├── sim_serve.py      # ohho.sim_serve — WebSocket teleop and telemetry server (`sim` and `ros2`)
+│   ├── sim/docker-compose.yml  # local sim compose stub (gpu profile = OHH-204 image)
+│   ├── sessions.py       # OHH-206 session registry: sim up/down, robot announce, heartbeat
 │   ├── sim_loop.py       # ohho.sim_loop — record -> validate -> tiny ACT train -> serve -> eval pipeline
 │   ├── sim_demo.py       # ohho.sim_demo — OHH-134 6-shot Go2 sim demo harness + eval log
 │   ├── selftest.py       # ohho.selftest — hardware self-test suite (motors, encoders, IMU, servos, camera)
@@ -207,7 +210,7 @@ sdk/
 │   ├── agent_rules/      # ohho rules install (OHH-271 phase 6); body is ohho-rules.md
 │   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
 │   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
-│   ├── cli.py            # argparse: doctor/verify/list(--plugins)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/selftest/mcp/rules; main()
+│   ├── cli.py            # argparse: doctor/verify/list(--plugins)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/selftest/mcp/rules/sim up/sim down/robot announce; main()
 │   └── robots/
 │       ├── __init__.py   # package for the built-in plugin and example manifests
 │       ├── builtin.py    # built-in plugin (sim, omnibot, unitree-go2); vendor SDKs stay lazy
@@ -217,16 +220,18 @@ sdk/
 │   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
 │   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
+│   ├── sessions.md       # OHH-206 apply steps, CLI, OhhO-VR SessionClient contract
 │   ├── sim-demo.md       # OHH-134 sim demo recording checklist and eval log schema
 │   ├── mcp.md            # stdio MCP server + `ohho mcp connect` client configs
 │   ├── rules.md          # `ohho rules install` paths, markers, and safety text
 │   ├── cli.md            # CLI reference; ohho login / whoami / logout and whoami --json schema
 │   └── unitree.md        # Go2 DDS adapter — sim-tested only; hardware OHH-135
+├── supabase/migrations/  # robot_sessions SQL (apply in the Ohho Supabase project)
 ├── scripts/
 │   ├── check_classifiers.py
 │   ├── sim_loop.py       # one-liner reproducible sim loop runner
 │   └── sim_demo_harness.py  # OHH-134 sim demo harness entry point
-└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py
+└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py, test_sessions.py
 ```
 
 ---
@@ -501,6 +506,12 @@ All milestones (M0–M5) are complete. This tree is OhhO OS v1.2.0, not tagged. 
 5. **On-robot M1 bring-up:** `OHHO_HIL=1 python -m unittest discover -s
    tests/hil -v` on the bench.
 6. Keep `AGENTS.md` §0/§3/§8 in sync as you add features.
+7. **Session registry (OHH-206):** apply
+   `supabase/migrations/20261014120000_robot_sessions.sql` in the Ohho
+   Supabase project (steps in `docs/sessions.md`). `ohho sim up --target cloud`
+   stays a stub until OHH-216. The local compose file does not start a GPU
+   container until OHH-204 publishes the image. OhhO-VR implements
+   `SessionClient` from that doc; do not edit the VR repo from this tree.
 
 ### M1 on-robot bring-up (when hardware is available)
 
