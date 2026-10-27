@@ -522,10 +522,10 @@ def _cmd_look(args) -> int:
                 )
             try:
                 vlm = VlmPerceptor(client=client)
+                detections = CameraPerceptor(bot, vlm=vlm).look()
             except Exception as e:
-                print(f"error: {e}", file=sys.stderr)
+                print(f"error: vision perception failed: {e}", file=sys.stderr)
                 return 2
-            detections = CameraPerceptor(bot, vlm=vlm).look()
 
         if not detections:
             print("nothing detected")

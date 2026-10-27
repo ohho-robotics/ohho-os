@@ -112,7 +112,7 @@ _VLM_PROMPT = (
 
 
 def estimate_vlm_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate USD cost for a Claude VLM inference call."""
+    """Estimate USD cost from published list prices. Not a billed charge."""
     m = model.lower()
     if "haiku" in m:
         in_rate = 0.80 / 1_000_000
@@ -120,7 +120,11 @@ def estimate_vlm_cost(model: str, input_tokens: int, output_tokens: int) -> floa
     elif "opus" in m:
         in_rate = 15.00 / 1_000_000
         out_rate = 75.00 / 1_000_000
-    else:  # default Sonnet
+    elif "sonnet-5" in m:
+        # claude-sonnet-5 list price ($2 / $10 per million tokens).
+        in_rate = 2.00 / 1_000_000
+        out_rate = 10.00 / 1_000_000
+    else:  # earlier Sonnet list prices
         in_rate = 3.00 / 1_000_000
         out_rate = 15.00 / 1_000_000
     return round(input_tokens * in_rate + output_tokens * out_rate, 6)
@@ -438,17 +442,28 @@ class CameraPerceptor:
         if not frame:
             log.warning("No camera frame available from robot %s", self.robot.spec.id)
             return []
-        raw = self.vlm.look(frame)
+        is_png = frame.startswith(b"\x89PNG\r\n\x1a\n")
+        raw = self.vlm.look(frame, media_type="image/png" if is_png else "image/jpeg")
         if not raw:
             return []
         t = self.robot.telemetry()
-        if t and t.odom:
-            return project_detections(
-                raw,
-                t.odom,
-                fov=self.fov,
-                fixed_range=self.fixed_range,
-                scan=t.scan,
+        # SafetyGate.odom_received is false when the inner link does not track
+        # receipt. That is "unknown", so only an explicit false skips projection.
+        inner = getattr(self.robot.transport, "_inner", None)
+        source = self.robot.transport if inner is None else inner
+        live = getattr(source, "odom_received", True)
+        if t and t.odom and live:
+            located = [d for d in raw if d.image_x is not None]
+            unlocated = [d for d in raw if d.image_x is None]
+            return (
+                project_detections(
+                    located,
+                    t.odom,
+                    fov=self.fov,
+                    fixed_range=self.fixed_range,
+                    scan=t.scan,
+                )
+                + unlocated
             )
         return raw
 

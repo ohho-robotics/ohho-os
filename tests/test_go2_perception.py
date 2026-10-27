@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import math
 import os
-import time
+import tempfile
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -38,7 +39,14 @@ from ohho.registry import get_spec
 from ohho.robot import Robot
 from ohho.runtime import NativeRuntime
 from ohho.safety import SafetyGate
-from ohho.schema import Odometry
+from ohho.schema import Odometry, Telemetry
+
+# Block the Unitree SDK so domain-0 and missing-SDK tests never open DDS.
+_BLOCK_UNITREE_SDK = {
+    "unitree_sdk2py": None,
+    "unitree_sdk2py.core": None,
+    "unitree_sdk2py.core.channel": None,
+}
 
 # Synthetic 1x1 JPEG frame bytes for tests
 SYNTHETIC_JPEG = (
@@ -148,6 +156,7 @@ class TestUnitreeCameraTransport(unittest.TestCase):
                 self.assertIsNotNone(frame)
                 self.assertTrue(frame.startswith(b"\xff\xd8"))
                 t = tp.read()
+                self.assertTrue(tp.odom_received)
                 self.assertIsNotNone(t.odom)
                 self.assertEqual(t.odom.x, 1.0)
                 self.assertEqual(t.odom.y, 2.0)
@@ -157,8 +166,24 @@ class TestUnitreeCameraTransport(unittest.TestCase):
     def test_stub_dds_mode_refused_on_domain_0_hardware(self):
         """Never allow automated stubbing on domain 0 (real hardware domain)."""
         spec = get_spec("unitree-go2")
-        with mock.patch.dict(os.environ, {"OHHO_STUB_DDS": "1"}):
+        with (
+            mock.patch.dict(os.environ, {"OHHO_STUB_DDS": "1"}),
+            mock.patch.dict("sys.modules", _BLOCK_UNITREE_SDK),
+        ):
             tp = UnitreeDdsTransport(spec, "lo?domain=0")
+            from ohho.adapters.errors import AdapterUnavailable
+
+            with self.assertRaises(AdapterUnavailable):
+                tp.connect()
+
+    def test_stub_dds_mode_refused_on_non_loopback(self):
+        """A non-loopback interface must open the SDK, even on a non-zero domain."""
+        spec = get_spec("unitree-go2")
+        with (
+            mock.patch.dict(os.environ, {"OHHO_STUB_DDS": "1"}),
+            mock.patch.dict("sys.modules", _BLOCK_UNITREE_SDK),
+        ):
+            tp = UnitreeDdsTransport(spec, "eth0?domain=1")
             from ohho.adapters.errors import AdapterUnavailable
 
             with self.assertRaises(AdapterUnavailable):
@@ -293,8 +318,10 @@ class TestPerceptionParsingAndProjection(unittest.TestCase):
 class TestVlmPerceptorRateLimitAndHooks(unittest.TestCase):
     def test_estimate_vlm_cost(self):
         cost_sonnet = estimate_vlm_cost("claude-sonnet-5", 1000, 200)
-        # 1000 * 3/1M + 200 * 15/1M = 0.003 + 0.003 = 0.006
-        self.assertAlmostEqual(cost_sonnet, 0.006, places=5)
+        # 1000 * 2/1M + 200 * 10/1M = 0.002 + 0.002 = 0.004 (list-price estimate)
+        self.assertAlmostEqual(cost_sonnet, 0.004, places=5)
+        older = estimate_vlm_cost("claude-sonnet-4.5", 1000, 200)
+        self.assertAlmostEqual(older, 0.006, places=5)
 
         cost_haiku = estimate_vlm_cost("claude-3-5-haiku", 1000, 200)
         # 1000 * 0.8/1M + 200 * 4/1M = 0.0008 + 0.0008 = 0.0016
@@ -323,12 +350,19 @@ class TestVlmPerceptorRateLimitAndHooks(unittest.TestCase):
         client = _FakeClient('[{"label": "cone"}]')
         # Rate limit at 4 Hz (0.25s interval)
         vlm = VlmPerceptor(client=client, rate_limit_hz=4.0)
-        t0 = time.monotonic()
-        vlm.look(SYNTHETIC_JPEG)
-        vlm.look(SYNTHETIC_JPEG)
-        elapsed = time.monotonic() - t0
-        # Second call should have waited to enforce 1/4s = 0.25s interval
-        self.assertGreaterEqual(elapsed, 0.22)
+
+        def frozen_clock() -> float:
+            return 10.0
+
+        with (
+            mock.patch("ohho.perception.time.monotonic", frozen_clock),
+            mock.patch("ohho.perception.time.sleep") as sleep,
+        ):
+            vlm.look(SYNTHETIC_JPEG)
+            vlm.look(SYNTHETIC_JPEG)
+        # Second call must wait for the rest of the 1/4 s interval
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args[0][0], 0.25, places=5)
 
 
 class TestCameraPerceptorIntegration(unittest.TestCase):
@@ -350,8 +384,13 @@ class TestCameraPerceptorIntegration(unittest.TestCase):
             frame_factory=frame_factory,
         )
         bot = Robot(spec, tp, NativeRuntime())
+        got_state = threading.Event()
+        tp.on_telemetry(lambda _t: got_state.set())
         tp.connect()
         try:
+            if not tp.odom_received:
+                self.assertTrue(got_state.wait(timeout=2.0))
+            self.assertTrue(tp.odom_received)
             client = _FakeClient('[{"label": "hydrant", "confidence": 0.92, "x": 0.5}]')
             vlm = VlmPerceptor(client=client, rate_limit_hz=100.0)
             perceptor = CameraPerceptor(
@@ -390,14 +429,14 @@ class TestCameraPerceptorIntegration(unittest.TestCase):
             spec,
             "lo?domain=1",
             state_factory=state_factory,
-            frame_factory=lambda: (lambda: SYNTHETIC_JPEG),
+            frame_factory=lambda: lambda: SYNTHETIC_JPEG,
         )
         bot = Robot(spec, tp, NativeRuntime())
+        got_scan = threading.Event()
+        tp.on_telemetry(lambda t: got_scan.set() if t.scan is not None else None)
         tp.connect()
         try:
-            import time as _t
-
-            _t.sleep(0.2)
+            self.assertTrue(got_scan.wait(timeout=2.0))
             self.assertIsNotNone(bot.telemetry().scan)
             client = _FakeClient('[{"label": "hydrant", "confidence": 0.9, "x": 0.5}]')
             vlm = VlmPerceptor(client=client, rate_limit_hz=100.0)
@@ -429,24 +468,67 @@ class TestCameraPerceptorIntegration(unittest.TestCase):
 class TestCliGo2LookCommand(unittest.TestCase):
     def test_cli_look_unitree_go2_mock(self):
         # Test: `ohho look unitree-go2 --transport dds://lo?domain=1 --mock`
-        code = main(
-            ["look", "unitree-go2", "--transport", "dds://lo?domain=1", "--mock"]
-        )
-        self.assertEqual(code, 0)
+        with (
+            tempfile.TemporaryDirectory() as home,
+            mock.patch.dict(
+                os.environ,
+                {"OHHO_STUB_DDS": "1", "HOME": home, "USERPROFILE": home},
+            ),
+        ):
+            code = main(
+                ["look", "unitree-go2", "--transport", "dds://lo?domain=1", "--mock"]
+            )
+            self.assertEqual(code, 0)
 
-        # Verify items were remembered into unitree-go2 memory
-        mem = SpatialMemory(path=default_memory_path("unitree-go2"))
-        chair = mem.where_is("chair")
-        table = mem.where_is("table")
-        self.assertIsNotNone(chair)
-        self.assertIsNotNone(table)
-        self.assertGreater(chair.attrs["confidence"], 0.8)
+            # Verify items were remembered into unitree-go2 memory
+            mem = SpatialMemory(path=default_memory_path("unitree-go2"))
+            chair = mem.where_is("chair")
+            table = mem.where_is("table")
+            self.assertIsNotNone(chair)
+            self.assertIsNotNone(table)
+            self.assertGreater(chair.attrs["confidence"], 0.8)
 
     def test_cli_look_unitree_go2_missing_sdk_clean_exit(self):
-        # Without mock and without OHHO_STUB_DDS, missing SDK exits code 2 cleanly
-        with mock.patch.dict(os.environ, {"OHHO_STUB_DDS": "0"}, clear=False):
+        # Without mock and without the SDK, exit code 2. Do not open DDS.
+        with (
+            mock.patch.dict(os.environ, {"OHHO_STUB_DDS": "0"}, clear=False),
+            mock.patch.dict("sys.modules", _BLOCK_UNITREE_SDK),
+        ):
             code = main(["look", "unitree-go2", "--transport", "dds://lo?domain=1"])
             self.assertEqual(code, 2)
+
+    def test_camera_perceptor_skips_placeholder_and_unlocated(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"rest"
+        seen = {}
+
+        class _Vlm:
+            def look(self, frame, media_type="image/jpeg"):
+                seen["media_type"] = media_type
+                return [
+                    Detection(label="chair", confidence=0.9, image_x=0.5),
+                    Detection(label="cup", confidence=0.4),
+                ]
+
+        class _Bot:
+            spec = SimpleNamespace(id="unitree-go2")
+            transport = SimpleNamespace(odom_received=False)
+
+            def get_camera_frame(self):
+                return png
+
+            def telemetry(self):
+                return Telemetry(odom=Odometry(x=9.0, y=9.0, theta=0.0))
+
+        dets = CameraPerceptor(_Bot(), vlm=_Vlm(), fixed_range=2.0).look()
+        self.assertEqual(seen["media_type"], "image/png")
+        self.assertIsNone(dets[0].x)
+        self.assertIsNone(dets[1].x)
+
+        _Bot.transport = SimpleNamespace(odom_received=True)
+        located = CameraPerceptor(_Bot(), vlm=_Vlm(), fixed_range=2.0).look()
+        self.assertAlmostEqual(located[0].x, 11.0)
+        self.assertIsNone(located[1].x)
+        self.assertIsNone(located[1].y)
 
 
 if __name__ == "__main__":

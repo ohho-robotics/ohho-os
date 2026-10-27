@@ -30,7 +30,7 @@ from typing import Any, Callable, Deque, Optional, Tuple
 from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
-from ..safety import normalize_action
+from ..safety import _is_loopback, normalize_action
 from ..schema import (
     ConnectionState,
     JointReading,
@@ -340,6 +340,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._sport_sub: Optional[object] = None
         self._low_sub: Optional[object] = None
         self._lidar_sub: Optional[object] = None
+        self._odom_received = False
         self._sport_partial: Optional[dict] = None
         self._low_partial: Optional[dict] = None
         self._lock = threading.Lock()
@@ -362,6 +363,11 @@ class UnitreeDdsTransport(BaseTransport):
         """The DDS network interface."""
         return self._iface
 
+    @property
+    def odom_received(self) -> bool:
+        """True after a live state sample replaces the placeholder pose."""
+        return self._odom_received
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
         self._stop.clear()
@@ -383,9 +389,14 @@ class UnitreeDdsTransport(BaseTransport):
         return s
 
     def _connect_dds(self) -> None:
-        # Loopback stub on a non-zero domain only. Domain 0 stays real hardware.
-        if os.environ.get("OHHO_STUB_DDS") == "1" and self.domain_id != 0:
-            self._state_getter = lambda: {
+        # Fabricated state only for loopback on a non-zero domain. Any other
+        # interface, and domain 0, initialize the real SDK client.
+        if (
+            os.environ.get("OHHO_STUB_DDS") == "1"
+            and self.domain_id != 0
+            and _is_loopback(self._iface)
+        ):
+            sample = {
                 "position": [1.0, 2.0, 0.0],
                 "velocity": [0.0, 0.0, 0.0],
                 "yaw_speed": 0.0,
@@ -395,6 +406,7 @@ class UnitreeDdsTransport(BaseTransport):
                 "body_height": 0.32,
                 "mode": 1,
             }
+            self._state_getter = lambda: sample
             if self._frame_getter is None:
                 self._frame_getter = lambda: (
                     b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00"
@@ -405,6 +417,8 @@ class UnitreeDdsTransport(BaseTransport):
                     b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08"
                     b"\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
                 )
+            # Publish the sample now so callers do not observe the placeholder pose.
+            self._on_state(sample)
             return
 
         try:
@@ -534,6 +548,7 @@ class UnitreeDdsTransport(BaseTransport):
     def _on_state(self, state: dict) -> None:
         """Bridge a merged state dict to telemetry and emit."""
         self._latest = self._attach_lidar_scan(sportstate_to_telemetry(state))
+        self._odom_received = True
         self._emit_telemetry(self._latest)
 
     def _on_lowstate(self, state: dict) -> None:
