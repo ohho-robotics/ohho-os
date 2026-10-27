@@ -150,6 +150,50 @@ class TestNotBuiltBackends(unittest.TestCase):
         self.assertNotIn("mujoco", sys.modules)
 
 
+class TestSimLinkArm(unittest.TestCase):
+    def test_loopback_robot_backend_arms_without_a_hardware_prompt(self):
+        class _Gate:
+            requires_hardware_arming = False
+
+            def __init__(self) -> None:
+                self.armed = False
+
+        class _Bot:
+            gated = True
+
+            def __init__(self) -> None:
+                self.transport = _Gate()
+
+            def arm(self) -> bool:
+                self.transport.armed = True
+                return True
+
+        bot = _Bot()
+        server = SimServe(backend="robot", transport="dds://lo?domain=1")
+        server._bot = bot
+        asyncio.run(server._arm_sim_link())
+        self.assertTrue(bot.transport.armed)
+
+    def test_hardware_link_stays_disarmed(self):
+        class _Gate:
+            requires_hardware_arming = True
+            armed = False
+
+        class _Bot:
+            gated = True
+            transport = _Gate()
+
+            def arm(self) -> bool:
+                self.transport.armed = True
+                return True
+
+        bot = _Bot()
+        server = SimServe(backend="robot", transport="dds://lo?domain=1")
+        server._bot = bot
+        asyncio.run(server._arm_sim_link())
+        self.assertFalse(bot.transport.armed)
+
+
 @unittest.skipUnless(
     _has_websockets(), "websockets not installed — [serve] or [sim-serve] extra"
 )
@@ -258,6 +302,43 @@ class TestSimServeRobotBackend(unittest.TestCase):
                         await asyncio.sleep(0.02)
                     self.assertEqual(fake.transport.last_vel, (0.0, 0.0, 0.0))
                     self.assertLess(time.monotonic() - t0, 0.45)
+
+                    await client.send(
+                        json.dumps(
+                            {
+                                "deadman": True,
+                                "velocity": {
+                                    "linear": {"x": 0.4, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                },
+                            }
+                        )
+                    )
+                    for _ in range(20):
+                        if fake.transport.last_vel[0] == 0.4:
+                            break
+                        await asyncio.sleep(0.02)
+                    self.assertEqual(fake.transport.last_vel[0], 0.4)
+                    released = time.monotonic()
+                    await client.send(
+                        json.dumps(
+                            {
+                                "deadman": False,
+                                "velocity": {
+                                    "linear": {"x": 0.0, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                },
+                            }
+                        )
+                    )
+                    stopped = False
+                    for _ in range(30):
+                        if fake.transport.last_vel == (0.0, 0.0, 0.0):
+                            stopped = True
+                            break
+                        await asyncio.sleep(0.01)
+                    self.assertTrue(stopped)
+                    self.assertLess(time.monotonic() - released, 0.3)
 
                     await client.send(json.dumps({"mode": "stand"}))
                     await asyncio.sleep(0.05)
