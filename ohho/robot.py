@@ -149,33 +149,45 @@ class Robot:
         self._t.release_stop()
         return self
 
-    # ── legged pose (SafetyGate / sim sport_command only — OHH-127) ───────────
-    def stand(self) -> bool:
-        """Stand up (quadruped). No-op when ``legged.pose`` is absent."""
-        return self._legged_action("stand_up")
+    # ── legged pose (one API: capability no-op, main's limits and sim behaviour) ─
+    def stand(self) -> "Robot":
+        """Stand up (quadruped). No-op unless ``legged.pose`` is supported."""
+        self._legged_action("stand_up")
+        return self
 
-    def lie_down(self) -> bool:
-        return self._legged_action("stand_down")
+    def lie_down(self) -> "Robot":
+        """Lie down / stand down. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("stand_down")
+        return self
 
-    def sit(self) -> bool:
-        return self._legged_action("sit")
+    def sit(self) -> "Robot":
+        """Sit. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("sit")
+        return self
 
-    def recover(self) -> bool:
-        return self._legged_action("recovery_stand")
+    def recover(self) -> "Robot":
+        """Recovery stand from prone. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("recovery_stand")
+        return self
 
     def set_body_pose(
         self, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0
-    ) -> bool:
-        """Set body orientation (radians), clamped to the safety euler limit."""
+    ) -> "Robot":
+        """Set body orientation (radians), clamped to the safety euler limit.
+
+        No-op unless ``legged.pose`` is supported. The clamp is the module
+        ceiling; it is not widened.
+        """
         if not self.has(caps.LEGGED_POSE):
-            return False
+            return self
         from .safety import EULER_LIMIT_RAD
 
         lim = EULER_LIMIT_RAD
         r = clamp(float(roll), -lim, lim)
         p = clamp(float(pitch), -lim, lim)
         y = clamp(float(yaw), -lim, lim)
-        return self._legged_action("euler", r, p, y)
+        self._legged_action("euler", r, p, y)
+        return self
 
     def legged_posture(self) -> str:
         """Simulator / telemetry hint: ``standing``, ``lying``, ``sitting``, or ``unknown``."""
@@ -186,7 +198,7 @@ class Robot:
         if callable(getter):
             return str(getter())
         custom = self._t.read().custom or {}
-        return str(custom.get("legged_posture", "unknown"))
+        return str(custom.get("legged_posture", custom.get("posture", "unknown")))
 
     def _legged_ready_to_drive(self) -> bool:
         if not self.has(caps.LEGGED_POSE):
@@ -205,6 +217,13 @@ class Robot:
         sport = getattr(gate, "sport_command", None)
         if callable(sport):
             sport(action, *args)
+            return True
+        mode = getattr(gate, "send_mode", None)
+        if callable(mode):
+            if action == "euler" and len(args) == 3:
+                mode("euler", roll=args[0], pitch=args[1], yaw=args[2])
+            else:
+                mode(action)
             return True
         return False
 

@@ -23,6 +23,7 @@ from typing import Any, Callable, Deque, Optional, Tuple
 from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
+from ..safety import normalize_action
 from ..schema import (
     ConnectionState,
     JointReading,
@@ -87,6 +88,17 @@ def parse_dds_address(address: str, iface_kw: str = "") -> Tuple[str, int]:
 
 
 # ── pure, testable protocol mapping ────────────────────────────────────────────
+def sport_mode_to_posture(mode: int) -> str:
+    """Map Go2 ``SportModeState.mode`` (unitree_ros2 sportmodestate) to a label."""
+    if mode in (5, 7):
+        return "lying"
+    if mode == 10:
+        return "sitting"
+    if mode in (0, 1, 2, 3, 8):
+        return "standing"
+    return "unknown"
+
+
 def velocity_to_move(vel: Velocity) -> Tuple[float, float, float]:
     """Map a unified ``Velocity`` to Unitree ``SportClient.Move(vx, vy, vyaw)``."""
     return (vel.linear_x, vel.linear_y, vel.angular_z)
@@ -123,6 +135,8 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     for key in ("error_code", "body_height", "mode", "gait_type", "foot_force"):
         if key in state:
             custom[key] = state[key]
+    if "mode" in state:
+        custom["posture"] = sport_mode_to_posture(int(state["mode"]))
     joints_in = state.get("joints") or []
     joints: list[JointReading] = []
     for item in joints_in:
@@ -633,6 +647,21 @@ class UnitreeDdsTransport(BaseTransport):
 
     def send_joint_command(self, name: str, position: float) -> None:
         return  # Go2 has no arm; low-level joint control is a future adapter
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Map unified mode names to ``SportClient`` methods."""
+        action = normalize_action(name)
+        if action == "euler":
+            self.sport_command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+            return
+        if action not in _SPORT_METHODS:
+            raise ValueError(f"unsupported sport mode '{name}'")
+        self.sport_command(action)
 
     def sport_command(self, name: str, *args: float) -> None:
         method = _SPORT_METHODS.get(name)

@@ -200,6 +200,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         self.assertEqual(t.custom["error_code"], 0)
         self.assertAlmostEqual(t.custom["body_height"], 0.31)
         self.assertEqual(t.custom["mode"], 1)
+        self.assertEqual(t.custom["posture"], "standing")
 
     def test_missing_safety_fields_are_not_invented(self):
         t = sportstate_to_telemetry({"position": [0.0, 0.0, 0.0]})

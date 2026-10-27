@@ -129,6 +129,29 @@ class SimTransport(BaseTransport):
     def legged_posture(self) -> str:
         return self._legged_posture
 
+    def send_mode(self, name: str, **params: float) -> None:
+        """Legged posture hook. No-op without ``legged.pose``.
+
+        Body angles go through :meth:`sport_command`, which clamps them to
+        ``EULER_LIMIT_RAD``.
+        """
+        if caps.LEGGED_POSE not in self.spec.capabilities:
+            return
+        action = name.strip().lower().replace("-", "_").replace(" ", "_")
+        if action == "euler":
+            self.sport_command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+            return
+        if action == "damp":
+            self._legged_posture = "lying"
+            self._cmd = Velocity()
+            return
+        self.sport_command(action)
+
     def sport_command(self, name: str, *args: float) -> None:
         """Simulate allowlisted Go2 sport-mode actions for agent / safety tests."""
         if caps.LEGGED_POSE not in self.spec.capabilities:
@@ -275,6 +298,7 @@ class SimTransport(BaseTransport):
             "pitch": self._body_rpy[1],
         }
         if caps.LEGGED_POSE in self.spec.capabilities:
+            custom["posture"] = self._legged_posture
             custom["legged_posture"] = self._legged_posture
             custom["body_rpy"] = self._body_rpy
         return Telemetry(
