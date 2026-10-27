@@ -270,6 +270,9 @@ class SimTransport(BaseTransport):
         custom = {
             "wheel_encoders": dict(self._wheel_encoders),
             "imu_rate": self.get_imu_rate(),
+            "legged_posture": self._legged_posture,
+            "roll": self._body_rpy[0],
+            "pitch": self._body_rpy[1],
         }
         if caps.LEGGED_POSE in self.spec.capabilities:
             custom["legged_posture"] = self._legged_posture
