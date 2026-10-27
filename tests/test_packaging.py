@@ -8,12 +8,18 @@ from pathlib import Path
 
 try:
     import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[no-redef]
+except ModuleNotFoundError:  # Python 3.10
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 
+@unittest.skipUnless(tomllib is not None, "neither tomllib nor tomli is available")
 class TestPackagingMetadata(unittest.TestCase):
     def test_project_urls_point_at_ohho_os_repo(self) -> None:
+        if tomllib is None:
+            self.skipTest("neither tomllib nor tomli is available")
         root = Path(__file__).resolve().parents[1]
         project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
             "project"
