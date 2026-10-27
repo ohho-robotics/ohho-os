@@ -9,7 +9,7 @@
 > Paths written below as `sdk/` refer to that root (`tests/`, not `sdk/tests/`).
 > The TypeScript SDK moved to [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk);
 > `ts/README.md` points there. The licence is Apache-2.0 (OHH-18).
-
+> JSON schemas in `schemas/` are checked by `python scripts/export_json_schemas.py --check`.
 
 - **Package:** `ohho-os` (imports as `ohho`) — repository root of
   [ohho-os](https://github.com/ohho-robotics/ohho-os).

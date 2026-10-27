@@ -52,6 +52,14 @@ jobs:
               )
               sys.exit(1)
           PY
+      - name: Export JSON schemas
+        run: python scripts/export_json_schemas.py
+      - name: Upload protocol JSON schemas
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohho-protocol-schemas-${{ github.ref_name }}
+          path: schemas/
+          if-no-files-found: error
       - name: Build sdist and wheel
         run: |
           python -m pip install build twine

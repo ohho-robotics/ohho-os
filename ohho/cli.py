@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from . import __version__
+from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .agent import Agent
 from .hardware import resolve_device
@@ -18,7 +19,7 @@ from .sim_serve import DEFAULT_PORT
 
 
 def _cmd_version(args) -> int:
-    print(f"OhhO OS {__version__}")
+    print(f"OhhO OS {__version__}  (protocol {PROTOCOL_VERSION})")
     return 0
 
 
@@ -38,7 +39,7 @@ def _cmd_doctor(args) -> int:
         return importlib.util.find_spec(mod) is not None
 
     runtimes = available_runtimes()
-    print(f"OhhO OS {__version__}")
+    print(f"OhhO OS {__version__}  (protocol {PROTOCOL_VERSION})")
     print(f"  python      : {sys.version.split()[0]}")
     print(f"  runtimes    : {', '.join(runtimes)}")
     print(f"  adapters    : {', '.join(available_adapters())}  (others via extras)")
