@@ -550,6 +550,54 @@ class TestTeleopSessionProtocol(unittest.TestCase):
         self.assertNotIn("mujoco", sys.modules)
 
 
+def _live_odom_x(server: SimServe) -> float:
+    """Integrated pose. ``Robot.telemetry`` is the 10 Hz emit cache."""
+    bot = server._bot
+    assert bot is not None
+    return float(bot.transport.read().odom.x)
+
+
+def _commanded_velocity(server: SimServe) -> tuple[float, float, float]:
+    """Velocity last applied to the sim, after the deadman gate."""
+    bot = server._bot
+    assert bot is not None
+    cmd = bot.transport._cmd
+    return (float(cmd.linear_x), float(cmd.linear_y), float(cmd.angular_z))
+
+
+async def _hold_deadman_until_moved(
+    client: Any, server: SimServe, *, min_dx: float = 0.01, timeout: float = 2.0
+) -> float:
+    """Hold deadman until the base moves at least ``min_dx`` meters.
+
+    The physics thread aims for 50 Hz. On macOS CI, after merging main, a
+    fixed 200 ms burst only integrates one or two 4 mm steps. Wait until the
+    base has actually moved. Sends stay inside the 300 ms deadman window.
+    """
+    x0 = _live_odom_x(server)
+    deadline = time.monotonic() + timeout
+    while True:
+        await client.send(
+            json.dumps(
+                {
+                    "deadman": True,
+                    "velocity": {
+                        "linear": {"x": 0.2, "y": 0.0},
+                        "angular": {"z": 0.0},
+                    },
+                }
+            )
+        )
+        await asyncio.sleep(0.05)
+        x = _live_odom_x(server)
+        if x - x0 > min_dx:
+            return x
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"deadman hold moved {x - x0:.4f} m in {timeout:.1f}s"
+            )
+
+
 @unittest.skipUnless(
     _has_websockets(), "websockets not installed — [serve] or [sim-serve] extra"
 )
@@ -593,8 +641,6 @@ class TestSimServeDeadmanEdges(unittest.TestCase):
         asyncio.run(run_test())
 
     def test_dropped_socket_stops_within_300ms(self):
-        import json as json_mod
-
         import websockets
 
         async def run_test():
@@ -606,28 +652,18 @@ class TestSimServeDeadmanEdges(unittest.TestCase):
                 async with websockets.connect(
                     f"ws://127.0.0.1:{server.port}"
                 ) as client:
-                    for _ in range(4):
-                        await client.send(
-                            json_mod.dumps(
-                                {
-                                    "deadman": True,
-                                    "velocity": {
-                                        "linear": {"x": 0.2, "y": 0.0},
-                                        "angular": {"z": 0.0},
-                                    },
-                                }
-                            )
-                        )
-                        await asyncio.sleep(0.05)
-                    moving = server._bot.telemetry().odom.x
+                    moving = await _hold_deadman_until_moved(client, server)
                 self.assertGreater(moving, 0.01)
                 # Past the 300 ms bound the base must already be stopped.
                 # One 50 Hz sim step is 4 mm, so the check allows that and
-                # rejects a command that is still 0.2 m/s.
-                await asyncio.sleep(0.35)
-                settled = server._bot.telemetry().odom.x
-                await asyncio.sleep(0.2)
-                later = server._bot.telemetry().odom.x
+                # rejects a command that is still 0.2 m/s. The settle window
+                # is long enough to see that drift on a slow physics wake.
+                await asyncio.sleep(DEADMAN_TIMEOUT_S + 0.05)
+                await asyncio.sleep(0)
+                self.assertEqual(_commanded_velocity(server), (0.0, 0.0, 0.0))
+                settled = _live_odom_x(server)
+                await asyncio.sleep(1.0)
+                later = _live_odom_x(server)
                 self.assertLess(later - settled, 0.01)
             finally:
                 await server.stop()
@@ -636,8 +672,6 @@ class TestSimServeDeadmanEdges(unittest.TestCase):
 
     def test_timeout_is_not_tied_to_telemetry_rate(self):
         """A 1 Hz broadcast must still zero velocity 300 ms after the last message."""
-        import json as json_mod
-
         import websockets
 
         async def run_test():
@@ -649,26 +683,21 @@ class TestSimServeDeadmanEdges(unittest.TestCase):
                 async with websockets.connect(
                     f"ws://127.0.0.1:{server.port}"
                 ) as client:
-                    for _ in range(4):
-                        await client.send(
-                            json_mod.dumps(
-                                {
-                                    "deadman": True,
-                                    "velocity": {
-                                        "linear": {"x": 0.2, "y": 0.0},
-                                        "angular": {"z": 0.0},
-                                    },
-                                }
-                            )
-                        )
-                        await asyncio.sleep(0.05)
-                    moving = server._bot.telemetry().odom.x
-                    await asyncio.sleep(0.6)
-                    stopped = server._bot.telemetry().odom.x
-                    await asyncio.sleep(0.15)
-                    later = server._bot.telemetry().odom.x
-                self.assertGreater(moving, 0.01)
-                self.assertAlmostEqual(later, stopped, places=2)
+                    moving = await _hold_deadman_until_moved(client, server)
+                    self.assertGreater(moving, 0.01)
+                    # Stay connected and stop sending. 300 ms must zero the
+                    # command even though the next broadcast is 1 s away.
+                    await asyncio.sleep(DEADMAN_TIMEOUT_S + 0.05)
+                    await asyncio.sleep(0)
+                    self.assertFalse(server._command_window_open)
+                    self.assertEqual(server._current_velocity(), (0.0, 0.0, 0.0))
+                    self.assertEqual(_commanded_velocity(server), (0.0, 0.0, 0.0))
+                    stopped = _live_odom_x(server)
+                    # Still before one 1 Hz period, so a rate-tied watchdog
+                    # would still be integrating 0.2 m/s across this window.
+                    await asyncio.sleep(0.55)
+                    later = _live_odom_x(server)
+                self.assertLess(abs(later - stopped), 0.01)
             finally:
                 await server.stop()
 
