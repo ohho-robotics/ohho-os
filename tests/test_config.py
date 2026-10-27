@@ -525,6 +525,7 @@ class TestCli(unittest.TestCase):
                     runtime="auto",
                     safety_config=None,
                     estop_damp=False,
+                    read_only=False,
                     sim_backend="kinematic",
                     safety_overrides={"max_vx": 0.1},
                 )
@@ -557,6 +558,7 @@ class TestCli(unittest.TestCase):
             runtime="auto",
             safety_config=None,
             estop_damp=False,
+            read_only=False,
         )
 
     def test_every_quiet_command_resolves_and_a_bad_config_exits_2(self):

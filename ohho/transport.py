@@ -99,3 +99,6 @@ class BaseTransport(Transport):
                 cb(s)
             except Exception:
                 pass
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Optional high-level legged posture / sport-mode hook (no-op by default)."""
