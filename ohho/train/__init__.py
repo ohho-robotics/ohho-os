@@ -188,11 +188,24 @@ def _lerobot_train(
 
 
 def _default_checkpoint(policy: str) -> str:
-    """Default base checkpoint for each policy family."""
+    """Default base checkpoint for each policy family.
+
+    A plugin may name a checkpoint for ``policy``. Otherwise the shared
+    base checkpoints are used.
+    """
+    from ..plugins import loaded_plugins
+
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        fn = getattr(info.plugin, "default_checkpoint", None)
+        if not callable(fn):
+            continue
+        got = fn(policy)
+        if isinstance(got, str) and got:
+            return got
     defaults = {
         "smolvla": "lerobot/smolvla_base",
-        "act": "lerobot/act_omnibot",
-        "diffusion": "lerobot/diffusion_omnibot",
         "openvla": "openvla/openvla-7b",
     }
     return defaults.get(policy, "")

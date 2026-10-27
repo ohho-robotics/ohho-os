@@ -32,8 +32,8 @@ from .recorder import (
     BASE_STATE_NAMES,
     GO2_ACTION_NAMES,
     GO2_STATE_NAMES,
-    OMNIBOT_ACTION_NAMES,
-    OMNIBOT_STATE_NAMES,
+    MOBILE_MANIPULATOR_ACTION_NAMES,
+    MOBILE_MANIPULATOR_STATE_NAMES,
     Episode,
 )
 
@@ -76,7 +76,9 @@ def write_dataset(
         if state_dim == 31 and action_dim == 4:
             robot_type = "unitree-go2"
         elif state_dim == 9:
-            robot_type = "omnibot"
+            from ..plugins import preferred_robot_id
+
+            robot_type = preferred_robot_id()
         else:
             robot_type = "sim"
 
@@ -155,8 +157,8 @@ def _write_info(
         state_names = GO2_STATE_NAMES[:state_dim]
         action_names = GO2_ACTION_NAMES[:action_dim]
     elif state_dim == 9:
-        state_names = OMNIBOT_STATE_NAMES[:state_dim]
-        action_names = OMNIBOT_ACTION_NAMES[:action_dim]
+        state_names = MOBILE_MANIPULATOR_STATE_NAMES[:state_dim]
+        action_names = MOBILE_MANIPULATOR_ACTION_NAMES[:action_dim]
     else:
         state_names = BASE_STATE_NAMES[:state_dim]
         action_names = BASE_ACTION_NAMES[:action_dim]

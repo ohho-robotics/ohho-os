@@ -121,7 +121,7 @@ GO2_ACTION_NAMES = [
     "mode_id",
 ]
 
-OMNIBOT_STATE_NAMES = [
+MOBILE_MANIPULATOR_STATE_NAMES = [
     "arm_shoulder_pan",
     "arm_shoulder_lift",
     "arm_elbow_flex",
@@ -133,7 +133,7 @@ OMNIBOT_STATE_NAMES = [
     "base_omega",
 ]
 
-OMNIBOT_ACTION_NAMES = [
+MOBILE_MANIPULATOR_ACTION_NAMES = [
     "arm_shoulder_pan",
     "arm_shoulder_lift",
     "arm_elbow_flex",
@@ -609,7 +609,11 @@ class Recorder:
         """
         from .writer import write_dataset
 
-        robot_id = getattr(getattr(self.robot, "spec", None), "id", "omnibot")
+        robot_id = getattr(getattr(self.robot, "spec", None), "id", "") or ""
+        if not robot_id:
+            from ..plugins import preferred_robot_id
+
+            robot_id = preferred_robot_id()
         return write_dataset(
             self._episodes,
             path,

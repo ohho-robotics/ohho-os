@@ -3,8 +3,8 @@ import unittest
 from ohho.adapters.composite import CompositeTransport
 from ohho.adapters.feetech import HOME_TICKS, TICKS_PER_RAD, FeetechTransport
 from ohho.adapters.sim import SimTransport
-from ohho.adapters.yahboom import YahboomTransport
-from ohho.adapters import _yahboom_proto as proto
+from ohho.robots.omnibot import proto
+from ohho.robots.omnibot.yahboom import YahboomTransport
 from ohho.registry import get_spec
 from ohho.schema import Velocity
 

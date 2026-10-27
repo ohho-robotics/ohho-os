@@ -1,6 +1,6 @@
-"""Feetech arm adapter — SO-101 6-DOF arm (OmniBot manipulation).
+"""Feetech arm adapter — SO-101 6-DOF arm.
 
-The SO-101 arm lives on a *separate* Feetech (STS3215) bus from the Yahboom base
+The SO-101 arm lives on its own Feetech (STS3215) bus, separate from the base
 board — typically ``/dev/ttyACM0`` at 1 000 000 baud. This adapter speaks to it
 via LeRobot's ``FeetechMotorsBus`` (lazy import, the ``[arm]`` extra).
 
@@ -13,8 +13,8 @@ A fake bus can be injected (``bus_factory=``) so the adapter is fully testable
 with no hardware and no lerobot install. The rad↔tick conversion and clamping
 logic is pure and unit-tested without any bus at all.
 
-Constants mirror the ROS arm driver (``robot_ws/src/omnibot_arm``) and
-``AGENTS.md`` §"Key Physical Constants": 4096 ticks/rev, home 2048, baud 1 Mbps.
+Constants mirror the ROS arm driver and the physical constants in
+``AGENTS.md``: 4096 ticks/rev, home 2048, baud 1 Mbps.
 """
 
 from __future__ import annotations

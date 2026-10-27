@@ -244,16 +244,6 @@ class SafetyProfile:
         object.__setattr__(self, "effort_limits", MappingProxyType(efforts))
 
 
-# Mirrors the Feetech adapter's DEFAULT_JOINT_MIN/MAX — keep the two in sync.
-_OMNIBOT_JOINT_LIMITS = {
-    "arm_shoulder_pan": (-3.14, 3.14),
-    "arm_shoulder_lift": (-1.57, 1.57),
-    "arm_elbow_flex": (-1.57, 1.57),
-    "arm_wrist_flex": (-1.57, 1.57),
-    "arm_wrist_roll": (-3.14, 3.14),
-    "arm_gripper": (-0.1, 0.8),
-}
-
 GO2_PROFILE = SafetyProfile(
     max_vx=0.5,
     max_vy=0.3,
@@ -265,19 +255,12 @@ GO2_PROFILE = SafetyProfile(
     allowlist=GO2_ACTIONS,
 )
 
-OMNIBOT_PROFILE = SafetyProfile(
-    max_vx=0.2,
-    max_vy=0.2,
-    max_wz=1.0,
-    max_accel_x=0.5,
-    max_accel_y=0.5,
-    max_accel_wz=2.0,
-    joint_limits=_OMNIBOT_JOINT_LIMITS,
-)
+PROFILES: Mapping[str, SafetyProfile] = MappingProxyType({"unitree-go2": GO2_PROFILE})
 
-PROFILES: Mapping[str, SafetyProfile] = MappingProxyType(
-    {"unitree-go2": GO2_PROFILE, "omnibot": OMNIBOT_PROFILE}
-)
+# Baselines a plugin registers for its own robot id. The first registration
+# wins, and it is the ceiling ``safety_policy`` is compared against. Core does
+# not name the robot.
+_PLUGIN_BASELINES: dict[str, SafetyProfile] = {}
 
 _GENERIC_MAX_LIN = 0.3
 _GENERIC_MAX_ANG = 1.0
@@ -293,24 +276,78 @@ class SafetyConfig:
     source: Optional[str] = None
 
 
+def register_baseline(robot_id: str, profile: SafetyProfile) -> None:
+    """Record ``profile`` as the class ceiling for ``robot_id``.
+
+    Called when a plugin module is imported. A later ``safety_policy`` may
+    only tighten this profile. A second registration for the same id is ignored
+    so a duplicate plugin cannot replace the ceiling.
+    """
+    if not robot_id or robot_id in PROFILES or robot_id in _PLUGIN_BASELINES:
+        return
+    if not isinstance(profile, SafetyProfile):
+        raise TypeError("safety baseline must be a SafetyProfile")
+    _PLUGIN_BASELINES[robot_id] = profile
+
+
+def _spec_by_id(robot_id: Optional[str]) -> Optional[RobotSpec]:
+    """Registered spec for ``robot_id``, or ``None`` when it is not registered."""
+    if not robot_id:
+        return None
+    from .registry import UnknownRobot, get_spec
+
+    try:
+        return get_spec(robot_id)
+    except UnknownRobot:
+        return None
+
+
+def _baseline(robot_id: Optional[str]) -> Optional[SafetyProfile]:
+    """Built-in table, then a profile a plugin registered for this id.
+
+    Looking the id up imports that plugin so its baseline is registered.
+    ``safety_policy`` is not called here.
+    """
+    if not robot_id:
+        return None
+    found = PROFILES.get(robot_id)
+    if found is not None:
+        return found
+    if robot_id not in _PLUGIN_BASELINES:
+        _spec_by_id(robot_id)
+    return _PLUGIN_BASELINES.get(robot_id)
+
+
+def _base_profile(robot_id: Optional[str], spec: Optional[RobotSpec]) -> SafetyProfile:
+    """Id table, then a plugin baseline, then the conservative spec profile."""
+    base = _baseline(robot_id)
+    if base is None and spec is not None and spec.id != (robot_id or ""):
+        base = _baseline(spec.id)
+    if base is not None:
+        return base
+    if spec is None:
+        return SafetyProfile()
+    lin = min(spec.max_lin, _GENERIC_MAX_LIN)
+    return SafetyProfile(
+        max_vx=lin,
+        max_vy=lin if spec.has(caps.BASE_HOLONOMIC) else 0.0,
+        max_wz=min(spec.max_ang, _GENERIC_MAX_ANG),
+    )
+
+
 def profile_for(
     robot_id: Optional[str],
     spec: Optional[RobotSpec] = None,
     config: Optional[SafetyConfig] = None,
 ) -> SafetyProfile:
-    """The safety profile for a robot: built-in, or conservative from its spec,
-    with any overrides from ``config`` applied."""
-    base = PROFILES.get(robot_id or "")
-    if base is None:
-        if spec is None:
-            base = SafetyProfile()
-        else:
-            lin = min(spec.max_lin, _GENERIC_MAX_LIN)
-            base = SafetyProfile(
-                max_vx=lin,
-                max_vy=lin if spec.has(caps.BASE_HOLONOMIC) else 0.0,
-                max_wz=min(spec.max_ang, _GENERIC_MAX_ANG),
-            )
+    """The safety profile for a robot: built-in, plugin baseline, or
+    conservative from its spec, with any overrides from ``config`` applied.
+
+    An id with no baseline stays on the module defaults. Looking up a
+    registered id does not by itself switch ``sim`` onto the spec-derived
+    caps; that still requires the caller to pass ``spec``.
+    """
+    base = _base_profile(robot_id, spec)
     overrides = config.profiles.get(robot_id or "") if config is not None else None
     return dataclasses.replace(base, **overrides) if overrides else base
 
@@ -370,7 +407,7 @@ def load_safety_config(path: Union[str, Path]) -> SafetyConfig:
                 )
             ov["allowlist"] = frozenset(ov["allowlist"])
         try:
-            candidate = dataclasses.replace(PROFILES.get(rid, SafetyProfile()), **ov)
+            candidate = dataclasses.replace(_base_profile(str(rid), None), **ov)
         except (TypeError, ValueError) as e:
             raise ValueError(f"safety config: profiles.{rid}: {e}") from e
         if max(candidate.max_vx, candidate.max_vy) > lin or candidate.max_wz > ang:
@@ -1134,7 +1171,10 @@ class SafetyGate(BaseTransport):
         if callable(fn):
             return self._forward(lambda: fn(action, *args), f"command:{action}")
         mode = getattr(self._inner, "send_mode", None)
-        if callable(mode) and type(self._inner).send_mode is not BaseTransport.send_mode:
+        if (
+            callable(mode)
+            and type(self._inner).send_mode is not BaseTransport.send_mode
+        ):
             if action == "euler" and len(args) == 3:
                 r, p, y = args
                 return self._forward(
@@ -1172,7 +1212,6 @@ __all__ = [
     "HUMANOID_ACTIONS",
     "HARD_MAX_ANG",
     "HARD_MAX_LIN",
-    "OMNIBOT_PROFILE",
     "PROFILES",
     "RELEASE_PHRASE",
     "SafetyConfig",

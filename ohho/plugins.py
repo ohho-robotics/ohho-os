@@ -13,8 +13,10 @@ has no entry point; discovery then loads that same module directly.
 
 One plugin failing to import is recorded and skipped. A duplicate robot id,
 transport scheme or sim backend is a load error naming both plugins; the
-earlier plugin keeps its robots and factories. The built-in plugin is applied
-first so a third-party collision does not drop sim, OmniBot or Go2.
+earlier plugin keeps its robots and factories. Shipped entry points from ``pyproject.toml`` are applied first, in file
+order, so a third-party collision does not drop a robot that ships with
+ohho-os. A missing shipped entry point (source checkout, or an install from
+before that entry existed) is loaded from the same table.
 
 ``resolve_transport`` reads the factories stored here. A scheme or backend a
 plugin did not register is absent from these maps, so the adapter scheme dict
@@ -25,8 +27,10 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.metadata
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -142,16 +146,51 @@ def _read_entry_points() -> list[Any]:
     return list(found)
 
 
-def _points_at_builtin(entry: Any) -> bool:
-    return getattr(entry, "value", None) == BUILTIN_ENTRY_VALUE
+_ENTRY_LINE = re.compile(
+    r"""(?m)^(?P<name>[A-Za-z0-9_.-]+)\s*=\s*["'](?P<value>[^"']+)["']\s*$"""
+)
 
 
-def _fallback_entry() -> Any:
-    return importlib.metadata.EntryPoint(
-        name="builtin",
-        value=BUILTIN_ENTRY_VALUE,
-        group=ENTRY_GROUP,
-    )
+def _pyproject_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def _parse_robot_entries(text: str) -> list[tuple[str, str]]:
+    """``name = "module:attr"`` rows under the ``ohho.robots`` table."""
+    marker = '[project.entry-points."ohho.robots"]'
+    start = text.find(marker)
+    if start < 0:
+        return []
+    rows: list[tuple[str, str]] = []
+    for line in text[start + len(marker) :].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        match = _ENTRY_LINE.match(line.strip())
+        if match:
+            rows.append((match.group("name"), match.group("value")))
+    return rows
+
+
+def _declared_robot_entries() -> list[tuple[str, str]]:
+    """Shipped ``ohho.robots`` entry points, in ``pyproject.toml`` order.
+
+    A checkout that has not been reinstalled still has the file. An installed
+    copy relies on importlib and only needs this when an entry point is absent.
+    """
+    path = _pyproject_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return [("builtin", BUILTIN_ENTRY_VALUE)]
+    found = _parse_robot_entries(text)
+    if found:
+        return found
+    return [("builtin", BUILTIN_ENTRY_VALUE)]
+
+
+def _entry_point(name: str, value: str) -> Any:
+    return importlib.metadata.EntryPoint(name=name, value=value, group=ENTRY_GROUP)
 
 
 def _distribution_name(entry: Any) -> str:
@@ -172,28 +211,30 @@ def _distribution_name(entry: Any) -> str:
 def _discover_entries() -> list[tuple[Any, bool]]:
     """Entry points in load order, as ``(entry, fallback)``.
 
-    The built-in plugin is first. A missing built-in entry point (source
-    checkout, or an install from before this group existed) appends one
-    fallback that imports the same module.
+    Shipped plugins come first, in ``pyproject.toml`` order. A shipped entry
+    point that importlib did not return is appended as a source fallback that
+    imports the same target. Other entry points follow, sorted by name.
     """
     found = _read_entry_points()
-    pairs = [(entry, False) for entry in found]
-    if not any(_points_at_builtin(entry) for entry in found):
-        pairs.append((_fallback_entry(), True))
+    declared = _declared_robot_entries()
+    declared_values = [value for _name, value in declared]
+    present = {getattr(entry, "value", None) for entry in found}
+    pairs: list[tuple[Any, bool]] = [(entry, False) for entry in found]
+    for name, value in declared:
+        if value in present:
+            continue
+        pairs.append((_entry_point(name, value), True))
+        present.add(value)
 
-    builtins: list[tuple[Any, bool]] = []
-    rest: list[tuple[Any, bool]] = []
-    seen_builtin = False
-    for entry, fallback in pairs:
-        if _points_at_builtin(entry):
-            if seen_builtin:
-                continue
-            seen_builtin = True
-            builtins.append((entry, fallback))
-        else:
-            rest.append((entry, fallback))
-    rest.sort(key=lambda item: str(getattr(item[0], "name", "")))
-    return builtins + rest
+    def sort_key(item: tuple[Any, bool]) -> tuple[int, int | str]:
+        entry, _fallback = item
+        value = getattr(entry, "value", None)
+        if value in declared_values:
+            return (0, declared_values.index(value))
+        return (1, str(getattr(entry, "name", "")))
+
+    pairs.sort(key=sort_key)
+    return pairs
 
 
 def _missing_methods(obj: object) -> list[str]:
@@ -382,6 +423,24 @@ def _load_all() -> tuple[PluginInfo, ...]:
     return _reject_collisions(loaded)
 
 
+def preferred_robot_id() -> str:
+    """Robot id a loaded plugin offers as the default, else ``sim``.
+
+    The first shipped plugin that implements ``preferred_robot_id`` wins.
+    Callers use this so core source does not name a robot.
+    """
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        fn = getattr(info.plugin, "preferred_robot_id", None)
+        if not callable(fn):
+            continue
+        value = fn()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "sim"
+
+
 def plugin_named(name: str) -> object | None:
     """The loaded plugin instance for ``name``, or ``None``.
 
@@ -563,6 +622,7 @@ __all__ = [
     "format_plugin_report",
     "loaded_plugins",
     "plugin_named",
+    "preferred_robot_id",
     "plugin_sim_backend",
     "plugin_transport",
     "register_loaded_specs",

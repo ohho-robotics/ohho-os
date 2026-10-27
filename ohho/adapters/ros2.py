@@ -3,7 +3,7 @@
 Uses the runtime's rclpy node to publish ``/cmd_vel`` (Twist), subscribe to
 ``/odom`` (Odometry) and ``/arm/joint_states`` (JointState) for telemetry, and
 publish ``/arm/joint_commands`` (JointState) for arm commands. This is the
-transport that lets ``Robot.connect("omnibot", "ros2://")`` drive the full
+transport that lets ``Robot.connect(..., "ros2://")`` drive the full
 ``robot_ws/`` stack (Nav2, SLAM, MoveIt 2) through DDS.
 
 All ROS 2 message types are imported lazily inside ``connect()`` so the module

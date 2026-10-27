@@ -1,8 +1,8 @@
 """Hardware self-test suite and report generator.
 
 Table-driven profiles per robot category:
-- **OmniBot bench:** serial link, wheel spin + encoders, IMU rate, STS3215 arm,
-  camera frames.
+- **Mobile manipulator bench:** serial link, wheel spin + encoders, IMU rate,
+  STS3215 arm, camera frames.
 - **Legged (Go2):** DDS sport/lowstate rates, 12 leg motors, IMU at rest, BMS
   SOC, error_code, front camera JPEG, optional stand/lie cycle.
 
@@ -83,8 +83,8 @@ class SelfTestProfile:
     check_ids: tuple[str, ...]
 
 
-OMNIBOT_BENCH_PROFILE = SelfTestProfile(
-    "omnibot_bench",
+MOBILE_MANIPULATOR_BENCH = SelfTestProfile(
+    "mobile_manipulator_bench",
     (
         "serial_link",
         "wheel_spin_encoders",
@@ -122,7 +122,7 @@ _GO2_IMU_MAX_ABS_RPY_REST = 0.35
 def profile_for_robot(spec: RobotSpec) -> SelfTestProfile:
     if spec.category == "legged":
         return LEGGED_GO2_PROFILE
-    return OMNIBOT_BENCH_PROFILE
+    return MOBILE_MANIPULATOR_BENCH
 
 
 def default_hardware_transport_uri(
@@ -1135,7 +1135,7 @@ def _run_profile_checks(
 
 
 def run_selftest(
-    robot: str = "omnibot",
+    robot: str | None = None,
     *,
     sim: bool = False,
     allow_spin: bool = False,
@@ -1148,6 +1148,10 @@ def run_selftest(
     transport: Optional[Transport] = None,
 ) -> SelfTestReport:
     """Run all hardware self-test checks and return a complete SelfTestReport."""
+    if not robot:
+        from .plugins import preferred_robot_id
+
+        robot = preferred_robot_id()
     start_time = datetime.datetime.now(datetime.timezone.utc)
     t_start = time.monotonic()
     spec = get_spec(robot)

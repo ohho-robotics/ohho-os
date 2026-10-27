@@ -34,8 +34,8 @@ dependencies = []
 
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0"]                       # load robot manifests from .yaml
-serial = ["pyserial>=3.5"]                   # Yahboom serial adapter (OmniBot base)
-arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101, OmniBot arm)
+serial = ["pyserial>=3.5"]                   # serial base adapter
+arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101)
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
 # cyclonedds is a build/runtime dep of unitree_sdk2py (not on PyPI — install from GitHub).
@@ -73,6 +73,7 @@ ohho = "ohho.cli:main"
 
 [project.entry-points."ohho.robots"]
 builtin = "ohho.robots.builtin:plugin"
+omnibot = "ohho.robots.omnibot:plugin"
 
 [tool.setuptools.packages.find]
 include = ["ohho*"]

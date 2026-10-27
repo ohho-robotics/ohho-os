@@ -1,7 +1,7 @@
 """Composite transport — combines a base link with an arm link.
 
-Mobile-manipulators like OmniBot have two independent physical links: a base
-(Yahboom serial) and an arm (Feetech serial). The ``Robot`` abstraction takes
+Mobile manipulators have two independent physical links: a base and an arm.
+The ``Robot`` abstraction takes
 one ``Transport``; this composite wraps both and delegates by responsibility:
 
 - ``send_velocity`` → **base** (the arm has no wheels)
