@@ -83,6 +83,8 @@ class SimTransport(BaseTransport):
             "rear_right": 0.0,
         }
         self._estopped = False
+        self._legged_posture = "standing"
+        self._body_rpy = (0.0, 0.0, 0.0)
         self._state = ConnectionState.IDLE
         self._connected_since: float | None = None
         self._thread: threading.Thread | None = None
@@ -140,6 +142,23 @@ class SimTransport(BaseTransport):
     def emergency_stop(self) -> None:
         self._estopped = True
         self._cmd = Velocity()
+
+    def sport_command(self, name: str, *args: float) -> None:
+        """Simulate allowlisted Go2 sport-mode actions for sim / safety tests."""
+        if name in ("stand_up", "balance_stand", "recovery_stand"):
+            self._legged_posture = "standing"
+        elif name == "stand_down":
+            self._legged_posture = "lying"
+            self._cmd = Velocity()
+        elif name == "sit":
+            self._legged_posture = "sitting"
+            self._cmd = Velocity()
+        elif name == "euler":
+            self._body_rpy = tuple(float(a) for a in args[:3])
+        elif name == "stop_move":
+            self._cmd = Velocity()
+        else:
+            raise ValueError(f"unsupported sport command '{name}'")
 
     def release_stop(self) -> None:
         self._estopped = False
@@ -251,6 +270,9 @@ class SimTransport(BaseTransport):
         custom = {
             "wheel_encoders": dict(self._wheel_encoders),
             "imu_rate": self.get_imu_rate(),
+            "legged_posture": self._legged_posture,
+            "roll": self._body_rpy[0],
+            "pitch": self._body_rpy[1],
         }
         return Telemetry(
             odom=odom,
