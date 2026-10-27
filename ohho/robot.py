@@ -9,15 +9,20 @@ Flight methods (``arm_flight``, ``disarm_flight``, ``takeoff``, ``land``,
 ``rtl``, ``hold``, ``offboard_position``, ``offboard_velocity``, ``set_yaw``)
 no-op unless the spec includes ``aerial``. They are experimental: nothing has
 flown. Legged pose methods (``stand``, ``lie_down``, ``sit``, ``recover``,
-``set_body_pose``) no-op unless the spec includes ``legged.pose``. ``drive``
-is a planar base command and does not move a quadruped that is lying or sitting.
+``set_body_pose``) act only when the spec includes ``legged.pose``. Humanoid
+methods (``prepare``, ``walk_mode``, ``damp``, ``get_up``, ``look``,
+``move_ee``, ``gripper``, ``hand``, and ``lie_down`` when ``legged.pose`` is
+absent) no-op unless the matching capability is present. ``drive`` is a planar
+base command and does not move a quadruped that is lying or sitting. A
+humanoid walks with ``drive`` and does not change posture that way.
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
 from . import capabilities as caps
+from . import humanoid
 from .adapters import resolve_transport
 from .aerial import Frame, finite_number, require_frame
 from .registry import RobotSpec, get_spec
@@ -120,6 +125,9 @@ class Robot:
         Clamped to the robot's limits. ``vy`` is ignored on non-holonomic
         bases. No-op when the robot cannot drive. The command is vx, vy, and
         yaw rate; vertical speed is an offboard velocity setpoint.
+
+        A humanoid walks with this same call (``vx``, ``vy``, yaw rate). It
+        does not change posture; :meth:`walk_mode` does that.
         """
         if not self.has(caps.BASE_DRIVE):
             return self
@@ -138,8 +146,27 @@ class Robot:
         self._t.send_velocity(Velocity())
         return self
 
-    def move_joints(self, positions: Iterable[float]) -> "Robot":
-        """Command arm joints (in spec order). No-op if the robot has no arm."""
+    def move_joints(
+        self,
+        positions: Union[str, Iterable[float]],
+        q: Optional[Iterable[float]] = None,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
+    ) -> "Robot":
+        """Command joints.
+
+        A sequence of positions commands the arm in spec order and is a no-op
+        without ``manipulation``. A group name commands that whole-body group
+        (``move_joints(group, q, kp=None, kd=None)``) and is a no-op without
+        ``whole_body.joint``. Gains on the arm form are a ``TypeError``.
+        """
+        if isinstance(positions, str):
+            return humanoid.move_joints(self, positions, q, kp=kp, kd=kd)
+        if q is not None or kp is not None or kd is not None:
+            raise TypeError(
+                "move_joints(positions) commands the arm; "
+                "move_joints(group, q) commands a whole-body group"
+            )
         if not self.has(caps.MANIPULATION):
             return self
         for name, p in zip(self.spec.joint_names, positions):
@@ -154,16 +181,62 @@ class Robot:
         self._t.release_stop()
         return self
 
-    # ── legged pose (one API: capability no-op, main's limits and sim behaviour) ─
+    # ── humanoid (no-op without the capability; gated calls enter the gate) ──
+    def prepare(self) -> "Robot":
+        """Stand and hold balance. No-op without ``humanoid.posture``."""
+        return humanoid.prepare(self)
+
+    def walk_mode(self) -> "Robot":
+        """Enable locomotion. No-op without ``humanoid.posture``.
+
+        Walking speed is :meth:`drive`.
+        """
+        return humanoid.walk_mode(self)
+
+    def damp(self) -> "Robot":
+        """Damping on every joint. The robot may collapse.
+
+        No-op without ``humanoid.posture``. Not an e-stop.
+        """
+        return humanoid.damp(self)
+
+    def get_up(self) -> "Robot":
+        """Get-up recovery. No-op without ``humanoid.posture``."""
+        return humanoid.get_up(self)
+
+    def look(self, pitch: float, yaw: float) -> "Robot":
+        """Point the head, radians. No-op without ``head.gaze``."""
+        return humanoid.look(self, pitch, yaw)
+
+    def move_ee(self, side: str, pose: Iterable[float], t: float) -> "Robot":
+        """Move one hand. No-op without ``manipulation.dual_arm``."""
+        return humanoid.move_ee(self, side, pose, t)
+
+    def gripper(self, side: str, cmd: object) -> "Robot":
+        """Command one gripper. No-op without ``end_effector.gripper``."""
+        return humanoid.gripper(self, side, cmd)
+
+    def hand(self, side: str, fingers: Iterable[float]) -> "Robot":
+        """Command one dexterous hand. No-op without ``end_effector.dex_hand``."""
+        return humanoid.hand(self, side, fingers)
+
+    # ── legged pose (chainable; humanoid lie_down when legged.pose is absent) ─
     def stand(self) -> "Robot":
         """Stand up (quadruped). No-op unless ``legged.pose`` is supported."""
         self._legged_action("stand_up")
         return self
 
     def lie_down(self) -> "Robot":
-        """Lie down / stand down. No-op unless ``legged.pose`` is supported."""
-        self._legged_action("stand_down")
-        return self
+        """Lie down.
+
+        With ``legged.pose`` this is the quadruped ``stand_down``. Otherwise it
+        is the humanoid lie-down recovery (a no-op that returns self when
+        ``humanoid.posture`` is absent).
+        """
+        if self.has(caps.LEGGED_POSE):
+            self._legged_action("stand_down")
+            return self
+        return humanoid.lie_down(self)
 
     def sit(self) -> "Robot":
         """Sit. No-op unless ``legged.pose`` is supported."""

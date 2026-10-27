@@ -175,6 +175,7 @@ sdk/
 │   │   ├── composite.py       # CompositeTransport — merges base + arm into one Transport (mobile-manipulators)
 │   │   ├── ros2.py            # Ros2Transport — ros2:// (bridges /cmd_vel, /odom, /joint_states); msg_factory injectable
 │   │   └── unitree.py         # UnitreeDdsTransport — dds:// (Go2); SDK lazy; state polling thread; state_factory injectable
+│   ├── humanoid.py       # generic humanoid modes and Robot methods (posture, gaze, hands, joints)
 │   ├── robot.py          # Robot (RAL) — connect/drive/move_joints/telemetry/emergency_stop/has/disconnect; connect() shortcut
 │   ├── agent.py          # Agent + ScriptedBrain (fallback); _default_brain() lazily loads HarnessBrain
 │   ├── brains.py         # HarnessBrain — wires agent_engine (ToolRegistry from caps, RobotPerceptor, ClaudeToolCallingReasoner)
@@ -249,6 +250,8 @@ bot = Robot.connect("omnibot", runtime="native")  # "auto" | "native" | "ros2"
 bot.drive(vx=0.2, vy=0.0, w=0.3)               # clamped to spec limits; vy ignored if not holonomic; no-op if no base.drive
 bot.stop()
 bot.move_joints([0, -0.5, 0.5, 0, 0, 0.2])     # no-op unless capabilities include "manipulation"
+bot.prepare()                                  # no-op without humanoid.posture; walking speed stays drive()
+bot.move_joints("left_arm", [0.0, -0.2])       # whole_body.joint; refused unless CUSTOM, sim, and policy allow
 bot.emergency_stop(); bot.release_stop()
 t = bot.telemetry()                            # Telemetry(odom, joints, battery, custom, timestamp)
 bot.has("manipulation")                        # capability check
@@ -570,7 +573,11 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
 7. **Allowlist.** `stand_up, stand_down, balance_stand, recovery_stand,
    stop_move, move, euler (±0.3 rad), sit, rise_sit`. Always refuse flips,
    jumps, pounce, dance, handstand, walk_upright, `free_*`, cross_step — the
-   denylist wins over any config file.
+   denylist wins over any config file. Humanoid names (`prepare`, `walk_mode`,
+   `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`) are not
+   on those lists. A profile may name them; `command` then calls
+   `send_humanoid` and never a sport call. `move_joints` stays refused at the
+   gate.
 8. **Tilt / fault.** `|roll|` or `|pitch|` > 0.6 rad, or `error_code != 0` →
    stop + latch, armed or not.
 9. **Arming.** Never automatic, including tests and CI. Any non-loopback

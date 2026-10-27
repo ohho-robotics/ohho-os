@@ -120,6 +120,31 @@ def sport_mode_to_posture(mode: int) -> str:
     return "unknown"
 
 
+# unitree_mujoco modes that the ros2 map leaves unknown. Mode 0 is unset there.
+_MUJOCO_MODE_POSTURE = {
+    1: "standing",
+    2: "walking",
+    6: "sitting",
+    7: "lying",
+}
+
+# Go2 lowcmd / lowstate motor order in unitree_mujoco (FR, FL, RR, RL).
+_GO2_MOTOR_JOINTS = (
+    "fr_hip_joint",
+    "fr_thigh_joint",
+    "fr_calf_joint",
+    "fl_hip_joint",
+    "fl_thigh_joint",
+    "fl_calf_joint",
+    "rr_hip_joint",
+    "rr_thigh_joint",
+    "rr_calf_joint",
+    "rl_hip_joint",
+    "rl_thigh_joint",
+    "rl_calf_joint",
+)
+
+
 def velocity_to_move(vel: Velocity) -> Tuple[float, float, float]:
     """Map a unified ``Velocity`` to Unitree ``SportClient.Move(vx, vy, vyaw)``."""
     return (vel.linear_x, vel.linear_y, vel.angular_z)
@@ -130,11 +155,14 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
 
     Expected keys (all optional): ``position`` [x,y,z], ``velocity`` [vx,vy,vz],
     ``yaw_speed`` (rad/s), ``imu_rpy`` [roll,pitch,yaw], ``battery`` (0..1),
-    ``joints`` [{name, position, velocity?}, …], ``error_code``, ``body_height``,
-    ``mode``, ``gait_type``, ``foot_force``, ``scan`` (a :class:`Scan`), and
-    ``pointcloud`` (body-frame xyz points synthesized into a planar scan).
-    Roll/pitch and fault fields go into ``Telemetry.custom`` only when present —
-    the SafetyGate treats missing orientation as "no fresh state".
+    ``joints`` (either ``[{name, position, velocity?}, …]`` or a name → radians
+    map), ``error_code``, ``body_height``, ``mode``, ``gait_type``, ``foot_force``,
+    ``posture``, ``scan`` (a :class:`Scan`), and ``pointcloud`` (body-frame xyz
+    points synthesized into a planar scan). Roll/pitch and fault fields go into
+    ``Telemetry.custom`` only when present — the SafetyGate treats missing
+    orientation as "no fresh state". Posture prefers an explicit label, then a
+    known sport mode (mode ``0`` is the unset MuJoCo default and is not a
+    stand), then body height, then calf angles.
     """
     pos = state.get("position") or [0.0, 0.0, 0.0]
     vel = state.get("velocity") or [0.0, 0.0, 0.0]
@@ -156,27 +184,12 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     for key in ("error_code", "body_height", "mode", "gait_type", "foot_force"):
         if key in state:
             custom[key] = state[key]
-    if "mode" in state:
-        custom["posture"] = sport_mode_to_posture(int(state["mode"]))
+    posture = _posture_label(state)
+    if posture is not None:
+        custom["posture"] = posture
     if "msg_timestamp" in state:
         custom["device_stamp"] = float(state["msg_timestamp"])
-    joints_in = state.get("joints") or []
-    joints: list[JointReading] = []
-    for item in joints_in:
-        if isinstance(item, JointReading):
-            joints.append(item)
-        elif isinstance(item, dict) and "name" in item:
-            joints.append(
-                JointReading(
-                    name=str(item["name"]),
-                    position=float(item["position"]),
-                    velocity=(
-                        float(item["velocity"])
-                        if item.get("velocity") is not None
-                        else None
-                    ),
-                )
-            )
+    joints = _joint_readings(state.get("joints"))
     scan: Optional[Scan] = state.get("scan")
     if scan is None and "pointcloud" in state:
         scan = pointcloud_to_scan(state["pointcloud"])
@@ -188,6 +201,97 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
         custom=custom,
         timestamp=time.time(),
     )
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_calf_name(name: object) -> bool:
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered.endswith("_calf_joint") or lowered.endswith("_calf")
+
+
+def _joint_readings(raw: object) -> list[JointReading]:
+    """Joints from a name → radians map or a list of readings."""
+    if isinstance(raw, dict):
+        joints: list[JointReading] = []
+        for name, position in raw.items():
+            if _is_number(position):
+                joints.append(JointReading(str(name), float(position)))
+        return joints
+    if not isinstance(raw, (list, tuple)):
+        return []
+    joints = []
+    for item in raw:
+        if isinstance(item, JointReading):
+            joints.append(item)
+        elif isinstance(item, dict) and "name" in item:
+            velocity = item.get("velocity")
+            joints.append(
+                JointReading(
+                    name=str(item["name"]),
+                    position=float(item["position"]),
+                    velocity=float(velocity) if velocity is not None else None,
+                )
+            )
+    return joints
+
+
+def _calf_positions(raw: object) -> list[float]:
+    if isinstance(raw, dict):
+        return [
+            float(value)
+            for name, value in raw.items()
+            if _is_calf_name(name) and _is_number(value)
+        ]
+    positions: list[float] = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if isinstance(item, JointReading) and _is_calf_name(item.name):
+                positions.append(float(item.position))
+            elif isinstance(item, dict) and _is_calf_name(item.get("name")):
+                position = item.get("position")
+                if _is_number(position):
+                    positions.append(float(position))
+    return positions
+
+
+def _posture_label(state: dict) -> Optional[str]:
+    """Human posture for teleop. None when the state does not say.
+
+    Mode ``0`` is the unset default on unitree_mujoco, not a measured stand.
+    Other modes use the ros2 map, then the MuJoCo map (including ``unknown``).
+    """
+    named = state.get("posture")
+    if isinstance(named, str) and named.strip():
+        return named.strip()
+    mode = state.get("mode")
+    if isinstance(mode, int) and not isinstance(mode, bool) and mode != 0:
+        label = sport_mode_to_posture(mode)
+        if label != "unknown":
+            return label
+        mujoco = _MUJOCO_MODE_POSTURE.get(mode)
+        if mujoco is not None:
+            return mujoco
+        return "unknown"
+    height = state.get("body_height")
+    # A zero height is the unset default on some simulators, not a measured lie.
+    if _is_number(height) and float(height) > 0:
+        if float(height) < 0.12:
+            return "lying"
+        if float(height) > 0.2:
+            return "standing"
+    calves = _calf_positions(state.get("joints"))
+    if calves:
+        average = sum(calves) / len(calves)
+        if average < -2.2:
+            return "lying"
+        if average > -1.6:
+            return "standing"
+    return None
 
 
 def _stamp_to_sec(stamp: object) -> Optional[float]:
@@ -368,6 +472,33 @@ class UnitreeDdsTransport(BaseTransport):
         self._connected_mono: Optional[float] = None
         self._recv_times: Deque[float] = deque()
         self._loop_timer = LoopTimer(1.0 / _READER_HZ)
+
+    @staticmethod
+    def _lowstate_to_dict(msg: object) -> dict:
+        """MuJoCo lowstate: joint name → radians, plus IMU and battery.
+
+        Battery is omitted when ``soc`` is missing or zero. Joint names follow
+        unitree_mujoco (``fl_calf_joint`` and the rest of :data:`_GO2_MOTOR_JOINTS`).
+        """
+        out: dict = {}
+        imu = getattr(msg, "imu_state", None)
+        rpy = getattr(imu, "rpy", None) if imu is not None else None
+        if rpy is not None:
+            out["imu_rpy"] = [float(v) for v in list(rpy)[:3]]
+        motors = getattr(msg, "motor_state", None)
+        if motors is not None:
+            joints: dict[str, float] = {}
+            for name, motor in zip(_GO2_MOTOR_JOINTS, list(motors)):
+                position = getattr(motor, "q", None)
+                if _is_number(position):
+                    joints[name] = float(position)
+            if joints:
+                out["joints"] = joints
+        bms = getattr(msg, "bms_state", None)
+        soc = getattr(bms, "soc", None) if bms is not None else None
+        if _is_number(soc) and float(soc) > 0:
+            out["battery"] = float(soc) / 100.0
+        return out
 
     @property
     def iface(self) -> str:
