@@ -6,14 +6,21 @@ import re
 import unittest
 from pathlib import Path
 
+# Python 3.10 has no tomllib. tomli is not a base dependency, and the L4T
+# r36.2.0 job does not install it. Skip only when neither parser imports.
 try:
     import tomllib
 except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore[no-redef]
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 
+@unittest.skipUnless(tomllib is not None, "neither tomllib nor tomli is available")
 class TestPackagingMetadata(unittest.TestCase):
     def test_project_urls_point_at_ohho_os_repo(self) -> None:
+        assert tomllib is not None
         root = Path(__file__).resolve().parents[1]
         project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
             "project"
