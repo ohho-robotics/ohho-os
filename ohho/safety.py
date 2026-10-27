@@ -68,6 +68,7 @@ from .transport import Transport, BaseTransport
 log = logging.getLogger("ohho.safety")
 
 ARM_ENV = "OHHO_ARM_HARDWARE"
+CI_FAKE_ROBOT_ENV = "OHHO_CI_FAKE_ROBOT"
 CONFIG_ENV = "OHHO_SAFETY_CONFIG"
 AUDIT_DIR_ENV = "OHHO_SAFETY_DIR"
 CI_ENV_VARS = (
@@ -390,7 +391,15 @@ def _is_loopback(iface: str) -> bool:
 
 
 def _ros2_localhost_ci(environ: Mapping[str, str]) -> bool:
-    """True when ROS 2 discovery is localhost-only on a non-zero domain (CI fake robot)."""
+    """True only when CI opts in and ROS 2 is localhost-only on a non-zero domain.
+
+    ROS discovery env vars alone never skip hardware arming. ``ROS_STATIC_PEERS``
+    blocks the bypass (fail closed).
+    """
+    if str(environ.get(CI_FAKE_ROBOT_ENV, "")).strip() != "1":
+        return False
+    if str(environ.get("ROS_STATIC_PEERS", "")).strip():
+        return False
     loc = str(environ.get("ROS_LOCALHOST_ONLY", "")).strip().lower()
     if loc in ("1", "true", "yes"):
         localhost_only = True
@@ -415,7 +424,7 @@ def requires_hardware_arming(
     transport: Transport,
     environ: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """False only for simulators, loopback DDS, and localhost-only ROS 2 CI."""
+    """False only for simulators, loopback DDS, and explicit CI fake ROS 2."""
     env = os.environ if environ is None else environ
     proto = getattr(transport, "protocol", "")
     if proto == "simulated":
@@ -1091,6 +1100,7 @@ __all__ = [
     "AUDIT_DIR_ENV",
     "AuditLog",
     "CI_ENV_VARS",
+    "CI_FAKE_ROBOT_ENV",
     "CONFIG_ENV",
     "GO2_PROFILE",
     "HARD_MAX_ANG",
