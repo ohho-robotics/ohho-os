@@ -562,6 +562,24 @@ def _cmd_nav(args) -> int:
         bot.disconnect()
 
 
+def _look_loopback_dds(transport: Optional[str]) -> bool:
+    """True for a ``dds://`` URI on loopback with a non-zero domain."""
+    if transport is None:
+        return False
+    uri = transport.strip()
+    scheme, sep, rest = uri.partition("://")
+    if not sep or scheme.lower() != "dds":
+        return False
+    from .adapters.unitree import parse_dds_address
+    from .safety import _is_loopback
+
+    try:
+        iface, domain = parse_dds_address(rest)
+    except ValueError:
+        return False
+    return domain != 0 and _is_loopback(iface)
+
+
 def _look_mock_transport_allowed(transport: Optional[str]) -> bool:
     """Whether mock VLM detections may be stored for this ``look`` transport.
 
@@ -574,22 +592,13 @@ def _look_mock_transport_allowed(transport: Optional[str]) -> bool:
     uri = transport.strip()
     if not uri:
         return False
-    scheme, sep, rest = uri.partition("://")
+    scheme, sep, _rest = uri.partition("://")
     if not sep:
         return False
     scheme = scheme.lower()
     if scheme in ("sim", "simulated"):
         return True
-    if scheme != "dds":
-        return False
-    from .adapters.unitree import parse_dds_address
-    from .safety import _is_loopback
-
-    try:
-        iface, domain = parse_dds_address(rest)
-    except ValueError:
-        return False
-    return domain != 0 and _is_loopback(iface)
+    return _look_loopback_dds(transport)
 
 
 def _cmd_look(args) -> int:
@@ -603,9 +612,9 @@ def _cmd_look(args) -> int:
     )
 
     transport = getattr(args, "transport", None)
-    fake_vlm = bool(getattr(args, "mock", False)) or (
-        os.environ.get("OHHO_MOCK_VLM") == "1"
-    )
+    mock_flag = bool(getattr(args, "mock", False))
+    env_mock = os.environ.get("OHHO_MOCK_VLM") == "1"
+    fake_vlm = mock_flag or env_mock
     if fake_vlm and not _look_mock_transport_allowed(transport):
         print(
             "error: mock vision is refused for transport "
@@ -616,7 +625,10 @@ def _cmd_look(args) -> int:
         return 2
 
     # The DDS stub is only for choosing the transport inside connect().
-    mock_stub = bool(getattr(args, "mock", False))
+    # ``--mock`` always stubs that window. ``OHHO_MOCK_VLM=1`` stubs an allowed
+    # loopback DDS URI too, so the fixed detections are not paired with a live
+    # camera. Other transports are left unchanged.
+    mock_stub = mock_flag or (env_mock and _look_loopback_dds(transport))
     previous_stub = os.environ.get("OHHO_STUB_DDS") if mock_stub else None
     if mock_stub:
         os.environ["OHHO_STUB_DDS"] = "1"

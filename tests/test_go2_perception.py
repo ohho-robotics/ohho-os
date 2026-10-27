@@ -577,13 +577,47 @@ class TestCliGo2LookCommand(unittest.TestCase):
             mock.patch("ohho.cli._connect", side_effect=stop) as connect,
         ):
             code = main(["look", "omnibot", "--transport", "sim://"])
-        self.assertEqual(code, 2)
-        connect.assert_called_once()
+            self.assertEqual(code, 2)
+            connect.assert_called_once()
 
         with mock.patch("ohho.cli._connect", side_effect=stop) as connect:
             code = main(["look", "unitree-go2", "--transport", "dds://eth0"])
         self.assertEqual(code, 2)
         connect.assert_called_once()
+
+    def test_cli_look_env_mock_stubs_loopback_dds(self):
+        """OHHO_MOCK_VLM=1 on loopback DDS uses the stub only during connect."""
+        seen = {}
+
+        def spy(_args):
+            seen["stub"] = os.environ.get("OHHO_STUB_DDS")
+            raise RuntimeError("stop after connect")
+
+        previous = os.environ.pop("OHHO_STUB_DDS", None)
+        try:
+            with (
+                mock.patch.dict(os.environ, {"OHHO_MOCK_VLM": "1"}, clear=False),
+                mock.patch("ohho.cli._connect", side_effect=spy),
+            ):
+                code = main(["look", "unitree-go2", "--transport", "dds://lo?domain=1"])
+            self.assertEqual(code, 2)
+            self.assertEqual(seen["stub"], "1")
+            self.assertNotIn("OHHO_STUB_DDS", os.environ)
+
+            seen.clear()
+            with (
+                mock.patch.dict(os.environ, {"OHHO_MOCK_VLM": "1"}, clear=False),
+                mock.patch("ohho.cli._connect", side_effect=spy),
+            ):
+                code = main(["look", "omnibot", "--transport", "sim://"])
+            self.assertEqual(code, 2)
+            self.assertIsNone(seen["stub"])
+            self.assertNotIn("OHHO_STUB_DDS", os.environ)
+        finally:
+            if previous is None:
+                os.environ.pop("OHHO_STUB_DDS", None)
+            else:
+                os.environ["OHHO_STUB_DDS"] = previous
 
     def test_cli_look_unitree_go2_missing_sdk_clean_exit(self):
         # Without mock and without the SDK, exit code 2. Do not open DDS.
