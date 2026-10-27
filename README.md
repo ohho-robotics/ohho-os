@@ -77,7 +77,9 @@ skipped unless `OHHO_HIL=1`. The ports they use:
 | Unitree Go2 | DDS interface | `OHHO_GO2_IFACE` | `eth0` |
 
 Those adapters are not installed by `pip install ohho-os`. The extras are
-`serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds). The
+`serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds — you also
+need [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)
+from GitHub; it is not published on PyPI as `unitree_sdk2py`). The
 `ros2` extra does not pip-install `rclpy`; that module comes from a ROS 2
 distro. `train` needs torch. None of those were installed for the test
 run above.
@@ -253,6 +255,9 @@ Apache-2.0. The full text is [`LICENSE`](LICENSE).
 
 ## Releasing
 
+See [docs/RELEASING.md](docs/RELEASING.md) for PyPI trusted-publisher settings
+(owner `ohho-robotics`, repo `ohho-os`, workflow `release.yml`, environment
+`pypi`) and the TestPyPI `workflow_dispatch` dry run.
 The 1.2.0 checklist (merge order, tag, post-release checks) is
 [`docs/releases/ohho-os-1.2.0.md`](docs/releases/ohho-os-1.2.0.md).
 Do not push a `v*` tag until that checklist says to. Pushing a `v*` tag
