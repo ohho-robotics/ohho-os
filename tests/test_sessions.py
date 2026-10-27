@@ -511,7 +511,11 @@ class TestRegistry(SessionTestCase):
             [row["id"] for row in registry.list_visible("omnibot")],
             [live["id"]],
         )
-        foreign = SessionRegistry(other, token=TOKEN).list_visible("omnibot")
+        # Same frozen clock as the owner registry. This row expires an hour
+        # after NOW; the wall clock hides it once that hour has passed.
+        foreign = SessionRegistry(other, token=TOKEN, clock=clock).list_visible(
+            "omnibot"
+        )
         self.assertEqual([row["id"] for row in foreign], ["foreign"])
         self.assertNotIn(live["id"], [row["id"] for row in foreign])
         registry.end("omnibot", "sim", "local")
