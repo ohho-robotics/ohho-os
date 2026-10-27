@@ -1472,6 +1472,7 @@ class TestGatePlumbing(GateCase):
         sim._emit_telemetry(sim.read())
         self.assertTrue(bot.arm())  # simulated link: no TTY needed
         self.clock.advance(0.01)
+        bot.stand()
         bot.drive(vx=2.0)
         sim.step(1.0)
         self.assertAlmostEqual(sim.read().odom.x, 0.5, places=5)

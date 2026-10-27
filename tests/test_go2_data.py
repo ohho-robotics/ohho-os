@@ -59,7 +59,9 @@ def _go2_bot():
     spec = get_spec("unitree-go2")
     tp = SimTransport(spec)
     tp.connect()
-    return Robot(spec, tp, NativeRuntime())
+    bot = Robot(spec, tp, NativeRuntime())
+    bot.stand()
+    return bot
 
 
 def _go2_gated_bot():
@@ -70,6 +72,7 @@ def _go2_gated_bot():
     gate.connect()
     bot = Robot(spec, gate, NativeRuntime())
     bot.arm()
+    bot.stand()
     return bot
 
 

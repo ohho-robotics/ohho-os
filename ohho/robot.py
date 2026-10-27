@@ -8,7 +8,13 @@ something turns the call into a safe no-op rather than crashing).
 Flight methods (``arm_flight``, ``disarm_flight``, ``takeoff``, ``land``,
 ``rtl``, ``hold``, ``offboard_position``, ``offboard_velocity``, ``set_yaw``)
 no-op unless the spec includes ``aerial``. They are experimental: nothing has
-flown. ``drive`` is a planar base command.
+flown. Legged pose methods (``stand``, ``lie_down``, ``sit``, ``recover``,
+``set_body_pose``) act only when the spec includes ``legged.pose``. Humanoid
+methods (``prepare``, ``walk_mode``, ``damp``, ``get_up``, ``look``,
+``move_ee``, ``gripper``, ``hand``, and ``lie_down`` when ``legged.pose`` is
+absent) no-op unless the matching capability is present. ``drive`` is a planar
+base command and does not move a quadruped that is lying or sitting. A
+humanoid walks with ``drive`` and does not change posture that way.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from .adapters import resolve_transport
 from .aerial import Frame, finite_number, require_frame
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
+from .planner import agent_max_linear_speed
 from .safety import SafetyGate, resolve_config
 from .schema import Telemetry, TransportStatus, Velocity, clamp
 from .transport import Transport
@@ -121,8 +128,11 @@ class Robot:
             return self
         if not self.has(caps.BASE_HOLONOMIC):
             vy = 0.0
-        vx = clamp(vx, -self.spec.max_lin, self.spec.max_lin)
-        vy = clamp(vy, -self.spec.max_lin, self.spec.max_lin)
+        if self.has(caps.LEGGED_POSE) and not self._legged_ready_to_drive():
+            return self
+        lin_cap = agent_max_linear_speed(self)
+        vx = clamp(vx, -lin_cap, lin_cap)
+        vy = clamp(vy, -lin_cap, lin_cap)
         w = clamp(w, -self.spec.max_ang, self.spec.max_ang)
         self._t.send_velocity(Velocity(vx, vy, w))
         return self
@@ -189,10 +199,6 @@ class Robot:
         """Get-up recovery. No-op without ``humanoid.posture``."""
         return humanoid.get_up(self)
 
-    def lie_down(self) -> "Robot":
-        """Lie-down recovery. No-op without ``humanoid.posture``."""
-        return humanoid.lie_down(self)
-
     def look(self, pitch: float, yaw: float) -> "Robot":
         """Point the head, radians. No-op without ``head.gaze``."""
         return humanoid.look(self, pitch, yaw)
@@ -208,6 +214,73 @@ class Robot:
     def hand(self, side: str, fingers: Iterable[float]) -> "Robot":
         """Command one dexterous hand. No-op without ``end_effector.dex_hand``."""
         return humanoid.hand(self, side, fingers)
+
+    # ── legged pose (SafetyGate / sim sport_command only — OHH-127) ───────────
+    def stand(self) -> bool:
+        """Stand up (quadruped). No-op when ``legged.pose`` is absent."""
+        return self._legged_action("stand_up")
+
+    def lie_down(self):
+        """Lie down.
+
+        With ``legged.pose`` this is the quadruped ``stand_down`` and returns
+        whether the action was sent. Otherwise it is the humanoid lie-down
+        recovery (a no-op that returns self when ``humanoid.posture`` is absent).
+        """
+        if self.has(caps.LEGGED_POSE):
+            return self._legged_action("stand_down")
+        return humanoid.lie_down(self)
+
+    def sit(self) -> bool:
+        return self._legged_action("sit")
+
+    def recover(self) -> bool:
+        return self._legged_action("recovery_stand")
+
+    def set_body_pose(
+        self, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0
+    ) -> bool:
+        """Set body orientation (radians), clamped to the safety euler limit."""
+        if not self.has(caps.LEGGED_POSE):
+            return False
+        from .safety import EULER_LIMIT_RAD
+
+        lim = EULER_LIMIT_RAD
+        r = clamp(float(roll), -lim, lim)
+        p = clamp(float(pitch), -lim, lim)
+        y = clamp(float(yaw), -lim, lim)
+        return self._legged_action("euler", r, p, y)
+
+    def legged_posture(self) -> str:
+        """Simulator / telemetry hint: ``standing``, ``lying``, ``sitting``, or ``unknown``."""
+        if not self.has(caps.LEGGED_POSE):
+            return "n/a"
+        inner = getattr(self._t, "_inner", self._t)
+        getter = getattr(inner, "legged_posture", None)
+        if callable(getter):
+            return str(getter())
+        custom = self._t.read().custom or {}
+        return str(custom.get("legged_posture", "unknown"))
+
+    def _legged_ready_to_drive(self) -> bool:
+        if not self.has(caps.LEGGED_POSE):
+            return True
+        return self.legged_posture() in ("standing", "unknown")
+
+    def _legged_action(self, action: str, *args: float) -> bool:
+        if not self.has(caps.LEGGED_POSE):
+            return False
+        gate = self._t
+        if isinstance(gate, SafetyGate):
+            return bool(gate.command(action, *args))
+        cmd = getattr(gate, "command", None)
+        if callable(cmd):
+            return bool(cmd(action, *args))
+        sport = getattr(gate, "sport_command", None)
+        if callable(sport):
+            sport(action, *args)
+            return True
+        return False
 
     # ── flight (experimental: nothing has flown) ─────────────────────────────
     def _dispatch_flight(
