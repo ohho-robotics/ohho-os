@@ -29,6 +29,7 @@ from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
     BASE_ACTIONS,
+    CI_FAKE_ROBOT_ENV,
     GO2_ACTIONS,
     GO2_PROFILE,
     HUMANOID_ACTIONS,
@@ -1254,26 +1255,67 @@ class TestArming(GateCase):
 
     def test_ros2_arming_localhost_domain_rules(self):
         ros2 = FakeTransport("ros2")
-        base = {
+        serial = FakeTransport("serial")
+        bypass_env = {
+            CI_FAKE_ROBOT_ENV: "1",
             "ROS_LOCALHOST_ONLY": "1",
             "ROS_DOMAIN_ID": "199",
         }
-        with mock.patch.dict(os.environ, base, clear=False):
+
+        # ROS localhost vars without explicit CI opt-in -> arming required
+        with mock.patch.dict(
+            os.environ,
+            {"ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "199"},
+            clear=True,
+        ):
+            self.assertTrue(requires_hardware_arming(ros2))
+
+        # Opt-in + localhost + non-zero domain -> bypass (ros2 only)
+        with mock.patch.dict(os.environ, bypass_env, clear=True):
             self.assertFalse(requires_hardware_arming(ros2))
         with mock.patch.dict(
             os.environ,
-            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_DOMAIN_ID": "199"},
-            clear=False,
+            {
+                CI_FAKE_ROBOT_ENV: "1",
+                "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+                "ROS_DOMAIN_ID": "199",
+            },
+            clear=True,
         ):
             self.assertFalse(requires_hardware_arming(ros2))
+
+        # Opt-in but domain 0 -> arming required
         with mock.patch.dict(
-            os.environ, {"ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "0"}
+            os.environ,
+            {CI_FAKE_ROBOT_ENV: "1", "ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "0"},
+            clear=True,
         ):
             self.assertTrue(requires_hardware_arming(ros2))
-        with mock.patch.dict(os.environ, {"ROS_DOMAIN_ID": "199"}, clear=False):
-            os.environ.pop("ROS_LOCALHOST_ONLY", None)
-            os.environ.pop("ROS_AUTOMATIC_DISCOVERY_RANGE", None)
+
+        # Opt-in with static peers -> arming required
+        with mock.patch.dict(
+            os.environ,
+            {
+                **bypass_env,
+                "ROS_STATIC_PEERS": "192.168.1.10",
+            },
+            clear=True,
+        ):
             self.assertTrue(requires_hardware_arming(ros2))
+
+        # Opt-in value must be exactly "1"
+        for bad in ("0", "false", ""):
+            with mock.patch.dict(
+                os.environ,
+                {**bypass_env, CI_FAKE_ROBOT_ENV: bad},
+                clear=True,
+            ):
+                self.assertTrue(requires_hardware_arming(ros2))
+
+        # Non-loopback transport: env must not bypass serial/dds
+        with mock.patch.dict(os.environ, bypass_env, clear=True):
+            self.assertTrue(requires_hardware_arming(serial))
+            self.assertTrue(requires_hardware_arming(FakeGo2("eth0", 1)))
 
     def test_loopback_sim_arms_without_tty(self):
         self.tty = False
