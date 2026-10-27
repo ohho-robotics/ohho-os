@@ -1,7 +1,5 @@
 # OhhO OS
 
-# OhhO OS
-
 **Engine:** [ohho-os](https://github.com/ohho-robotics/ohho-os) · **Client SDK:** [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk)
 
 Python package `ohho-os` (import `ohho`), version 1.2.0.
@@ -94,7 +92,9 @@ skipped unless `OHHO_HIL=1`. The ports they use:
 | Unitree Go2 | DDS interface | `OHHO_GO2_IFACE` | `eth0` |
 
 Those adapters are not installed by `pip install ohho-os`. The extras are
-`serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds). The
+`serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds — you also
+need [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)
+from GitHub; it is not published on PyPI as `unitree_sdk2py`). The
 `ros2` extra does not pip-install `rclpy`; that module comes from a ROS 2
 distro. `train` needs torch. None of those were installed for the test
 run above.
