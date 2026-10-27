@@ -19,6 +19,7 @@ import time
 from typing import Callable, Optional, Tuple
 
 from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
+from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
@@ -30,6 +31,8 @@ from ..schema import (
 )
 from ..transport import BaseTransport
 from .errors import AdapterUnavailable
+
+_READER_HZ = 20.0
 
 
 # ── pure, testable protocol mapping ────────────────────────────────────────────
@@ -133,6 +136,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._thread: Optional[threading.Thread] = None
         self._lidar_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
     @property
     def iface(self) -> str:
@@ -288,19 +292,34 @@ class UnitreeDdsTransport(BaseTransport):
         )
 
     # ── reader thread ─────────────────────────────────────────────────────────
-    def _start_reader(self, hz: float = 20.0) -> None:
+    def loop_stats(self) -> LoopStats:
+        """Timing of the state reader thread."""
+        return self._loop_timer.stats()
+
+    def _start_reader(self, hz: float = _READER_HZ) -> None:
         if self._thread is not None:
             return
-        self._stop.clear()
         period = 1.0 / hz
+        if self._loop_timer.period_s != period:
+            self._loop_timer = LoopTimer(period)
+        self._stop.clear()
+        timer = self._loop_timer
 
         def loop() -> None:
+            timer.start()
             while not self._stop.is_set():
-                if self._state_getter is not None:
-                    state = self._state_getter()
-                    if state is not None:
-                        self._on_state(state)
-                time.sleep(period)
+                timer.begin()
+                try:
+                    if self._state_getter is not None:
+                        state = self._state_getter()
+                        if state is not None:
+                            self._on_state(state)
+                finally:
+                    delay = timer.end()
+                if self._stop.is_set():
+                    return
+                if delay > 0.0 and self._stop.wait(delay):
+                    return
 
         self._thread = threading.Thread(
             target=loop, name="ohho-unitree-rx", daemon=True
