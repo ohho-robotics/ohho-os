@@ -548,7 +548,10 @@ class UnitreeDdsTransport(BaseTransport):
     def _on_state(self, state: dict) -> None:
         """Bridge a merged state dict to telemetry and emit."""
         self._latest = self._attach_lidar_scan(sportstate_to_telemetry(state))
-        self._odom_received = True
+        # Low-only merges omit position. sport_message_to_dict uses [] when the
+        # sample has none. A real pose, including the origin, is a non-empty list.
+        if state.get("position"):
+            self._odom_received = True
         self._emit_telemetry(self._latest)
 
     def _on_lowstate(self, state: dict) -> None:

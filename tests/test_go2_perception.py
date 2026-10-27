@@ -487,6 +487,103 @@ class TestCliGo2LookCommand(unittest.TestCase):
             self.assertIsNotNone(chair)
             self.assertIsNotNone(table)
             self.assertGreater(chair.attrs["confidence"], 0.8)
+            self.assertEqual(os.environ.get("OHHO_STUB_DDS"), "1")
+
+    def test_cli_look_mock_scopes_dds_stub_to_connect(self):
+        seen = {}
+
+        def spy(_args):
+            seen["stub"] = os.environ.get("OHHO_STUB_DDS")
+            raise RuntimeError("stop after connect")
+
+        previous = os.environ.pop("OHHO_STUB_DDS", None)
+        try:
+            with mock.patch("ohho.cli._connect", side_effect=spy):
+                code = main(["look", "omnibot", "--transport", "sim://", "--mock"])
+            self.assertEqual(code, 2)
+            self.assertEqual(seen["stub"], "1")
+            self.assertNotIn("OHHO_STUB_DDS", os.environ)
+
+            os.environ["OHHO_STUB_DDS"] = "0"
+            with mock.patch("ohho.cli._connect", side_effect=spy):
+                code = main(["look", "omnibot", "--transport", "sim://"])
+            self.assertEqual(code, 2)
+            self.assertEqual(seen["stub"], "0")
+            self.assertEqual(os.environ.get("OHHO_STUB_DDS"), "0")
+        finally:
+            if previous is None:
+                os.environ.pop("OHHO_STUB_DDS", None)
+            else:
+                os.environ["OHHO_STUB_DDS"] = previous
+
+    def test_cli_look_mock_refuses_unsafe_transport(self):
+        refused = [
+            ["look", "unitree-go2", "--transport", "dds://eth0", "--mock"],
+            ["look", "unitree-go2", "--transport", "dds://eth0?domain=1", "--mock"],
+            ["look", "unitree-go2", "--transport", "dds://lo", "--mock"],
+            ["look", "unitree-go2", "--transport", "dds://lo?domain=0", "--mock"],
+            ["look", "unitree-go2", "--transport", "dds://lo?domain=nope", "--mock"],
+            ["look", "omnibot", "--transport", "serial:///dev/ttyUSB0", "--mock"],
+            ["look", "omnibot", "--transport", "ros2://", "--mock"],
+        ]
+        previous = os.environ.pop("OHHO_STUB_DDS", None)
+        try:
+            for argv in refused:
+                with mock.patch("ohho.cli.Robot.connect") as connect:
+                    code = main(argv)
+                self.assertEqual(code, 2, argv)
+                connect.assert_not_called()
+                self.assertNotIn("OHHO_STUB_DDS", os.environ)
+        finally:
+            if previous is None:
+                os.environ.pop("OHHO_STUB_DDS", None)
+            else:
+                os.environ["OHHO_STUB_DDS"] = previous
+
+        with (
+            mock.patch.dict(os.environ, {"OHHO_MOCK_VLM": "1"}, clear=False),
+            mock.patch("ohho.cli.Robot.connect") as connect,
+        ):
+            code = main(["look", "unitree-go2", "--transport", "dds://eth0"])
+        self.assertEqual(code, 2)
+        connect.assert_not_called()
+
+    def test_cli_look_mock_allows_sim_and_loopback_stub(self):
+        allowed = [
+            ["look", "omnibot", "--mock"],
+            ["look", "omnibot", "--transport", "sim://", "--mock"],
+            ["look", "unitree-go2", "--transport", "dds://", "--mock"],
+            ["look", "unitree-go2", "--transport", "dds://lo?domain=1", "--mock"],
+            [
+                "look",
+                "unitree-go2",
+                "--transport",
+                "dds://127.0.0.1?domain=2",
+                "--mock",
+            ],
+        ]
+
+        def stop(_args):
+            raise RuntimeError("stop after connect")
+
+        for argv in allowed:
+            with mock.patch("ohho.cli._connect", side_effect=stop) as connect:
+                code = main(argv)
+            self.assertEqual(code, 2, argv)
+            connect.assert_called_once()
+
+        with (
+            mock.patch.dict(os.environ, {"OHHO_MOCK_VLM": "1"}, clear=False),
+            mock.patch("ohho.cli._connect", side_effect=stop) as connect,
+        ):
+            code = main(["look", "omnibot", "--transport", "sim://"])
+        self.assertEqual(code, 2)
+        connect.assert_called_once()
+
+        with mock.patch("ohho.cli._connect", side_effect=stop) as connect:
+            code = main(["look", "unitree-go2", "--transport", "dds://eth0"])
+        self.assertEqual(code, 2)
+        connect.assert_called_once()
 
     def test_cli_look_unitree_go2_missing_sdk_clean_exit(self):
         # Without mock and without the SDK, exit code 2. Do not open DDS.

@@ -484,6 +484,36 @@ def _cmd_nav(args) -> int:
         bot.disconnect()
 
 
+def _look_mock_transport_allowed(transport: Optional[str]) -> bool:
+    """Whether mock VLM detections may be stored for this ``look`` transport.
+
+    An omitted transport and ``sim://`` stay in simulation. A DDS URI is allowed
+    only on a loopback interface with a non-zero domain. Any other transport can
+    reach a real robot, so fixed detections must not be written to its memory.
+    """
+    if transport is None:
+        return True
+    uri = transport.strip()
+    if not uri:
+        return False
+    scheme, sep, rest = uri.partition("://")
+    if not sep:
+        return False
+    scheme = scheme.lower()
+    if scheme in ("sim", "simulated"):
+        return True
+    if scheme != "dds":
+        return False
+    from .adapters.unitree import parse_dds_address
+    from .safety import _is_loopback
+
+    try:
+        iface, domain = parse_dds_address(rest)
+    except ValueError:
+        return False
+    return domain != 0 and _is_loopback(iface)
+
+
 def _cmd_look(args) -> int:
     from .memory import SpatialMemory, default_memory_path
     from .perception import (
@@ -494,11 +524,34 @@ def _cmd_look(args) -> int:
         remember_detections,
     )
 
-    if getattr(args, "mock", False):
+    transport = getattr(args, "transport", None)
+    fake_vlm = bool(getattr(args, "mock", False)) or (
+        os.environ.get("OHHO_MOCK_VLM") == "1"
+    )
+    if fake_vlm and not _look_mock_transport_allowed(transport):
+        print(
+            "error: mock vision is refused for transport "
+            f"{transport!r}; use the default, sim://, or a loopback "
+            "DDS URI on a non-zero domain",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The DDS stub is only for choosing the transport inside connect().
+    mock_stub = bool(getattr(args, "mock", False))
+    previous_stub = os.environ.get("OHHO_STUB_DDS") if mock_stub else None
+    if mock_stub:
         os.environ["OHHO_STUB_DDS"] = "1"
 
     try:
-        bot = _connect(args)
+        try:
+            bot = _connect(args)
+        finally:
+            if mock_stub:
+                if previous_stub is None:
+                    os.environ.pop("OHHO_STUB_DDS", None)
+                else:
+                    os.environ["OHHO_STUB_DDS"] = previous_stub
     except (UnknownRobot, AdapterUnavailable) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -1144,7 +1197,10 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument(
         "--mock",
         action="store_true",
-        help="use synthetic camera frame and mock VLM detections",
+        help=(
+            "use synthetic camera frames and mock VLM detections "
+            "(default transport, sim://, or loopback DDS on a non-zero domain)"
+        ),
     )
     lk.set_defaults(func=_cmd_look)
 
