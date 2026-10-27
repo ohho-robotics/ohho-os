@@ -61,7 +61,7 @@ def available_adapters() -> list[str]:
         out.append("serial")
     if importlib.util.find_spec("lerobot") is not None:
         out.append("feetech")
-    if importlib.util.find_spec("cyclonedds") is not None:
+    if importlib.util.find_spec("unitree_sdk2py") is not None:
         out.append("dds")
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
@@ -121,7 +121,8 @@ def resolve_transport(
       ``manipulation`` capability, ``<port>`` may be ``base_port,arm_port`` and
       a composite (Yahboom base + Feetech arm) is returned.
     - ``uri="feetech://<port>"`` → Feetech arm adapter (arm only).
-    - ``uri="dds://<iface>"`` → Unitree DDS adapter.
+    - ``uri="dds://<iface>?domain=<n>"`` → Unitree DDS adapter (defaults
+      ``dds://lo?domain=1`` for local simulators such as unitree_mujoco).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
     - a scheme a plugin registered → that plugin's factory.

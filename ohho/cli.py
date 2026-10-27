@@ -127,6 +127,16 @@ def _cmd_connect(args) -> int:
             )
         if t and t.battery is not None:
             print(f"  battery: {t.battery * 100:.0f}%")
+        if t and t.joints:
+            sample = t.joints[:4]
+            parts = ", ".join(f"{j.name}={j.position:.3f}" for j in sample)
+            extra = f" … +{len(t.joints) - 4} more" if len(t.joints) > 4 else ""
+            print(f"  joints : {parts}{extra}")
+        if t and ("roll" in t.custom or "pitch" in t.custom):
+            print(
+                f"  imu    : roll={t.custom.get('roll', 0):.3f} "
+                f"pitch={t.custom.get('pitch', 0):.3f}"
+            )
     finally:
         bot.disconnect()
     return 0
