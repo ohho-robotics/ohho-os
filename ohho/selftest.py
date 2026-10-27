@@ -552,7 +552,7 @@ def check_camera_frames(
     # Hardware check via OpenCV
     try:
         import cv2  # type: ignore
-    except (ImportError, Exception):
+    except Exception:
         dur = time.monotonic() - start_t
         return CheckResult(
             name="camera_frames",

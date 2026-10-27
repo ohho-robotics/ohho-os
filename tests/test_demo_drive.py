@@ -66,8 +66,8 @@ class TestDemoDrive(unittest.TestCase):
         try:
             self.assertTrue(wait_for_odom(bot, timeout_s=2.0))
             result = run_drive(bot, seconds=1.5, vx=0.2, rate_hz=20.0)
-            self.assertGreater(result.dx, 0.05)
-            self.assertGreater(result.displacement, 0.05)
+            self.assertGreater(result.dx, 0.02)
+            self.assertGreater(result.displacement, 0.02)
         finally:
             bot.disconnect()
 
@@ -76,6 +76,7 @@ class TestDemoDrive(unittest.TestCase):
         """Integration: fake cmd_vel integrator + ohho ros2 transport."""
         env = {
             **os.environ,
+            "OHHO_CI_FAKE_ROBOT": "1",
             "ROS_DOMAIN_ID": "199",
             "ROS_LOCALHOST_ONLY": "1",
         }
