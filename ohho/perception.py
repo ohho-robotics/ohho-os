@@ -319,6 +319,26 @@ def parse_vlm_detections(text: str) -> List[Detection]:
     return out
 
 
+def _range_from_scan(scan, bearing: float, fallback: float) -> float:
+    """Distance on a planar ``Scan`` at ``bearing`` (robot frame), else ``fallback``.
+
+    Rays stored at ``range_max`` are empty, so the camera fixed-range assumption
+    stays. This is the one range source shared with lidar ``pointcloud_to_scan``.
+    """
+    ranges = getattr(scan, "ranges", None)
+    if not ranges:
+        return fallback
+    inc = float(getattr(scan, "angle_increment", 0.0) or 0.0)
+    if inc == 0.0:
+        return fallback
+    idx = int(round((bearing - float(getattr(scan, "angle_min", 0.0))) / inc))
+    rng = float(ranges[idx % len(ranges)])
+    range_max = float(getattr(scan, "range_max", rng))
+    if rng >= range_max - 1e-3:
+        return fallback
+    return rng
+
+
 def project_detection(
     detection: Detection,
     odom,
@@ -326,6 +346,7 @@ def project_detection(
     fov: float = math.radians(90),
     fixed_range: float = 1.5,
     default_image_x: float = 0.5,
+    scan=None,
 ) -> Detection:
     """Project a camera detection into world coordinates using robot odometry.
 
@@ -336,14 +357,17 @@ def project_detection(
         world_x = odom.x + range * cos(world_heading)
         world_y = odom.y + range * sin(world_heading)
 
-    If the detection already has a range, that is used; otherwise ``fixed_range``
-    (default 1.5 m) is assumed.
+    If the detection already has a range, that is used. Otherwise a planar
+    ``scan`` (from ``pointcloud_to_scan``) supplies the hit distance along
+    ``bearing``, and ``fixed_range`` is the fallback when that ray is empty.
     """
     img_x = detection.image_x if detection.image_x is not None else default_image_x
     # Left of image (img_x < 0.5) is positive angle (counter-clockwise / +y)
     bearing = (0.5 - img_x) * fov
     bearing = _wrap(bearing)
     rng = detection.range if detection.range is not None else fixed_range
+    if detection.range is None and scan is not None:
+        rng = _range_from_scan(scan, bearing, rng)
 
     px = getattr(odom, "x", 0.0)
     py = getattr(odom, "y", 0.0)
@@ -371,6 +395,7 @@ def project_detections(
     fov: float = math.radians(90),
     fixed_range: float = 1.5,
     default_image_x: float = 0.5,
+    scan=None,
 ) -> List[Detection]:
     """Project a list of camera detections into world coordinates."""
     return [
@@ -380,6 +405,7 @@ def project_detections(
             fov=fov,
             fixed_range=fixed_range,
             default_image_x=default_image_x,
+            scan=scan,
         )
         for d in detections
     ]
@@ -390,7 +416,8 @@ class CameraPerceptor:
 
     Pulls frames from ``robot.get_camera_frame()``, feeds them to :class:`VlmPerceptor`,
     computes bearing from normalized image x, and projects detections into world
-    coordinates using the robot's current odometry under a fixed-range assumption.
+    coordinates. Range comes from ``Telemetry.scan`` when the transport published
+    one (lidar ``pointcloud_to_scan``), otherwise from ``fixed_range``.
     """
 
     def __init__(
@@ -421,6 +448,7 @@ class CameraPerceptor:
                 t.odom,
                 fov=self.fov,
                 fixed_range=self.fixed_range,
+                scan=t.scan,
             )
         return raw
 

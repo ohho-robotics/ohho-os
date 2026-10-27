@@ -11,13 +11,11 @@ polls the sport client's state at ~20 Hz and feeds ``_on_state``, which maps the
 raw message to ``Telemetry`` and emits it. A ``state_factory`` can be injected for
 tests (returns a callable that yields state dicts — no DDS, no hardware).
 
-Front-camera frames (OHH-125):
-``get_camera_frame() -> bytes | None`` retrieves front-camera frames (typically JPEG).
-On real Go2 hardware, frames stream via ``unitree_sdk2py.go2.video.video_client.VideoClient``
-over DDS. In MuJoCo simulation (e.g. ``dds://lo?domain=1`` or unitree_mujoco), head-camera
-frames are rendered offscreen into image buffers or published over a sim-only topic or
-local socket rather than the hardware VideoClient. For tests and simulation bridges,
-an injectable ``frame_factory`` or ``OHHO_STUB_DDS=1`` loopback stub is supported.
+Front-camera frames (OHH-125) come from ``get_camera_frame()``. On hardware that
+is ``VideoClient``; tests and sim inject ``frame_factory`` or ``OHHO_STUB_DDS=1``
+on a non-zero domain. Planar lidar scans are published on ``Telemetry.scan``
+from the point cloud (``pointcloud_factory`` or the lidar DDS topic) on the
+same transport.
 """
 
 from __future__ import annotations
@@ -27,9 +25,17 @@ import threading
 import time
 from typing import Callable, Optional, Tuple
 
+from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
-from ..schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
+from ..schema import (
+    ConnectionState,
+    Odometry,
+    Scan,
+    Telemetry,
+    TransportStatus,
+    Velocity,
+)
 from ..transport import BaseTransport
 from .errors import AdapterUnavailable
 
@@ -71,7 +77,10 @@ def sportstate_to_telemetry(state: dict) -> Telemetry:
     for key in ("error_code", "body_height", "mode"):
         if key in state:
             custom[key] = state[key]
-    return Telemetry(odom=odom, battery=state.get("battery"), custom=custom)
+    scan: Optional[Scan] = state.get("scan")
+    if scan is None and "pointcloud" in state:
+        scan = pointcloud_to_scan(state["pointcloud"])
+    return Telemetry(odom=odom, battery=state.get("battery"), scan=scan, custom=custom)
 
 
 # Sport-mode actions this adapter can forward (snake_case → SportClient method).
@@ -92,6 +101,7 @@ _SPORT_WHILE_ESTOPPED = frozenset({"stop_move", "damp"})
 
 StateFactory = Callable[[], Callable[[], Optional[dict]]]
 FrameFactory = Callable[[], Callable[[], Optional[bytes]]]
+PointCloudFactory = Callable[[], Optional[object]]
 
 
 class UnitreeDdsTransport(BaseTransport):
@@ -105,6 +115,7 @@ class UnitreeDdsTransport(BaseTransport):
         iface: str = "",
         state_factory: Optional[StateFactory] = None,
         frame_factory: Optional[FrameFactory] = None,
+        pointcloud_factory: Optional[PointCloudFactory] = None,
     ) -> None:
         super().__init__()
         self.spec = spec
@@ -123,15 +134,19 @@ class UnitreeDdsTransport(BaseTransport):
         self._iface = iface
         self._state_factory = state_factory
         self._frame_factory = frame_factory
+        self._pointcloud_factory = pointcloud_factory
         self._client: Optional[object] = None
         self._video_client: Optional[object] = None
         self._state_getter: Optional[Callable[[], Optional[dict]]] = None
         self._frame_getter: Optional[Callable[[], Optional[bytes]]] = None
+        self._lidar_sub: Optional[object] = None
         self._latest = Telemetry(odom=Odometry())
+        self._lidar_scan: Optional[Scan] = None
         self._estopped = False
         self._state = ConnectionState.IDLE
         self._connected_since: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
+        self._lidar_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
@@ -151,12 +166,13 @@ class UnitreeDdsTransport(BaseTransport):
         self._state = ConnectionState.CONNECTED
         self._connected_since = time.time()
         self._start_reader()
+        self._start_lidar_reader()
         s = self.status()
         self._emit_status(s)
         return s
 
     def _connect_dds(self) -> None:
-        # Loopback stub mode on non-zero domain (e.g. dds://lo?domain=1 with OHHO_STUB_DDS=1)
+        # Loopback stub on a non-zero domain only. Domain 0 stays real hardware.
         if os.environ.get("OHHO_STUB_DDS") == "1" and self.domain_id != 0:
             self._state_getter = lambda: {
                 "position": [1.0, 2.0, 0.0],
@@ -196,7 +212,6 @@ class UnitreeDdsTransport(BaseTransport):
         client.Init()
         self._client = client
         self._state_getter = self._make_sport_state_getter(client)
-
         try:
             from unitree_sdk2py.go2.video.video_client import VideoClient  # type: ignore
 
@@ -206,8 +221,23 @@ class UnitreeDdsTransport(BaseTransport):
             self._frame_getter = self._make_video_frame_getter(vclient)
         except Exception:
             self._video_client = None
-            if self._frame_getter is None:
-                self._frame_getter = None
+        self._connect_lidar_sub()
+
+    def _connect_lidar_sub(self) -> None:
+        """Subscribe to Go2 / sim DDS lidar (no-op when SDK or topic unavailable)."""
+        if self._pointcloud_factory is not None:
+            return
+        try:
+            from unitree_sdk2py.core.channel import ChannelSubscriber  # type: ignore
+            from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_  # type: ignore
+
+            from ..lidar import lidar_dds_topic
+
+            sub = ChannelSubscriber(lidar_dds_topic(), PointCloud2_)
+            sub.Init()
+            self._lidar_sub = sub
+        except Exception:
+            self._lidar_sub = None
 
     def _make_sport_state_getter(self, client: object) -> Callable[[], Optional[dict]]:
         """Build a callable that polls the SportClient for a state dict.
@@ -249,13 +279,47 @@ class UnitreeDdsTransport(BaseTransport):
                 d[key] = getattr(msg, key)
         return d
 
+    def _attach_lidar_scan(self, telem: Telemetry) -> Telemetry:
+        if self._lidar_scan is None:
+            return telem
+        return Telemetry(
+            odom=telem.odom,
+            joints=telem.joints,
+            battery=telem.battery,
+            scan=self._lidar_scan,
+            custom=telem.custom,
+            timestamp=telem.timestamp,
+        )
+
     def _on_state(self, state: dict) -> None:
         """Bridge a state dict to telemetry and emit."""
-        self._latest = sportstate_to_telemetry(state)
+        self._latest = self._attach_lidar_scan(sportstate_to_telemetry(state))
+        self._emit_telemetry(self._latest)
+
+    def _on_lidar(self, cloud: object) -> None:
+        """Decode a point cloud message and refresh ``Telemetry.scan``."""
+        try:
+            if isinstance(cloud, (list, tuple)):
+                self._lidar_scan = pointcloud_to_scan(cloud)
+            else:
+                self._lidar_scan = pointcloud2_to_scan(cloud)
+        except Exception:
+            return
+        self._latest = self._attach_lidar_scan(self._latest)
         self._emit_telemetry(self._latest)
 
     def disconnect(self) -> None:
         self._stop_reader()
+        self._stop_lidar_reader()
+        sub = self._lidar_sub
+        if sub is not None:
+            close = getattr(sub, "Close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+            self._lidar_sub = None
         if self._client is not None:
             stop = getattr(self._client, "StopMove", None)
             if callable(stop):
@@ -315,6 +379,41 @@ class UnitreeDdsTransport(BaseTransport):
         if t is not None:
             t.join(timeout=1.0)
             self._thread = None
+
+    def _start_lidar_reader(self, hz: float = 10.0) -> None:
+        if self._lidar_thread is not None:
+            return
+        if self._pointcloud_factory is None and self._lidar_sub is None:
+            return
+        period = 1.0 / hz
+
+        def loop() -> None:
+            while not self._stop.is_set():
+                if self._pointcloud_factory is not None:
+                    cloud = self._pointcloud_factory()
+                    if cloud is not None:
+                        self._on_lidar(cloud)
+                elif self._lidar_sub is not None:
+                    read = getattr(self._lidar_sub, "Read", None)
+                    if callable(read):
+                        try:
+                            msg = read(timeout=period)
+                        except TypeError:
+                            msg = read()
+                        if msg is not None:
+                            self._on_lidar(msg)
+                time.sleep(period)
+
+        self._lidar_thread = threading.Thread(
+            target=loop, name="ohho-unitree-lidar", daemon=True
+        )
+        self._lidar_thread.start()
+
+    def _stop_lidar_reader(self) -> None:
+        t = self._lidar_thread
+        if t is not None:
+            t.join(timeout=1.0)
+            self._lidar_thread = None
 
     # ── commands / telemetry ──────────────────────────────────────────────────
     def read(self) -> Telemetry:
@@ -391,20 +490,11 @@ class UnitreeDdsTransport(BaseTransport):
         return getter
 
     def get_camera_frame(self) -> Optional[bytes]:
-        """Fetch a single front-camera frame as compressed bytes (typically JPEG).
+        """Fetch one front-camera frame (typically JPEG), or None.
 
-        Returns None if no camera is available or no frame could be fetched.
-
-        Sim vs Real Go2 Camera:
-            - **Real Go2 hardware**: Frames stream from the front camera via
-              ``unitree_sdk2py.go2.video.video_client.VideoClient`` over DDS
-              (H.264 decoded to JPEG or raw sample buffer).
-            - **MuJoCo simulation** (e.g. ``dds://lo?domain=1`` or unitree_mujoco):
-              MuJoCo runs head-camera offscreen rendering (e.g. via an offscreen
-              camera context or sim-only ROS 2/DDS topic / local IPC socket)
-              rather than the hardware VideoClient server. In simulated/test
-              environments, provide a ``frame_factory`` or head-camera render
-              bridge to supply JPEG frames.
+        Real Go2 uses ``VideoClient`` over DDS. Sim and tests inject
+        ``frame_factory`` or the ``OHHO_STUB_DDS`` loopback. The planar scan
+        is separate and rides on ``Telemetry.scan``.
         """
         if self._frame_getter is None:
             return None

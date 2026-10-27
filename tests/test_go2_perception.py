@@ -375,6 +375,43 @@ class TestCameraPerceptorIntegration(unittest.TestCase):
         finally:
             bot.disconnect()
 
+    def test_camera_perceptor_uses_lidar_scan_range(self):
+        """A forward lidar hit replaces the fixed-range assumption."""
+        spec = get_spec("unitree-go2")
+
+        def state_factory():
+            return lambda: {
+                "position": [2.0, 1.0, 0.0],
+                "imu_rpy": [0.0, 0.0, 0.0],
+                "pointcloud": [(2.0, 0.0, 0.2)],
+            }
+
+        tp = UnitreeDdsTransport(
+            spec,
+            "lo?domain=1",
+            state_factory=state_factory,
+            frame_factory=lambda: (lambda: SYNTHETIC_JPEG),
+        )
+        bot = Robot(spec, tp, NativeRuntime())
+        tp.connect()
+        try:
+            import time as _t
+
+            _t.sleep(0.2)
+            self.assertIsNotNone(bot.telemetry().scan)
+            client = _FakeClient('[{"label": "hydrant", "confidence": 0.9, "x": 0.5}]')
+            vlm = VlmPerceptor(client=client, rate_limit_hz=100.0)
+            perceptor = CameraPerceptor(
+                bot, vlm=vlm, fov=math.radians(90), fixed_range=5.0
+            )
+            dets = perceptor.look()
+            self.assertEqual(len(dets), 1)
+            self.assertAlmostEqual(dets[0].range, 2.0, places=2)
+            self.assertAlmostEqual(dets[0].x, 4.0, places=2)
+            self.assertAlmostEqual(dets[0].y, 1.0, places=2)
+        finally:
+            bot.disconnect()
+
     def test_camera_perceptor_returns_empty_when_no_frame(self):
         spec = get_spec("unitree-go2")
         tp = UnitreeDdsTransport(

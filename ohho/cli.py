@@ -295,6 +295,7 @@ def _cmd_sim_serve(args) -> int:
         serve_sim(
             backend=args.backend,
             robot=args.robot,
+            transport=getattr(args, "transport", None),
             host=args.host,
             port=args.port,
             rosbridge=args.rosbridge,
@@ -960,10 +961,19 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument(
         "--backend",
         default="sim",
-        choices=["sim", "ros2", "isaac", "mujoco"],
-        help="simulation backend (sim, ros2, isaac, mujoco)",
+        choices=["sim", "ros2", "robot", "isaac", "mujoco"],
+        help="backend: sim, ros2, robot (Robot.connect), isaac, mujoco",
     )
-    ss.add_argument("--robot", default="omnibot", help="robot spec id for sim backend")
+    ss.add_argument(
+        "--robot",
+        default="omnibot",
+        help="robot spec id (sim or robot backend)",
+    )
+    ss.add_argument(
+        "--transport",
+        default=None,
+        help="transport URI for --backend robot (e.g. dds://lo?domain=1)",
+    )
     ss.add_argument(
         "--host", default="0.0.0.0", help="host to bind the WebSocket server"
     )
