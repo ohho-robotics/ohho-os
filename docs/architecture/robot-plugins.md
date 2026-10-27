@@ -214,12 +214,14 @@ leave both a field and a property of the same name:
 - `example.json` still loads. Built-in `max_lin` / `max_ang` are unchanged.
 - Safety caps, watchdogs, arming and the e-stop path are unchanged.
 - Plugin discovery is C-02 (`ohho/plugins.py`, group `ohho.robots`).
+  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
+  gate delegates to Ground, Arm and Legged policies, and a plugin may only
+  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
+  unchanged.
   C-03 (OHH-311) asks those plugins for a transport scheme before the scheme
   dict in `ohho/adapters/__init__.py`. The dict and its entries stay, so a
   scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
   default) selects a plugin sim backend for `sim://` and for auto; an empty
   name keeps today's simulator return. `dds://` stays the Unitree scheme.
-  Per-class `SafetyPolicy`, the robot-id resolver and the CI matrix are later
-  issues (C-05, C-06, C-08). They should follow this ADR rather than grow more
-  fields on the flat spec. `SafetyGate` profile lookup stays as it is until
-  C-05.
+  The robot-id resolver and the CI matrix remain later issues (C-06, C-08).
+  They should follow this ADR rather than grow more fields on the flat spec.

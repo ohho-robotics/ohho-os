@@ -19,6 +19,7 @@ Client JSON:
 Server JSON:
     - ``odom``: ``{"x": float, "y": float, "yaw": float}``
     - ``joints``: ``{"<joint_name>": float, ...}``
+    - ``protocolVersion``: ``ohho.PROTOCOL_VERSION``
     - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
     - ``posture`` / ``battery`` (optional, when the robot reports them)
     - ``camera``: base64 JPEG when a front-camera frame has arrived, otherwise
@@ -46,6 +47,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .protocol import PROTOCOL_VERSION
 from .schema import Telemetry
 
 # Commanded velocity is zero once this long has passed with no client message.
@@ -260,6 +262,7 @@ def build_telemetry_message(
 ) -> dict[str, Any]:
     """Server telemetry. ``camera`` and ``no_camera`` are mutually exclusive."""
     msg: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
         "odom": {
             "x": float(odom.get("x", 0.0)),
             "y": float(odom.get("y", 0.0)),

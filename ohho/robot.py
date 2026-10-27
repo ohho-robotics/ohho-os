@@ -8,7 +8,9 @@ something turns the call into a safe no-op rather than crashing).
 Flight methods (``arm_flight``, ``disarm_flight``, ``takeoff``, ``land``,
 ``rtl``, ``hold``, ``offboard_position``, ``offboard_velocity``, ``set_yaw``)
 no-op unless the spec includes ``aerial``. They are experimental: nothing has
-flown. ``drive`` is a planar base command.
+flown. Legged pose methods (``stand``, ``lie_down``, ``sit``, ``recover``,
+``set_body_pose``) no-op unless the spec includes ``legged.pose``. ``drive``
+is a planar base command and does not move a quadruped that is lying or sitting.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from .adapters import resolve_transport
 from .aerial import Frame, finite_number, require_frame
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
+from .planner import agent_max_linear_speed
 from .safety import SafetyGate, resolve_config
 from .schema import Telemetry, TransportStatus, Velocity, clamp
 from .transport import Transport
@@ -42,6 +45,7 @@ class Robot:
         *,
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
+        read_only: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -54,10 +58,14 @@ class Robot:
         ``safety_config`` is a safety config JSON path (default:
         ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
         e-stop even when standing.
+        ``read_only`` is only valid for ``dds://`` and ``unitree-dds://``. It
+        opens the Unitree link without a SportClient, so motion commands are
+        not sent. Any other transport raises
+        :class:`~ohho.adapters.errors.AdapterUnavailable`.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
-        tp = resolve_transport(transport, spec, rt)
+        tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
             tp = SafetyGate(
                 tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
@@ -117,8 +125,11 @@ class Robot:
             return self
         if not self.has(caps.BASE_HOLONOMIC):
             vy = 0.0
-        vx = clamp(vx, -self.spec.max_lin, self.spec.max_lin)
-        vy = clamp(vy, -self.spec.max_lin, self.spec.max_lin)
+        if self.has(caps.LEGGED_POSE) and not self._legged_ready_to_drive():
+            return self
+        lin_cap = agent_max_linear_speed(self)
+        vx = clamp(vx, -lin_cap, lin_cap)
+        vy = clamp(vy, -lin_cap, lin_cap)
         w = clamp(w, -self.spec.max_ang, self.spec.max_ang)
         self._t.send_velocity(Velocity(vx, vy, w))
         return self
@@ -142,6 +153,84 @@ class Robot:
     def release_stop(self) -> "Robot":
         self._t.release_stop()
         return self
+
+    # ── legged pose (one API: capability no-op, main's limits and sim behaviour) ─
+    def stand(self) -> "Robot":
+        """Stand up (quadruped). No-op unless ``legged.pose`` is supported."""
+        self._legged_action("stand_up")
+        return self
+
+    def lie_down(self) -> "Robot":
+        """Lie down / stand down. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("stand_down")
+        return self
+
+    def sit(self) -> "Robot":
+        """Sit. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("sit")
+        return self
+
+    def recover(self) -> "Robot":
+        """Recovery stand from prone. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("recovery_stand")
+        return self
+
+    def set_body_pose(
+        self, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0
+    ) -> "Robot":
+        """Set body orientation (radians), clamped to the safety euler limit.
+
+        No-op unless ``legged.pose`` is supported. The clamp is the module
+        ceiling; it is not widened.
+        """
+        if not self.has(caps.LEGGED_POSE):
+            return self
+        from .safety import EULER_LIMIT_RAD
+
+        lim = EULER_LIMIT_RAD
+        r = clamp(float(roll), -lim, lim)
+        p = clamp(float(pitch), -lim, lim)
+        y = clamp(float(yaw), -lim, lim)
+        self._legged_action("euler", r, p, y)
+        return self
+
+    def legged_posture(self) -> str:
+        """Simulator / telemetry hint: ``standing``, ``lying``, ``sitting``, or ``unknown``."""
+        if not self.has(caps.LEGGED_POSE):
+            return "n/a"
+        inner = getattr(self._t, "_inner", self._t)
+        getter = getattr(inner, "legged_posture", None)
+        if callable(getter):
+            return str(getter())
+        custom = self._t.read().custom or {}
+        return str(custom.get("legged_posture", custom.get("posture", "unknown")))
+
+    def _legged_ready_to_drive(self) -> bool:
+        if not self.has(caps.LEGGED_POSE):
+            return True
+        return self.legged_posture() in ("standing", "unknown")
+
+    def _legged_action(self, action: str, *args: float) -> bool:
+        if not self.has(caps.LEGGED_POSE):
+            return False
+        gate = self._t
+        if isinstance(gate, SafetyGate):
+            return bool(gate.command(action, *args))
+        cmd = getattr(gate, "command", None)
+        if callable(cmd):
+            return bool(cmd(action, *args))
+        sport = getattr(gate, "sport_command", None)
+        if callable(sport):
+            sport(action, *args)
+            return True
+        mode = getattr(gate, "send_mode", None)
+        if callable(mode):
+            if action == "euler" and len(args) == 3:
+                mode("euler", roll=args[0], pitch=args[1], yaw=args[2])
+            else:
+                mode(action)
+            return True
+        return False
 
     # ── flight (experimental: nothing has flown) ─────────────────────────────
     def _dispatch_flight(
@@ -335,6 +424,7 @@ def connect(
     *,
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
+    read_only: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -343,4 +433,5 @@ def connect(
         runtime=runtime,
         safety_config=safety_config,
         estop_damp=estop_damp,
+        read_only=read_only,
     )
