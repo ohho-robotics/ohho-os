@@ -4,6 +4,11 @@
 backend- and protocol-agnostic: the same calls work on any robot and either
 runtime, with capabilities gating what actually happens (a robot that can't do
 something turns the call into a safe no-op rather than crashing).
+
+Flight methods (``arm_flight``, ``disarm_flight``, ``takeoff``, ``land``,
+``rtl``, ``hold``, ``offboard_position``, ``offboard_velocity``, ``set_yaw``)
+no-op unless the spec includes ``aerial``. They are experimental: nothing has
+flown. ``drive`` is a planar base command.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from typing import Any, Iterable, Optional
 
 from . import capabilities as caps
 from .adapters import resolve_transport
+from .aerial import Frame, finite_number, require_frame
 from .config import RobotProfile, merge_safety_overrides, spec_with_overrides
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
@@ -117,8 +123,12 @@ class Robot:
 
     # ── control ───────────────────────────────────────────────────────────────
     def drive(self, vx: float = 0.0, vy: float = 0.0, w: float = 0.0) -> "Robot":
-        """Drive the base. Clamped to the robot's limits; ``vy`` ignored on
-        non-holonomic bases; a no-op if the robot can't drive."""
+        """Drive the base in the plane.
+
+        Clamped to the robot's limits. ``vy`` is ignored on non-holonomic
+        bases. No-op when the robot cannot drive. The command is vx, vy, and
+        yaw rate; vertical speed is an offboard velocity setpoint.
+        """
         if not self.has(caps.BASE_DRIVE):
             return self
         if not self.has(caps.BASE_HOLONOMIC):
@@ -148,6 +158,146 @@ class Robot:
     def release_stop(self) -> "Robot":
         self._t.release_stop()
         return self
+
+    # ── flight (experimental: nothing has flown) ─────────────────────────────
+    def _dispatch_flight(
+        self, action: str, args: tuple[object, ...], /, **fields: object
+    ) -> "Robot":
+        """Send one flight request.
+
+        No-op without ``aerial``. A SafetyGate receives ``command``; any other
+        transport must implement ``send_flight``.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        if isinstance(self._t, SafetyGate):
+            self._t.command(action, *args)
+            return self
+        send = getattr(self._t, "send_flight", None)
+        if not callable(send):
+            raise AttributeError(
+                f"{type(self._t).__name__} does not implement send_flight"
+            )
+        send(action, **fields)
+        return self
+
+    def arm_flight(self) -> "Robot":
+        """Ask the autopilot to arm the motors.
+
+        :meth:`arm` unlocks the SafetyGate. This method sends an autopilot arm
+        request and does not call :meth:`arm`, so the gate's armed state stays
+        as it was. On a gated transport the request is
+        ``SafetyGate.command("arm")``. No-op without ``aerial``.
+
+        Experimental: nothing has flown.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("arm", ())
+
+    def disarm_flight(self) -> "Robot":
+        """Ask the autopilot for a normal disarm.
+
+        The request is the action ``disarm`` with no force flag. No-op without
+        ``aerial``. Whether an airborne disarm is refused is up to the backend.
+
+        Experimental: nothing has flown.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("disarm", ())
+
+    def takeoff(self, alt_m: float) -> "Robot":
+        """Climb to ``alt_m`` metres above the local origin, then hold.
+
+        ``alt_m`` is positive up in every frame. No-op without ``aerial``.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        altitude = _positive_up("alt_m", alt_m)
+        return self._dispatch_flight("takeoff", (altitude,), alt_m=altitude)
+
+    def land(self) -> "Robot":
+        """Land at the current horizontal position. No-op without ``aerial``."""
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("land", ())
+
+    def rtl(self) -> "Robot":
+        """Ask the autopilot to return to launch. No-op without ``aerial``.
+
+        Ohho does not fly the return itself.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("rtl", ())
+
+    def hold(self) -> "Robot":
+        """Ask the autopilot to loiter. No-op without ``aerial``."""
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("hold", ())
+
+    def offboard_position(
+        self, x: float, y: float, z: float, yaw: float, frame: Frame
+    ) -> "Robot":
+        """Position setpoint. ``frame`` is required. No-op without ``aerial``.
+
+        ``z`` is forwarded in ``frame`` (down is positive in ``LOCAL_NED`` and
+        ``BODY_FRD``). This method does not rewrite one local frame as the other.
+        """
+        frame = require_frame(frame)
+        if not self.has(caps.AERIAL):
+            return self
+        x = finite_number("x", x)
+        y = finite_number("y", y)
+        z = finite_number("z", z)
+        yaw = finite_number("yaw", yaw)
+        return self._dispatch_flight(
+            "offboard_position",
+            (x, y, z, yaw, frame),
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            frame=frame,
+        )
+
+    def offboard_velocity(
+        self, vx: float, vy: float, vz: float, yaw_rate: float, frame: Frame
+    ) -> "Robot":
+        """Velocity setpoint. ``frame`` is required. No-op without ``aerial``.
+
+        ``vz`` is forwarded in ``frame``. Positive ``vz`` descends in
+        ``LOCAL_NED`` and ``BODY_FRD``.
+        """
+        frame = require_frame(frame)
+        if not self.has(caps.AERIAL):
+            return self
+        vx = finite_number("vx", vx)
+        vy = finite_number("vy", vy)
+        vz = finite_number("vz", vz)
+        yaw_rate = finite_number("yaw_rate", yaw_rate)
+        return self._dispatch_flight(
+            "offboard_velocity",
+            (vx, vy, vz, yaw_rate, frame),
+            vx=vx,
+            vy=vy,
+            vz=vz,
+            yaw_rate=yaw_rate,
+            frame=frame,
+        )
+
+    def set_yaw(self, yaw: float, frame: Frame) -> "Robot":
+        """Absolute yaw in ``frame``. ``frame`` is required.
+
+        No-op without ``aerial``.
+        """
+        frame = require_frame(frame)
+        if not self.has(caps.AERIAL):
+            return self
+        yaw = finite_number("yaw", yaw)
+        return self._dispatch_flight("set_yaw", (yaw, frame), yaw=yaw, frame=frame)
 
     # ── state ─────────────────────────────────────────────────────────────────
     def telemetry(self) -> Telemetry:
@@ -184,6 +334,14 @@ class Robot:
     def __repr__(self) -> str:
         kind = "sim" if self.simulated else self._t.protocol
         return f"<Robot {self.spec.id} via {kind} on {self._rt.name}>"
+
+
+def _positive_up(name: str, value: object) -> float:
+    """Metres, positive up. Used by :meth:`Robot.takeoff`."""
+    number = finite_number(name, value)
+    if number <= 0.0:
+        raise ValueError(f"{name} must be positive up, in metres")
+    return number
 
 
 def connect(
