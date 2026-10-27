@@ -4,6 +4,17 @@
 backend- and protocol-agnostic: the same calls work on any robot and either
 runtime, with capabilities gating what actually happens (a robot that can't do
 something turns the call into a safe no-op rather than crashing).
+
+Flight methods (``arm_flight``, ``disarm_flight``, ``takeoff``, ``land``,
+``rtl``, ``hold``, ``offboard_position``, ``offboard_velocity``, ``set_yaw``)
+no-op unless the spec includes ``aerial``. They are experimental: nothing has
+flown. Legged pose methods (``stand``, ``lie_down``, ``sit``, ``recover``,
+``set_body_pose``) act only when the spec includes ``legged.pose``. Humanoid
+methods (``prepare``, ``walk_mode``, ``damp``, ``get_up``, ``look``,
+``move_ee``, ``gripper``, ``hand``, and ``lie_down`` when ``legged.pose`` is
+absent) no-op unless the matching capability is present. ``drive`` is a planar
+base command and does not move a quadruped that is lying or sitting. A
+humanoid walks with ``drive`` and does not change posture that way.
 """
 
 from __future__ import annotations
@@ -13,8 +24,10 @@ from typing import Iterable, Optional, Union
 from . import capabilities as caps
 from . import humanoid
 from .adapters import resolve_transport
+from .aerial import Frame, finite_number, require_frame
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
+from .planner import agent_max_linear_speed
 from .safety import SafetyGate, resolve_config
 from .schema import Telemetry, TransportStatus, Velocity, clamp
 from .transport import Transport
@@ -37,6 +50,7 @@ class Robot:
         *,
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
+        read_only: bool = False,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -49,10 +63,14 @@ class Robot:
         ``safety_config`` is a safety config JSON path (default:
         ``$OHHO_SAFETY_CONFIG``); ``estop_damp`` damps the motors after an
         e-stop even when standing.
+        ``read_only`` is only valid for ``dds://`` and ``unitree-dds://``. It
+        opens the Unitree link without a SportClient, so motion commands are
+        not sent. Any other transport raises
+        :class:`~ohho.adapters.errors.AdapterUnavailable`.
         """
         spec = get_spec(robot_id)
         rt = get_runtime(runtime)
-        tp = resolve_transport(transport, spec, rt)
+        tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
             tp = SafetyGate(
                 tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
@@ -102,8 +120,11 @@ class Robot:
 
     # ── control ───────────────────────────────────────────────────────────────
     def drive(self, vx: float = 0.0, vy: float = 0.0, w: float = 0.0) -> "Robot":
-        """Drive the base. Clamped to the robot's limits; ``vy`` ignored on
-        non-holonomic bases; a no-op if the robot can't drive.
+        """Drive the base in the plane.
+
+        Clamped to the robot's limits. ``vy`` is ignored on non-holonomic
+        bases. No-op when the robot cannot drive. The command is vx, vy, and
+        yaw rate; vertical speed is an offboard velocity setpoint.
 
         A humanoid walks with this same call (``vx``, ``vy``, yaw rate). It
         does not change posture; :meth:`walk_mode` does that.
@@ -112,8 +133,11 @@ class Robot:
             return self
         if not self.has(caps.BASE_HOLONOMIC):
             vy = 0.0
-        vx = clamp(vx, -self.spec.max_lin, self.spec.max_lin)
-        vy = clamp(vy, -self.spec.max_lin, self.spec.max_lin)
+        if self.has(caps.LEGGED_POSE) and not self._legged_ready_to_drive():
+            return self
+        lin_cap = agent_max_linear_speed(self)
+        vx = clamp(vx, -lin_cap, lin_cap)
+        vy = clamp(vy, -lin_cap, lin_cap)
         w = clamp(w, -self.spec.max_ang, self.spec.max_ang)
         self._t.send_velocity(Velocity(vx, vy, w))
         return self
@@ -180,10 +204,6 @@ class Robot:
         """Get-up recovery. No-op without ``humanoid.posture``."""
         return humanoid.get_up(self)
 
-    def lie_down(self) -> "Robot":
-        """Lie-down recovery. No-op without ``humanoid.posture``."""
-        return humanoid.lie_down(self)
-
     def look(self, pitch: float, yaw: float) -> "Robot":
         """Point the head, radians. No-op without ``head.gaze``."""
         return humanoid.look(self, pitch, yaw)
@@ -199,6 +219,231 @@ class Robot:
     def hand(self, side: str, fingers: Iterable[float]) -> "Robot":
         """Command one dexterous hand. No-op without ``end_effector.dex_hand``."""
         return humanoid.hand(self, side, fingers)
+
+    # ── legged pose (chainable; humanoid lie_down when legged.pose is absent) ─
+    def stand(self) -> "Robot":
+        """Stand up (quadruped). No-op unless ``legged.pose`` is supported."""
+        self._legged_action("stand_up")
+        return self
+
+    def lie_down(self) -> "Robot":
+        """Lie down.
+
+        With ``legged.pose`` this is the quadruped ``stand_down``. Otherwise it
+        is the humanoid lie-down recovery (a no-op that returns self when
+        ``humanoid.posture`` is absent).
+        """
+        if self.has(caps.LEGGED_POSE):
+            self._legged_action("stand_down")
+            return self
+        return humanoid.lie_down(self)
+
+    def sit(self) -> "Robot":
+        """Sit. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("sit")
+        return self
+
+    def recover(self) -> "Robot":
+        """Recovery stand from prone. No-op unless ``legged.pose`` is supported."""
+        self._legged_action("recovery_stand")
+        return self
+
+    def set_body_pose(
+        self, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0
+    ) -> "Robot":
+        """Set body orientation (radians), clamped to the safety euler limit.
+
+        No-op unless ``legged.pose`` is supported. The clamp is the module
+        ceiling; it is not widened.
+        """
+        if not self.has(caps.LEGGED_POSE):
+            return self
+        from .safety import EULER_LIMIT_RAD
+
+        lim = EULER_LIMIT_RAD
+        r = clamp(float(roll), -lim, lim)
+        p = clamp(float(pitch), -lim, lim)
+        y = clamp(float(yaw), -lim, lim)
+        self._legged_action("euler", r, p, y)
+        return self
+
+    def legged_posture(self) -> str:
+        """Simulator / telemetry hint: ``standing``, ``lying``, ``sitting``, or ``unknown``."""
+        if not self.has(caps.LEGGED_POSE):
+            return "n/a"
+        inner = getattr(self._t, "_inner", self._t)
+        getter = getattr(inner, "legged_posture", None)
+        if callable(getter):
+            return str(getter())
+        custom = self._t.read().custom or {}
+        return str(custom.get("legged_posture", custom.get("posture", "unknown")))
+
+    def _legged_ready_to_drive(self) -> bool:
+        if not self.has(caps.LEGGED_POSE):
+            return True
+        return self.legged_posture() in ("standing", "unknown")
+
+    def _legged_action(self, action: str, *args: float) -> bool:
+        if not self.has(caps.LEGGED_POSE):
+            return False
+        gate = self._t
+        if isinstance(gate, SafetyGate):
+            return bool(gate.command(action, *args))
+        cmd = getattr(gate, "command", None)
+        if callable(cmd):
+            return bool(cmd(action, *args))
+        sport = getattr(gate, "sport_command", None)
+        if callable(sport):
+            sport(action, *args)
+            return True
+        mode = getattr(gate, "send_mode", None)
+        if callable(mode):
+            if action == "euler" and len(args) == 3:
+                mode("euler", roll=args[0], pitch=args[1], yaw=args[2])
+            else:
+                mode(action)
+            return True
+        return False
+
+    # ── flight (experimental: nothing has flown) ─────────────────────────────
+    def _dispatch_flight(
+        self, action: str, args: tuple[object, ...], /, **fields: object
+    ) -> "Robot":
+        """Send one flight request.
+
+        No-op without ``aerial``. A SafetyGate receives ``command``; any other
+        transport must implement ``send_flight``.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        if isinstance(self._t, SafetyGate):
+            self._t.command(action, *args)
+            return self
+        send = getattr(self._t, "send_flight", None)
+        if not callable(send):
+            raise AttributeError(
+                f"{type(self._t).__name__} does not implement send_flight"
+            )
+        send(action, **fields)
+        return self
+
+    def arm_flight(self) -> "Robot":
+        """Ask the autopilot to arm the motors.
+
+        :meth:`arm` unlocks the SafetyGate. This method sends an autopilot arm
+        request and does not call :meth:`arm`, so the gate's armed state stays
+        as it was. On a gated transport the request is
+        ``SafetyGate.command("arm")``. No-op without ``aerial``.
+
+        Experimental: nothing has flown.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("arm", ())
+
+    def disarm_flight(self) -> "Robot":
+        """Ask the autopilot for a normal disarm.
+
+        The request is the action ``disarm`` with no force flag. No-op without
+        ``aerial``. Whether an airborne disarm is refused is up to the backend.
+
+        Experimental: nothing has flown.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("disarm", ())
+
+    def takeoff(self, alt_m: float) -> "Robot":
+        """Climb to ``alt_m`` metres above the local origin, then hold.
+
+        ``alt_m`` is positive up in every frame. No-op without ``aerial``.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        altitude = _positive_up("alt_m", alt_m)
+        return self._dispatch_flight("takeoff", (altitude,), alt_m=altitude)
+
+    def land(self) -> "Robot":
+        """Land at the current horizontal position. No-op without ``aerial``."""
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("land", ())
+
+    def rtl(self) -> "Robot":
+        """Ask the autopilot to return to launch. No-op without ``aerial``.
+
+        Ohho does not fly the return itself.
+        """
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("rtl", ())
+
+    def hold(self) -> "Robot":
+        """Ask the autopilot to loiter. No-op without ``aerial``."""
+        if not self.has(caps.AERIAL):
+            return self
+        return self._dispatch_flight("hold", ())
+
+    def offboard_position(
+        self, x: float, y: float, z: float, yaw: float, frame: Frame
+    ) -> "Robot":
+        """Position setpoint. ``frame`` is required. No-op without ``aerial``.
+
+        ``z`` is forwarded in ``frame`` (down is positive in ``LOCAL_NED`` and
+        ``BODY_FRD``). This method does not rewrite one local frame as the other.
+        """
+        frame = require_frame(frame)
+        if not self.has(caps.AERIAL):
+            return self
+        x = finite_number("x", x)
+        y = finite_number("y", y)
+        z = finite_number("z", z)
+        yaw = finite_number("yaw", yaw)
+        return self._dispatch_flight(
+            "offboard_position",
+            (x, y, z, yaw, frame),
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            frame=frame,
+        )
+
+    def offboard_velocity(
+        self, vx: float, vy: float, vz: float, yaw_rate: float, frame: Frame
+    ) -> "Robot":
+        """Velocity setpoint. ``frame`` is required. No-op without ``aerial``.
+
+        ``vz`` is forwarded in ``frame``. Positive ``vz`` descends in
+        ``LOCAL_NED`` and ``BODY_FRD``.
+        """
+        frame = require_frame(frame)
+        if not self.has(caps.AERIAL):
+            return self
+        vx = finite_number("vx", vx)
+        vy = finite_number("vy", vy)
+        vz = finite_number("vz", vz)
+        yaw_rate = finite_number("yaw_rate", yaw_rate)
+        return self._dispatch_flight(
+            "offboard_velocity",
+            (vx, vy, vz, yaw_rate, frame),
+            vx=vx,
+            vy=vy,
+            vz=vz,
+            yaw_rate=yaw_rate,
+            frame=frame,
+        )
+
+    def set_yaw(self, yaw: float, frame: Frame) -> "Robot":
+        """Absolute yaw in ``frame``. ``frame`` is required.
+
+        No-op without ``aerial``.
+        """
+        frame = require_frame(frame)
+        if not self.has(caps.AERIAL):
+            return self
+        yaw = finite_number("yaw", yaw)
+        return self._dispatch_flight("set_yaw", (yaw, frame), yaw=yaw, frame=frame)
 
     # ── state ─────────────────────────────────────────────────────────────────
     def telemetry(self) -> Telemetry:
@@ -237,6 +482,14 @@ class Robot:
         return f"<Robot {self.spec.id} via {kind} on {self._rt.name}>"
 
 
+def _positive_up(name: str, value: object) -> float:
+    """Metres, positive up. Used by :meth:`Robot.takeoff`."""
+    number = finite_number(name, value)
+    if number <= 0.0:
+        raise ValueError(f"{name} must be positive up, in metres")
+    return number
+
+
 def connect(
     robot_id: str,
     transport: Optional[str] = None,
@@ -244,6 +497,7 @@ def connect(
     *,
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
+    read_only: bool = False,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -252,4 +506,5 @@ def connect(
         runtime=runtime,
         safety_config=safety_config,
         estop_damp=estop_damp,
+        read_only=read_only,
     )

@@ -1,10 +1,11 @@
 """Robot plugin protocol and ``ohho.robots`` entry-point discovery.
 
 A plugin contributes specs, transport schemes and sim backends. ``safety_policy``
-returns ``None`` to keep the class default (C-05 wires policies into
-``SafetyGate``). ``descriptor`` returns ``None`` until C-04 / OHH-214.
-``doctor`` is the read-only hook R-06 will dispatch. Discovery does not call
-those three, so listing plugins cannot command a robot.
+returns ``None`` to keep the class default. ``SafetyGate`` calls it when the
+robot connects (OHH-313) and refuses a policy that loosens class caps.
+Discovery does not call it, so listing plugins cannot command a robot.
+``descriptor`` returns ``None`` until C-04 / OHH-214. ``doctor`` is the
+read-only hook R-06 will dispatch. Discovery does not call those two either.
 
 Built-ins use this path. ``pyproject.toml`` registers
 ``ohho.robots.builtin:plugin``. A source checkout that has not been reinstalled
@@ -67,7 +68,8 @@ class RobotPlugin(Protocol):
     def safety_policy(self, spec: RobotSpec) -> object | None:
         """A stricter class policy, or ``None`` for the class default.
 
-        ``SafetyGate`` does not consult this yet (C-05).
+        ``SafetyGate`` loads this when the robot connects. Discovery does not
+        call it. A policy that loosens class caps is refused at that load.
         """
 
     def descriptor(self, spec: RobotSpec) -> Mapping[str, Any] | None:
@@ -108,6 +110,9 @@ class PluginInfo:
     error: str | None = None
     fallback: bool = False
     distribution: str = ""
+    # The instance, so a later policy load can call ``safety_policy`` without
+    # discovery calling it. Not part of equality or the list report.
+    plugin: Any = field(default=None, compare=False, hash=False)
     transport_factories: Mapping[str, TransportFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
@@ -272,6 +277,7 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
     entry_name = str(getattr(entry, "name", "") or "")
     name = entry_name or "<unknown>"
     specs: tuple[RobotSpec, ...] = ()
+    plugin: object | None = None
     try:
         plugin = _materialize(entry.load())
         name = _plugin_name(plugin)
@@ -289,6 +295,7 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
             error=f"{type(exc).__name__}: {exc}",
             fallback=fallback,
             distribution=_distribution_name(entry),
+            plugin=plugin,
         )
     return PluginInfo(
         name=name,
@@ -300,6 +307,7 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         error=None,
         fallback=fallback,
         distribution=_distribution_name(entry),
+        plugin=plugin,
         transport_factories=MappingProxyType(schemes),
         sim_factories=MappingProxyType(backends),
     )
@@ -372,6 +380,20 @@ def _load_all() -> tuple[PluginInfo, ...]:
         _load_one(entry, fallback=fallback) for entry, fallback in _discover_entries()
     ]
     return _reject_collisions(loaded)
+
+
+def plugin_named(name: str) -> object | None:
+    """The loaded plugin instance for ``name``, or ``None``.
+
+    Discovery stores the instance and does not call ``safety_policy``.
+    The gate calls that hook when it loads a policy.
+    """
+    if not name:
+        return None
+    for info in loaded_plugins():
+        if info.error is None and info.name == name and info.plugin is not None:
+            return info.plugin
+    return None
 
 
 def loaded_plugins() -> tuple[PluginInfo, ...]:
@@ -540,6 +562,7 @@ __all__ = [
     "describe_plugin_sim_backends",
     "format_plugin_report",
     "loaded_plugins",
+    "plugin_named",
     "plugin_sim_backend",
     "plugin_transport",
     "register_loaded_specs",

@@ -2,7 +2,7 @@
 
 **Engine:** [ohho-os](https://github.com/ohho-robotics/ohho-os) · **Client SDK:** [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk)
 
-Python package `ohho-os` (import `ohho`), version 1.1.3.
+Python package `ohho-os` (import `ohho`), version 1.2.0.
 Homepage: [ohho-robotics.com](https://ohho-robotics.com).
 Source: [ohho-robotics/ohho-os](https://github.com/ohho-robotics/ohho-os).
 
@@ -15,6 +15,7 @@ Source: [ohho-robotics/ohho-os](https://github.com/ohho-robotics/ohho-os).
 pip install ohho-os
 ohho doctor
 ohho sim --robot omnibot --seconds 2
+ohho sim --robot unitree-go2 --seconds 2
 ```
 
 `ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md).
@@ -27,6 +28,21 @@ the given number of seconds.
 
 From a git checkout, `pip install -e .` is the same base install, editable.
 
+## Protocol version and SDK compatibility
+
+**Package semver** (`ohho-os` on PyPI) and **protocol version** (`ohho.PROTOCOL_VERSION`,
+JSON schemas in `schemas/`) are independent. Bump the protocol only when committed
+schemas change in a contract-visible way.
+
+| ohho-os | Protocol | ohho-sdk (`@ohho/schemas`) |
+| --- | --- | --- |
+| 1.1.3+ | 1.0.0 | 1.0.0+ |
+
+TypeScript types for transport shapes are generated in
+[ohho-sdk](https://github.com/ohho-robotics/ohho-sdk) from a pinned copy of
+`schemas/`. Regenerate with `python scripts/export_json_schemas.py` here, then
+sync the pin in ohho-sdk.
+
 Sign-in is optional. `ohho sim` and `ohho mcp serve` keep working with no
 account. `ohho login` uses the console device flow and stores a token in
 `~/.ohho/credentials.json` (mode `0600`, or a user-only ACL on Windows).
@@ -35,13 +51,14 @@ in [`docs/cli.md`](docs/cli.md). `OHHO_TOKEN` overrides the file and is never
 written to disk. The token is not printed.
 
 CI (`.github/workflows/ci.yml`) runs `python -m unittest discover -s tests`,
-then `ohho doctor` and `ohho sim --robot omnibot --seconds 2`, on Ubuntu,
+then `ohho doctor`, `ohho sim --robot omnibot --seconds 2`, and
+`ohho sim --robot unitree-go2 --seconds 2`, on Ubuntu,
 macOS, and Windows for Python 3.10, 3.11, 3.12, and 3.13. That workflow is
 green on `main`. Tag `v1.1.2` published `ohho-os` 1.1.2 to PyPI.
 
 ## Protocol pin (not yet tagged)
 
-`protocolVersion` `1.0.0` is not in this commit (`85db848268168fa27b4ebb1b5992220b3bfacfcd`). Package version stays `1.1.3`. Do not push a `v*` tag for that pin: [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes PyPI on `v*` when the tag matches `pyproject.toml`. The paperwork name is `protocol-v1.0.0`. `ohho.telemetry.v1` and `RobotDescriptor` live in the ohho-sdk npm repository, also not yet tagged. Draft: [CHANGELOG.md](CHANGELOG.md). Human commands: [docs/releases/protocol-tag-commands.md](docs/releases/protocol-tag-commands.md).
+`protocolVersion` `1.0.0` is not in this commit (`85db848268168fa27b4ebb1b5992220b3bfacfcd`). The package version on that baseline is `1.1.3`. This tree's package version is `1.2.0`. Do not push a `v*` tag for that pin: [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes PyPI on `v*` when the tag matches `pyproject.toml`. The paperwork name is `protocol-v1.0.0`. `ohho.telemetry.v1` and `RobotDescriptor` live in the ohho-sdk npm repository, also not yet tagged. Draft: [CHANGELOG.md](CHANGELOG.md). Human commands: [docs/releases/protocol-tag-commands.md](docs/releases/protocol-tag-commands.md).
 
 ## Tests
 
@@ -74,10 +91,12 @@ skipped unless `OHHO_HIL=1`. The ports they use:
 | OmniBot base | Yahboom serial | `OHHO_OMNIBOT_PORT` | `/dev/ttyUSB0` |
 | OmniBot arm | Feetech bus | `OHHO_OMNIBOT_ARM` | `/dev/ttyACM0` |
 | OmniBot base + arm | both of the above | both | both defaults |
-| Unitree Go2 | DDS interface | `OHHO_GO2_IFACE` | `eth0` |
+| Unitree Go2 | DDS (**untested on hardware** — use `ohho sim --robot unitree-go2` first; see [Install](#install)) | `OHHO_GO2_IFACE` | `eth0` |
 
 Those adapters are not installed by `pip install ohho-os`. The extras are
-`serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds). The
+`serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds — you also
+need [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)
+from GitHub; it is not published on PyPI as `unitree_sdk2py`). The
 `ros2` extra does not pip-install `rclpy`; that module comes from a ROS 2
 distro. `train` needs torch. None of those were installed for the test
 run above.
@@ -144,7 +163,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 
 ## Simulation WebSocket Server (`sim-serve`)
 
-`ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`) or connects to ROS 2 through rosbridge.
+`ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`), a live robot via the unified `Robot` API (`--backend robot --transport <uri>`), or ROS 2 through rosbridge.
 
 ### Message Schema
 
@@ -153,11 +172,14 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 - `joints`: Mapping of joint name to radians, e.g. `{"arm_shoulder_pan": 0.5}`.
 - `deadman` (`bool`): Deadman switch. If `false` or if no client message arrives for 300 ms, the commanded velocity is zero.
 - `estop` (`bool`): Emergency stop. If `true`, estop latches until a message with `estop: false` arrives.
+- `mode` (optional): `"stand"`, `"lie_down"`, or `"recover"` — forwarded as allowlisted high-level actions on legged robots (via `SafetyGate` when armed).
 
 #### Server sends (JSON):
 - `odom`: Current odometry pose `{"x": float, "y": float, "yaw": float}`.
 - `joints`: Current joint positions `{"<name>": float, ...}`.
-- `backend`: Backend identifier (`"sim"` or `"ros2"`).
+- `protocolVersion`: OhhO wire protocol semver (`ohho.PROTOCOL_VERSION`). Present on every telemetry frame, including frames that add `posture` or `battery`.
+- `backend`: Backend identifier (`"sim"`, `"ros2"`, or `"robot"`).
+- `posture` / `battery` (optional): when the connected robot reports them.
 - `camera`: Base64 JPEG string (optional) or `no_camera: true`.
 
 ### Commands
@@ -168,14 +190,20 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ```
    Serves the existing in-process `sim://` robot on port 8790 with zero external dependencies. The default is 8790 because port 8765 is OmniBot's Foxglove bridge.
 
-2. **ROS 2 bridge:**
+2. **Live robot (Go2, OmniBot, any registered spec):**
+   ```bash
+   ohho sim-serve --backend robot --robot unitree-go2 --transport 'dds://lo?domain=1'
+   ```
+   Uses `Robot.connect` with the given transport URI (same stack as `ohho connect` / agents). Non-sim transports are wrapped in `SafetyGate` and start **disarmed** — arm at the terminal before motion. Use `dds://lo?domain=1` for local DDS simulators; domain `0` is the default on-robot DDS domain.
+
+3. **ROS 2 bridge:**
    ```bash
    ohho sim-serve --backend ros2 --rosbridge ws://localhost:9090
    ```
    Forwards velocity commands to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the `[ros2]` extra.
    > **Note:** Gazebo itself is launched from the OmniBot repo, not from this package.
 
-3. **Unsupported backends:**
+4. **Unsupported backends:**
    ```bash
    ohho sim-serve --backend isaac
    ohho sim-serve --backend mujoco
@@ -245,9 +273,17 @@ Apache-2.0. The full text is [`LICENSE`](LICENSE).
 
 ## Releasing
 
+See [docs/RELEASING.md](docs/RELEASING.md) for PyPI trusted-publisher settings
+(owner `ohho-robotics`, repo `ohho-os`, workflow `release.yml`, environment
+`pypi`) and the TestPyPI `workflow_dispatch` dry run.
+The 1.2.0 checklist (merge order, tag, post-release checks) is
+[`docs/releases/ohho-os-1.2.0.md`](docs/releases/ohho-os-1.2.0.md).
+Do not push a `v*` tag until that checklist says to. Pushing a `v*` tag
+runs `.github/workflows/release.yml`, which publishes to PyPI.
+
 ```bash
-git tag v1.1.3
-git push origin v1.1.3
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 The tag version must match `version` in `pyproject.toml`.
