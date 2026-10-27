@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import os
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,12 +29,15 @@ from ohho.sessions import (
     SUPABASE_ENV_KEYS,
     CloudTargetUnavailable,
     ContainerLaunch,
+    SessionAuthError,
     SessionError,
     SessionGone,
     SessionRegistry,
     SupabaseSessionClient,
     _NoRedirect,
+    _default_http,
     _opener,
+    _write_token_file,
     advertise_host,
     build_session_row,
     default_compose_file,
@@ -222,6 +228,23 @@ class TestTokenAndVisibility(SessionTestCase):
         self.assertGreaterEqual(len(token), 16)
         self.assertEqual(pairing.read_text(encoding="utf-8").strip(), token)
 
+    def test_pairing_file_is_private_before_the_token_is_written(self) -> None:
+        nested = self.dir / "fresh" / "pairing-code"
+        token, source = resolve_gateway_token(env={}, pairing_file=nested)
+        self.assertEqual(source, "generated")
+        self.assertEqual(nested.read_text(encoding="utf-8").strip(), token)
+        loose = self.dir / "gateway" / "pairing-code"
+        loose.parent.mkdir()
+        loose.write_text("old-secret-value\n", encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(loose, 0o644)
+        _write_token_file(loose, TOKEN)
+        self.assertEqual(loose.read_text(encoding="utf-8").strip(), TOKEN)
+        if os.name != "nt":
+            self.assertEqual(nested.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(nested.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(loose.stat().st_mode & 0o777, 0o600)
+
     def test_jwt_sub(self) -> None:
         self.assertEqual(user_id_from_jwt(_jwt(USER.upper())), USER)
         self.assertIsNone(user_id_from_jwt("not-a-jwt"))
@@ -393,7 +416,7 @@ class TestSupabaseClient(SessionTestCase):
             return 401, b"bad service-role-test-key"
 
         client = self._client(http)
-        with self.assertRaises(SessionError) as caught:
+        with self.assertRaises(SessionAuthError) as caught:
             client.upsert(
                 build_session_row(
                     user_id=USER,
@@ -408,6 +431,7 @@ class TestSupabaseClient(SessionTestCase):
                 )
             )
         self.assertIn("401", str(caught.exception))
+        self.assertIn("JWT expired", str(caught.exception))
         self.assertNotIn("service-role-test-key", str(caught.exception))
         with self.assertRaises(SessionError):
             client.upsert({"token": TOKEN, "user_id": USER})
@@ -442,6 +466,58 @@ class TestSupabaseClient(SessionTestCase):
                 None, None, 302, "Found", {}, "https://evil.example/steal"
             )
         self.assertIn("302", str(caught.exception))
+
+    def test_transport_errors_become_session_error(self) -> None:
+        cases: list[BaseException] = [
+            TimeoutError("timed out"),
+            ConnectionResetError("reset"),
+            http.client.RemoteDisconnected("closed"),
+            http.client.IncompleteRead(b"partial"),
+        ]
+        for error in cases:
+            opener = urllib.request.OpenerDirector()
+
+            def open_request(
+                *_args: object, boom: BaseException = error, **_kwargs: object
+            ) -> None:
+                raise boom
+
+            opener.open = open_request  # type: ignore[method-assign]
+            with patch("ohho.sessions._opener", return_value=opener):
+                with self.assertRaises(SessionError) as caught:
+                    _default_http(
+                        "GET",
+                        "https://example.supabase.co/rest/v1/robot_sessions",
+                        {},
+                        None,
+                        1.0,
+                    )
+            self.assertIs(caught.exception.__cause__, error)
+
+        body = io.BytesIO(b"nope")
+        http_error = urllib.error.HTTPError(
+            "https://example.supabase.co/rest/v1/robot_sessions",
+            500,
+            "nope",
+            urllib.request.Request("https://example.supabase.co"),
+            body,  # type: ignore[arg-type]
+        )
+        opener = urllib.request.OpenerDirector()
+
+        def open_http(*_args: object, **_kwargs: object) -> None:
+            raise http_error
+
+        opener.open = open_http  # type: ignore[method-assign]
+        with patch("ohho.sessions._opener", return_value=opener):
+            status, payload = _default_http(
+                "GET",
+                "https://example.supabase.co/rest/v1/robot_sessions",
+                {},
+                None,
+                1.0,
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload, b"nope")
 
 
 class TestRegistry(SessionTestCase):
@@ -633,6 +709,44 @@ class TestCommands(SessionTestCase):
         self.assertEqual(sum(slept), 10.0)
         self.assertEqual(self.fake.rows, {})
 
+    def test_auth_failure_stops_heartbeat(self) -> None:
+        def reject(session_id: str, fields: dict[str, str]) -> dict[str, Any]:
+            self.fake.calls.append(("heartbeat", session_id, fields))
+            raise SessionAuthError(
+                "JWT expired or the Supabase credential was rejected (401):"
+            )
+
+        self.fake.heartbeat = reject  # type: ignore[method-assign]
+        slept: list[float] = []
+        code, _stdout, stderr = self.up(max_beats=3, sleep=slept.append)
+        self.assertEqual(code, 2)
+        self.assertIn("JWT expired", stderr)
+        self.assertEqual(
+            sum(1 for call in self.fake.calls if call[0] == "heartbeat"), 1
+        )
+        self.assertEqual(self.fake.rows, {})
+        self.assertEqual(sum(slept), 10.0)
+        self.assertTrue(any(call[0] == "delete" for call in self.fake.calls))
+
+    def test_transient_heartbeat_error_is_retried(self) -> None:
+        original = self.fake.heartbeat
+        attempts = {"n": 0}
+
+        def flaky(session_id: str, fields: dict[str, str]) -> dict[str, Any]:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                self.fake.calls.append(("heartbeat", session_id, fields))
+                raise SessionError("temporary")
+            return original(session_id, fields)
+
+        self.fake.heartbeat = flaky  # type: ignore[method-assign]
+        code, _stdout, stderr = self.up(max_beats=1, sleep=lambda _seconds: None)
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("heartbeat failed", stderr)
+        self.assertIn("temporary", stderr)
+        self.assertEqual(attempts["n"], 2)
+        self.assertEqual(self.fake.rows, {})
+
     def test_ctrl_c_deletes_the_row(self) -> None:
         def sleep(_seconds: float) -> None:
             raise KeyboardInterrupt
@@ -751,6 +865,18 @@ class TestCli(SessionTestCase):
         self.assertEqual(up.func.__name__, "_cmd_sim_up")
         self.assertEqual(up.robot, "unitree-go2")
         self.assertEqual(up.target, "local")
+        parent_up = parser.parse_args(["sim", "--robot", "unitree-go2", "up"])
+        self.assertEqual(parent_up.robot, "unitree-go2")
+        self.assertEqual(parent_up.func.__name__, "_cmd_sim_up")
+        parent_down = parser.parse_args(["sim", "--robot", "unitree-go2", "down"])
+        self.assertEqual(parent_down.robot, "unitree-go2")
+        self.assertEqual(parent_down.func.__name__, "_cmd_sim_down")
+        omitted = parser.parse_args(["sim", "down"])
+        self.assertEqual(omitted.robot, "omnibot")
+        child_wins = parser.parse_args(
+            ["sim", "--robot", "unitree-go2", "up", "--robot", "omnibot"]
+        )
+        self.assertEqual(child_wins.robot, "omnibot")
 
     def test_cli_cloud_and_missing_config_do_not_touch_network(self) -> None:
         with (

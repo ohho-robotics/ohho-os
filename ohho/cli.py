@@ -1011,7 +1011,9 @@ def build_parser() -> argparse.ArgumentParser:
         "up",
         help="register a sim session for the VR garage and heartbeat it",
     )
-    s_up.add_argument("--robot", default="omnibot")
+    # SUPPRESS so `ohho sim --robot <id> up` keeps the parent value.
+    # A child default would overwrite it with omnibot.
+    s_up.add_argument("--robot", default=argparse.SUPPRESS)
     s_up.add_argument(
         "--target",
         default="local",
@@ -1037,7 +1039,7 @@ def build_parser() -> argparse.ArgumentParser:
         "down",
         help="remove the sim session from the VR garage",
     )
-    s_down.add_argument("--robot", default="omnibot")
+    s_down.add_argument("--robot", default=argparse.SUPPRESS)
     s_down.add_argument(
         "--target",
         default="local",

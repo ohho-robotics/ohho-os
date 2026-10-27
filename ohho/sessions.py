@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -101,6 +102,10 @@ Clock = Callable[[], datetime]
 
 class SessionError(RuntimeError):
     """The session registry could not complete a request."""
+
+
+class SessionAuthError(SessionError):
+    """Supabase returned 401 or 403. A user JWT may have expired."""
 
 
 class SessionConfigError(SessionError):
@@ -236,12 +241,23 @@ def _read_token_file(path: Path) -> str:
 
 
 def _write_token_file(path: Path, token: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(token + "\n", encoding="utf-8")
+    """Write a pairing code that is mode 0600 before any secret bytes exist.
+
+    ``Path.write_text`` creates the file with the process umask and only
+    then can ``chmod`` tighten it. Open with mode 0600 first, and tighten
+    an existing inode before the token is written. New parent directories
+    are created mode 0700.
+    """
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(path, 0o600)
+        if os.name != "nt" and hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
     except OSError:
-        pass
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(token + "\n")
 
 
 def default_pairing_file() -> Path:
@@ -658,9 +674,15 @@ def _default_http(
         with _opener().open(request, timeout=timeout) as response:
             return int(response.status), response.read()
     except urllib.error.HTTPError as exc:
-        return int(exc.code), exc.read()
+        try:
+            payload = exc.read()
+        except (OSError, http.client.HTTPException) as read_exc:
+            raise SessionError(f"supabase request failed: {read_exc!r}") from read_exc
+        return int(exc.code), payload
     except urllib.error.URLError as exc:
         raise SessionError(f"supabase request failed: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise SessionError(f"supabase request failed: {exc!r}") from exc
 
 
 class SupabaseSessionClient:
@@ -765,6 +787,12 @@ class SupabaseSessionClient:
             headers["Prefer"] = prefer
         status, payload = self._http(method, url, headers, body, self._timeout)
         text = payload.decode("utf-8", "replace") if payload else ""
+        if status in (401, 403):
+            detail = _redact(text, [self._api_key, self._bearer])
+            raise SessionAuthError(
+                "JWT expired or the Supabase credential was rejected "
+                f"({status}): {detail}"
+            )
         if status >= 400:
             detail = _redact(text, [self._api_key, self._bearer])
             raise SessionError(f"supabase {method} failed ({status}): {detail}")
@@ -958,6 +986,10 @@ def _heartbeat_loop(
             registry.heartbeat(session_id)
         except SessionGone:
             break
+        except SessionAuthError:
+            # A user access token does not refresh. Retrying 401/403 leaves
+            # the row stale while the process looks healthy.
+            raise
         except SessionError as exc:
             print(f"heartbeat failed: {exc}", file=sys.stderr)
             continue

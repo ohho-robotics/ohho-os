@@ -212,7 +212,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 
 ## Session registry (`sim up`, `robot announce`)
 
-`ohho sim up --robot omnibot --target local` heartbeats a row in Supabase every 10 seconds so the VR garage can find this PC's sim. `ohho sim down` removes it. `ohho robot announce` does the same for a real robot through the OHH-196 gateway. `--target cloud` exits with an error that names OHH-216 and does not create a VM.
+`ohho sim up --robot omnibot --target local` publishes a session and heartbeats a row in Supabase every 10 seconds, so the VR garage can find this PC's sim. It does not start the simulator. The default Compose command leaves the only service on the `gpu` profile, so an existing simulator is required until the OHH-204 image is available. After that image is published, start the GPU profile separately with `docker compose --profile gpu -f ohho/sim/docker-compose.yml up -d`. `ohho sim down` removes the session. `ohho robot announce` does the same for a real robot through the OHH-196 gateway. `--target cloud` exits with an error that names OHH-216 and does not create a VM.
 
 The gateway token is stored only as a SHA-256 hash. Stale rows (no heartbeat for 30 seconds) are hidden. Apply `supabase/migrations/20261014120000_robot_sessions.sql` in the Ohho Supabase project before the first `sim up`. The OhhO-VR `SessionClient` contract is in [`docs/sessions.md`](docs/sessions.md).
 

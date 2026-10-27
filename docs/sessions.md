@@ -31,7 +31,10 @@ key, the same way `GarageClient` reads `user_robots`. The service-role key
 stays on the PC that runs `ohho sim up`. Do not put it in the headset, in
 git, or in a log.
 
-### PC environment
+### Operator-controlled PC environment
+
+Use this setup only on the operator-controlled PC that runs `ohho sim up`.
+Do not put the service-role key on an end-user PC or in the headset.
 
 PowerShell, for the current user (replace the placeholders; do not commit them):
 
@@ -97,7 +100,9 @@ token_hash: acf72e1e008bd82c8a08ebee883ac904d34e70865ca615bbb64bb8d615247b26
 
 URLs stored in the row have userinfo, fragments, and any `token` query
 parameter removed. The headset already has the pairing code from OHH-196
-(`PlayerPrefs` key `ohho.gateway.token`) and appends it when it connects.
+(`PlayerPrefs` key `ohho.gateway.token`). It appends that token only to
+absolute `wss` and `https` URLs. Cleartext `ws` and `http` endpoints,
+including the local simulator defaults, never receive the token.
 
 ## Heartbeat and stale rows
 
@@ -299,13 +304,23 @@ Example row (token hash of the example string above):
 
 ### Connecting
 
-Append the OHH-196 pairing token at connect time. Do not read a token
-field from this JSON. There isn't one.
+Append the OHH-196 pairing token at connect time, and only when the URL
+is an absolute `wss` or `https` endpoint. Cleartext `ws` and `http` URLs,
+including the local simulator defaults, never receive the token. Real-robot
+defaults use `wss` and `https` on port 8443, and those keep the token.
+Do not read a token field from this JSON. There isn't one.
 
 ```csharp
 string token = Uri.EscapeDataString(PlayerPrefs.GetString("ohho.gateway.token", ""));
-string join = url.Contains("?") ? "&" : "?";
-string authed = string.IsNullOrEmpty(token) ? url : $"{url}{join}token={token}";
+bool secure = Uri.TryCreate(url, UriKind.Absolute, out var endpoint)
+    && (string.Equals(endpoint.Scheme, "wss", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(endpoint.Scheme, "https", StringComparison.OrdinalIgnoreCase));
+string authed = url;
+if (secure && !string.IsNullOrEmpty(token))
+{
+    string join = url.Contains("?") ? "&" : "?";
+    authed = $"{url}{join}token={token}";
+}
 ```
 
 Use that for `rosbridge_url` and each `video_urls` entry. Optional check,
