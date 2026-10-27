@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 from .. import capabilities as caps
 from ..registry import RobotSpec
+from ..schema import clamp
+from ..safety import EULER_LIMIT_RAD
 from ..schema import (
     ConnectionState,
     JointReading,
@@ -83,7 +85,9 @@ class SimTransport(BaseTransport):
             "rear_right": 0.0,
         }
         self._estopped = False
-        self._posture = "lying" if spec.has(caps.LEGGED_POSE) else "standing"
+        self._legged_posture = (
+            "lying" if caps.LEGGED_POSE in spec.capabilities else "standing"
+        )
         self._body_rpy = (0.0, 0.0, 0.0)
         self._state = ConnectionState.IDLE
         self._connected_since: float | None = None
@@ -115,24 +119,60 @@ class SimTransport(BaseTransport):
     def send_velocity(self, vel: Velocity) -> None:
         if self._estopped:
             return
-        if self.spec.has(caps.LEGGED_POSE) and self._posture == "lying":
+        if (
+            caps.LEGGED_POSE in self.spec.capabilities
+            and self._legged_posture != "standing"
+        ):
             return
         self._cmd = vel
 
+    def legged_posture(self) -> str:
+        return self._legged_posture
+
     def send_mode(self, name: str, **params: float) -> None:
-        if not self.spec.has(caps.LEGGED_POSE):
+        """Legged posture hook. No-op without ``legged.pose``.
+
+        Body angles go through :meth:`sport_command`, which clamps them to
+        ``EULER_LIMIT_RAD``.
+        """
+        if caps.LEGGED_POSE not in self.spec.capabilities:
             return
         action = name.strip().lower().replace("-", "_").replace(" ", "_")
-        if action in ("stand_up", "balance_stand", "recovery_stand"):
-            self._posture = "standing"
-        elif action in ("stand_down", "damp"):
-            self._posture = "lying"
-        elif action == "sit":
-            self._posture = "sitting"
-        elif action == "euler":
-            if self._posture == "lying":
-                return
-            self._posture = "standing"
+        if action == "euler":
+            self.sport_command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+            return
+        if action == "damp":
+            self._legged_posture = "lying"
+            self._cmd = Velocity()
+            return
+        self.sport_command(action)
+
+    def sport_command(self, name: str, *args: float) -> None:
+        """Simulate allowlisted Go2 sport-mode actions for agent / safety tests."""
+        if caps.LEGGED_POSE not in self.spec.capabilities:
+            raise ValueError("sport_command on non-legged sim")
+        if name == "stand_up" or name == "balance_stand" or name == "recovery_stand":
+            self._legged_posture = "standing"
+        elif name == "stand_down":
+            self._legged_posture = "lying"
+            self._cmd = Velocity()
+        elif name == "sit":
+            self._legged_posture = "sitting"
+            self._cmd = Velocity()
+        elif name == "euler":
+            if len(args) != 3:
+                raise ValueError("euler requires roll, pitch, yaw")
+            lim = EULER_LIMIT_RAD
+            self._body_rpy = tuple(clamp(float(a), -lim, lim) for a in args)
+        elif name == "stop_move":
+            self._cmd = Velocity()
+        else:
+            raise ValueError(f"unsupported sport command '{name}'")
 
     def send_motor(self, fl: int, fr: int, rl: int, rr: int) -> None:
         """Command raw 4-wheel velocities (int16 each) in sim."""
@@ -159,23 +199,6 @@ class SimTransport(BaseTransport):
     def emergency_stop(self) -> None:
         self._estopped = True
         self._cmd = Velocity()
-
-    def sport_command(self, name: str, *args: float) -> None:
-        """Simulate allowlisted Go2 sport-mode actions for sim / safety tests."""
-        if name in ("stand_up", "balance_stand", "recovery_stand"):
-            self._posture = "standing"
-        elif name == "stand_down":
-            self._posture = "lying"
-            self._cmd = Velocity()
-        elif name == "sit":
-            self._posture = "sitting"
-            self._cmd = Velocity()
-        elif name == "euler":
-            self._body_rpy = tuple(float(a) for a in args[:3])
-        elif name == "stop_move":
-            self._cmd = Velocity()
-        else:
-            raise ValueError(f"unsupported sport command '{name}'")
 
     def release_stop(self) -> None:
         self._estopped = False
@@ -270,12 +293,14 @@ class SimTransport(BaseTransport):
         custom = {
             "wheel_encoders": dict(self._wheel_encoders),
             "imu_rate": self.get_imu_rate(),
-            "legged_posture": self._posture,
+            "legged_posture": self._legged_posture,
             "roll": self._body_rpy[0],
             "pitch": self._body_rpy[1],
         }
-        if self.spec.has(caps.LEGGED_POSE):
-            custom["posture"] = self._posture
+        if caps.LEGGED_POSE in self.spec.capabilities:
+            custom["posture"] = self._legged_posture
+            custom["legged_posture"] = self._legged_posture
+            custom["body_rpy"] = self._body_rpy
         return Telemetry(
             odom=odom,
             joints=joints,

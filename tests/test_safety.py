@@ -1403,6 +1403,7 @@ class TestGatePlumbing(GateCase):
         self.assertTrue(bot.arm())  # simulated link: no TTY needed
         bot.stand()  # Go2 sim starts lying; drive is refused until standing
         self.clock.advance(0.01)
+        bot.stand()
         bot.drive(vx=2.0)
         sim.step(1.0)
         self.assertAlmostEqual(sim.read().odom.x, 0.5, places=5)
