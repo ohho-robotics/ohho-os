@@ -73,7 +73,7 @@ from .aerial import Frame
 from .drone.estop import command_is_forbidden, disarm_allowed, estop_commands
 from .drone.telemetry import positive_up_m
 from .registry import RobotSpec
-from .schema import ConnectionState, Telemetry, TransportStatus, Velocity
+from .schema import ConnectionState, Telemetry, TransportStatus, Velocity, clamp
 from .transport import Transport, BaseTransport
 
 log = logging.getLogger("ohho.safety")
