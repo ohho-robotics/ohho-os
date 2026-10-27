@@ -24,6 +24,7 @@ import threading
 import time
 from typing import Callable, Optional, Sequence
 
+from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
@@ -41,6 +42,8 @@ from ._link_resilience import (
     MonotonicFn,
 )
 from .errors import AdapterUnavailable
+
+_READER_HZ = 50.0
 
 TICKS_PER_REV: int = 4096
 HOME_TICKS: int = 2048
@@ -121,6 +124,7 @@ class FeetechTransport(BaseTransport):
         self._connected_since: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def _motors_dict(self) -> dict[str, tuple[int, str]]:
@@ -358,30 +362,47 @@ class FeetechTransport(BaseTransport):
             self._enable_torque()
         self._emit_status(self.status())
 
-    def _start_reader(self, hz: float = 50.0) -> None:
+    def loop_stats(self) -> LoopStats:
+        """Timing of the position reader thread."""
+        return self._loop_timer.stats()
+
+    def _start_reader(self, hz: float = _READER_HZ) -> None:
         if self._thread is not None:
             return
-        self._stop.clear()
         period = 1.0 / hz
+        if self._loop_timer.period_s != period:
+            self._loop_timer = LoopTimer(period)
+        self._stop.clear()
+        timer = self._loop_timer
 
         def loop() -> None:
+            timer.start()
             while not self._stop.is_set():
-                if self._disconnecting:
-                    return
-                if self._state == ConnectionState.RECONNECTING:
-                    if self._link.should_reconnect():
-                        self._try_reconnect()
-                    time.sleep(0.01)
-                    continue
-                if self._link.telemetry_stale():
-                    self._on_link_lost()
-                    continue
+                timer.begin()
+                wait_s: Optional[float] = None
                 try:
-                    self._poll_once()
-                except Exception:
-                    self._on_link_lost()
-                    continue
-                time.sleep(period)
+                    if self._disconnecting:
+                        return
+                    if self._state == ConnectionState.RECONNECTING:
+                        if self._link.should_reconnect():
+                            self._try_reconnect()
+                        wait_s = 0.01
+                    elif self._link.telemetry_stale():
+                        self._on_link_lost()
+                        wait_s = 0.0
+                    else:
+                        try:
+                            self._poll_once()
+                        except Exception:
+                            self._on_link_lost()
+                            wait_s = 0.0
+                finally:
+                    delay = timer.end()
+                if self._stop.is_set():
+                    return
+                wait = delay if wait_s is None else wait_s
+                if wait > 0.0 and self._stop.wait(wait):
+                    return
 
         self._thread = threading.Thread(
             target=loop, name="ohho-feetech-rx", daemon=True

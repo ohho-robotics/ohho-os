@@ -16,6 +16,7 @@ import threading
 import time
 from typing import Callable, Optional
 
+from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ._link_resilience import (
     DEFAULT_RECONNECT_INTERVAL_S,
@@ -30,6 +31,10 @@ from .errors import AdapterUnavailable
 
 # A serial-like object: write(bytes)->int, read(n)->bytes, close()->None.
 SerialFactory = Callable[[], object]
+
+# Idle poll when a read returns no bytes. The reader sleeps until the next
+# deadline of this period instead of sleeping a fixed 5 ms after the read.
+_IDLE_POLL_S = 0.005
 
 
 class YahboomTransport(BaseTransport):
@@ -69,6 +74,7 @@ class YahboomTransport(BaseTransport):
         self._imu_timestamps: list[float] = []
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._loop_timer = LoopTimer(_IDLE_POLL_S)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def _open_serial(self) -> object:
@@ -264,35 +270,54 @@ class YahboomTransport(BaseTransport):
         self._link.on_connected()
         self._emit_status(self.status())
 
+    def loop_stats(self) -> LoopStats:
+        """Timing of the serial reader thread."""
+        return self._loop_timer.stats()
+
     def _start_reader(self) -> None:
         if self._thread is not None:
             return
         self._stop.clear()
+        timer = self._loop_timer
 
         def loop() -> None:
+            timer.start()
             while not self._stop.is_set():
-                if self._disconnecting:
-                    return
-                if self._state == ConnectionState.RECONNECTING:
-                    if self._link.should_reconnect():
-                        self._try_reconnect()
-                    time.sleep(0.01)
-                    continue
-                if self._link.telemetry_stale():
-                    self._on_link_lost()
-                    continue
+                timer.begin()
                 chunk = b""
-                read = getattr(self._ser, "read", None)
-                if callable(read):
-                    try:
-                        chunk = read(64)
-                    except Exception:
+                wait_s: Optional[float] = None
+                try:
+                    if self._disconnecting:
+                        return
+                    if self._state == ConnectionState.RECONNECTING:
+                        if self._link.should_reconnect():
+                            self._try_reconnect()
+                        wait_s = 0.01
+                    elif self._link.telemetry_stale():
                         self._on_link_lost()
-                        continue
-                if chunk:
-                    self._ingest(chunk)
-                else:
-                    time.sleep(0.005)
+                        wait_s = 0.0
+                    else:
+                        read = getattr(self._ser, "read", None)
+                        if callable(read):
+                            try:
+                                chunk = read(64) or b""
+                            except Exception:
+                                self._on_link_lost()
+                                chunk = b""
+                                wait_s = 0.0
+                        if chunk and wait_s is None:
+                            self._ingest(chunk)
+                finally:
+                    # Bytes still in the buffer: record the cycle and keep
+                    # reading. An empty read waits until the next deadline.
+                    delay = timer.end(wait=not chunk)
+                if self._stop.is_set():
+                    return
+                if wait_s is not None:
+                    if wait_s > 0.0 and self._stop.wait(wait_s):
+                        return
+                elif not chunk and delay > 0.0 and self._stop.wait(delay):
+                    return
 
         self._thread = threading.Thread(
             target=loop, name="ohho-yahboom-rx", daemon=True
