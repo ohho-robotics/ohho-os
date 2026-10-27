@@ -1,16 +1,28 @@
-"""On-robot MCP tool handlers for OhhO OS (stdlib only)."""
+"""On-robot MCP tool handlers for OhhO OS (stdlib only).
+
+OHH-278: tools open ``sim://`` unless the human started ``ohho mcp serve``
+with ``--allow-hardware``. That flag is not an environment variable and not
+a tool argument. Hardware links use :class:`~ohho.safety.SafetyGate` via
+:meth:`ohho.robot.Robot.connect` and stay disarmed — this process never arms
+and never releases an e-stop. ``emergency_stop`` is always allowed and latches.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .adapters import available_adapters
+from .adapters.errors import AdapterUnavailable
+from .capabilities import BASE_HOLONOMIC
 from .mcp_split import ON_ROBOT_MCP_PRODUCTS
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
+from .safety import SafetyGate
+from .schema import clamp
 
 ToolHandler = Callable[[Dict[str, Any]], Dict[str, Any]]
 
@@ -23,17 +35,28 @@ class RobotSession:
     transport: str = "sim://"
     runtime: str = "native"
     memory_path: Optional[str] = None
+    # Set only by ``ohho mcp serve --allow-hardware``. Tools must not assign it.
+    allow_hardware: bool = False
     _robot: Optional[Robot] = field(default=None, repr=False)
     _world: str = field(default="", repr=False)
 
     def connect(self) -> Robot:
+        """Open the session link. Never arms.
+
+        An MCP stdio server's stdin is the JSON-RPC pipe, not an interactive
+        terminal, so a hardware link stays disarmed until a human arms it
+        from their own terminal.
+        """
         if self._robot is not None:
             return self._robot
+        self.transport = normalize_mcp_transport(
+            self.transport, allow_hardware=self.allow_hardware
+        )
+        # Robot.connect wraps every non-sim transport in SafetyGate. Do not
+        # call arm() or release_stop() here.
         self._robot = Robot.connect(
             self.robot_id, transport=self.transport, runtime=self.runtime
         )
-        if self._robot.gated:
-            self._robot.arm()
         return self._robot
 
     def disconnect(self) -> None:
@@ -72,18 +95,254 @@ def _err(message: str) -> Dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
-# Link v0 — real SDK calls, simulation only. Registered beside the OHH-173 catalog.
+def _structured_error(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
+        "isError": True,
+    }
+
+
+# Link v0 — real SDK calls. sim:// unless the human passed --allow-hardware.
 SIM_TOOL_NAMES: tuple[str, ...] = ("connect", "drive", "telemetry", "nav_goto", "look")
 
+# Names that must never be registered. Checked in ``_finalize_tools``.
+_DENIED_TOKENS = frozenset({"arm", "disarm", "release", "limit", "limits", "profile"})
+_DENIED_FOLDED = ("releasestop", "disarmoverride", "safetyprofile")
+_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 
-def _normalize_sim_transport(transport: Optional[str]) -> str:
-    uri = (transport or "sim://").strip() or "sim://"
-    scheme = uri.split(":", 1)[0].lower()
-    if scheme != "sim":
-        raise ValueError(
-            f"transport '{uri}' is not allowed — Link v0 tools only support sim://"
+_ASK_HUMAN = (
+    "Ask the human to arm the robot in their own terminal with "
+    "OHHO_ARM_HARDWARE=1 and `ohho connect <robot> --transport <uri> --arm`, "
+    "then type the confirmation. This MCP process cannot arm: stdin is the "
+    "JSON-RPC pipe, not an interactive terminal. Do not retry motion."
+)
+
+
+class HardwareRefused(ValueError):
+    """A non-sim URI was requested without ``--allow-hardware``."""
+
+    def __init__(self, uri: str) -> None:
+        self.uri = uri
+        super().__init__(
+            f"transport {uri!r} is not allowed — Link v0 tools only support sim:// "
+            "unless a human started the server with --allow-hardware. "
+            "No tool argument or environment variable can enable hardware."
         )
-    return uri if "://" in uri else "sim://"
+
+
+def transport_scheme(uri: str) -> str:
+    text = uri.strip()
+    if "://" in text:
+        return text.split("://", 1)[0].lower()
+    if ":" in text:
+        return text.split(":", 1)[0].lower()
+    return text.lower()
+
+
+def normalize_mcp_transport(transport: Optional[str], *, allow_hardware: bool) -> str:
+    """Return a URI this MCP server may open.
+
+    ``allow_hardware`` is the CLI flag only. This function does not read the
+    environment, so ``OHHO_ALLOW_HARDWARE`` / ``OHHO_ARM_HARDWARE`` cannot
+    turn a hardware link on.
+    """
+    uri = (transport or "sim://").strip() or "sim://"
+    scheme = transport_scheme(uri)
+    if scheme == "sim":
+        return uri if "://" in uri else "sim://"
+    if not allow_hardware:
+        raise HardwareRefused(uri)
+    if "://" not in uri:
+        raise ValueError(f"transport {uri!r} is not a URI")
+    return uri
+
+
+def _tool_name_tokens(name: str) -> set[str]:
+    tokens: set[str] = set()
+    for piece in re.split(r"[._\-\s]+", name):
+        bits = _TOKEN_RE.findall(piece)
+        if bits:
+            tokens.update(bit.lower() for bit in bits)
+        elif piece:
+            tokens.add(piece.lower())
+    return tokens
+
+
+def assert_mcp_tool_name_allowed(name: str) -> None:
+    """Raise if ``name`` would arm, release an e-stop, or change limits.
+
+    Called when tools are registered so a future tool with such a name fails
+    before it is advertised.
+    """
+    tokens = _tool_name_tokens(name)
+    hit = sorted(_DENIED_TOKENS.intersection(tokens))
+    folded = re.sub(r"[^a-z0-9]", "", name.lower())
+    folded_hit = [needle for needle in _DENIED_FOLDED if needle in folded]
+    if hit or folded_hit:
+        why = ", ".join(hit + folded_hit)
+        raise ValueError(
+            f"MCP tool {name!r} is forbidden (OHH-278: {why}). "
+            "Agents cannot arm, release an e-stop, or change safety "
+            "profiles or limits. emergency_stop remains allowed."
+        )
+
+
+def _backend(bot: Robot) -> str:
+    return "sim" if bot.simulated else "hardware"
+
+
+def _is_latched(bot: Robot) -> bool:
+    transport = bot.transport
+    if isinstance(transport, SafetyGate):
+        return bool(transport.latched)
+    return bool(getattr(transport, "_estopped", False))
+
+
+def _not_connected(*, catalog: bool) -> Dict[str, Any]:
+    if catalog:
+        return _err("Not connected — call connect.connect first.")
+    return _err("not connected — call connect first")
+
+
+def _connect_failure(exc: Exception) -> Dict[str, Any]:
+    if isinstance(exc, HardwareRefused):
+        return _structured_error(
+            {
+                "error": "hardware_refused",
+                "reason": "sim_only",
+                "transport": exc.uri,
+                "message": str(exc),
+            }
+        )
+    return _err(str(exc))
+
+
+def _hardware_session_error(bot: Robot) -> Dict[str, Any]:
+    return _structured_error(
+        {
+            "error": "hardware_refused",
+            "reason": "sim_only",
+            "backend": _backend(bot),
+            "message": (
+                "Link v0 tools only support sim:// unless a human started "
+                "`ohho mcp serve --allow-hardware`. No tool argument or "
+                "environment variable can enable hardware."
+            ),
+        }
+    )
+
+
+def _require_link(
+    session: RobotSession, *, catalog: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Refuse a missing session, or hardware when the CLI flag is off."""
+    if session.robot is None:
+        return _not_connected(catalog=catalog)
+    bot = session.robot
+    if not bot.simulated and not session.allow_hardware:
+        return _hardware_session_error(bot)
+    return None
+
+
+def _velocity_report(bot: Robot, vx: float, vy: float, w: float) -> Dict[str, Any]:
+    """Clamp a request to the spec cap and, on a gate, the safety profile."""
+    cap_vx = float(bot.spec.max_lin)
+    cap_w = float(bot.spec.max_ang)
+    holonomic = bot.has(BASE_HOLONOMIC)
+    cap_vy = float(bot.spec.max_lin) if holonomic else 0.0
+    gate = bot.transport
+    if isinstance(gate, SafetyGate):
+        profile = gate.profile
+        cap_vx = min(cap_vx, float(profile.max_vx))
+        cap_vy = min(cap_vy, float(profile.max_vy))
+        cap_w = min(cap_w, float(profile.max_wz))
+    requested = {"vx": float(vx), "vy": float(vy), "w": float(w)}
+    applied_vy = clamp(requested["vy"], -cap_vy, cap_vy) if holonomic else 0.0
+    applied = {
+        "vx": clamp(requested["vx"], -cap_vx, cap_vx),
+        "vy": applied_vy,
+        "w": clamp(requested["w"], -cap_w, cap_w),
+    }
+    return {
+        "requested": requested,
+        "applied": applied,
+        "clamped": any(requested[key] != applied[key] for key in ("vx", "vy", "w")),
+        "cap": {"vx": cap_vx, "vy": cap_vy, "w": cap_w},
+    }
+
+
+def _motion_error(
+    session: RobotSession,
+    *,
+    catalog: bool = False,
+    report: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Block motion on a disarmed or latched link. ``emergency_stop`` does not use this."""
+    refused = _require_link(session, catalog=catalog)
+    if refused is not None:
+        return refused
+    bot = session.robot
+    assert bot is not None
+    if _is_latched(bot):
+        bot.stop()
+        payload: Dict[str, Any] = {
+            "error": "motion_refused",
+            "reason": "estop_latched",
+            "backend": _backend(bot),
+            "sent": False,
+            "message": (
+                "Emergency stop is latched, so motion is refused and zero "
+                "velocity is sent. This MCP server cannot call release_stop. "
+                "Ask the human to release the e-stop in their own terminal."
+            ),
+        }
+        if report:
+            payload.update(report)
+        return _structured_error(payload)
+    if not bot.simulated:
+        gate = bot.transport if isinstance(bot.transport, SafetyGate) else None
+        if gate is None or not gate.armed:
+            bot.stop()
+            payload = {
+                "error": "motion_refused",
+                "reason": "not_armed",
+                "backend": "hardware",
+                "sent": False,
+                "message": (
+                    "Hardware link is disarmed, so motion is refused and zero "
+                    "velocity is sent. " + _ASK_HUMAN
+                ),
+            }
+            if report:
+                payload.update(report)
+            return _structured_error(payload)
+    return None
+
+
+def _parse_velocity(
+    params: Dict[str, Any], defaults: Dict[str, float]
+) -> Optional[tuple]:
+    try:
+        return tuple(
+            float(params.get(name, default)) for name, default in defaults.items()
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _finalize_tools(tools: List[McpTool]) -> List[McpTool]:
+    """Registration-time checks. A forbidden name fails here, not at call time."""
+    seen: set[str] = set()
+    for tool in tools:
+        assert_mcp_tool_name_allowed(tool.name)
+        if tool.name in seen:
+            raise ValueError(f"duplicate MCP tool {tool.name}")
+        seen.add(tool.name)
+        if tool.product not in ON_ROBOT_MCP_PRODUCTS:
+            raise ValueError(
+                f"tool {tool.name} has non on-robot product {tool.product}"
+            )
+    return tools
 
 
 def _maybe_demo_world(bot: Robot, world: str) -> None:
@@ -154,14 +413,6 @@ def _hold_velocity(bot: Robot, vx: float, vy: float, w: float, seconds: float) -
     time.sleep(0.05)
 
 
-def _require_sim(session: RobotSession) -> Optional[Dict[str, Any]]:
-    if session.robot is None:
-        return _err("not connected — call connect first")
-    if not session.robot.simulated:
-        return _err("Link v0 tools only support sim://")
-    return None
-
-
 def _apply_demo_world(session: RobotSession, world: str) -> None:
     bot = session.robot
     if bot is None or world != "demo" or session._world == "demo":
@@ -196,6 +447,8 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                 }
             )
         bot = session.robot
+        if not bot.simulated and not session.allow_hardware:
+            return _hardware_session_error(bot)
         st = bot.status()
         return _text(
             {
@@ -206,13 +459,17 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                 "state": st.state.value,
                 "label": st.label,
                 "simulated": bot.simulated,
+                "backend": _backend(bot),
             }
         )
 
     def connect_get_telemetry(_: Dict[str, Any]) -> Dict[str, Any]:
-        if session.robot is None:
-            return _err("Not connected — call connect.connect first.")
-        t = session.robot.telemetry()
+        refused = _require_link(session, catalog=True)
+        if refused is not None:
+            return refused
+        bot = session.robot
+        assert bot is not None
+        t = bot.telemetry()
         odom = None
         if t.odom is not None:
             odom = {"x": t.odom.x, "y": t.odom.y, "theta": t.odom.theta}
@@ -222,66 +479,145 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                 {"name": j.name, "position": j.position, "velocity": j.velocity}
                 for j in t.joints
             ]
-        return _text({"battery": t.battery, "odom": odom, "joints": joints})
+        return _text(
+            {
+                "battery": t.battery,
+                "odom": odom,
+                "joints": joints,
+                "backend": _backend(bot),
+            }
+        )
 
-    def connect_connect(params: Dict[str, Any]) -> Dict[str, Any]:
-        robot_id = str(params.get("robotId", session.robot_id))
-        transport = str(params.get("transport", session.transport))
-        runtime = str(params.get("runtime", session.runtime))
+    def _open(params: Dict[str, Any], *, robot_key: str) -> Dict[str, Any]:
+        # Tool arguments cannot set allow_hardware. Only the CLI flag can.
+        robot_id = str(params.get(robot_key) or session.robot_id)
+        runtime = str(params.get("runtime") or session.runtime)
+        try:
+            if "transport" not in params or params.get("transport") is None:
+                raw: Optional[str] = session.transport
+            else:
+                raw = str(params.get("transport"))
+            transport = normalize_mcp_transport(
+                raw, allow_hardware=session.allow_hardware
+            )
+        except ValueError as exc:
+            return _connect_failure(exc)
         session.disconnect()
         session.robot_id = robot_id
         session.transport = transport
         session.runtime = runtime
         try:
             bot = session.connect()
-        except UnknownRobot as e:
-            return _err(str(e))
-        return _text({"connected": True, "robot": repr(bot)})
+        except (UnknownRobot, AdapterUnavailable, ValueError) as exc:
+            return _connect_failure(exc)
+        return {
+            "bot": bot,
+            "transport": transport,
+        }
+
+    def connect_connect(params: Dict[str, Any]) -> Dict[str, Any]:
+        opened = _open(params, robot_key="robotId")
+        if "bot" not in opened:
+            return opened
+        bot = opened["bot"]
+        return _text(
+            {
+                "connected": True,
+                "robot": repr(bot),
+                "transport": opened["transport"],
+                "backend": _backend(bot),
+            }
+        )
 
     def connect_send_velocity(params: Dict[str, Any]) -> Dict[str, Any]:
+        parsed = _parse_velocity(params, {"vx": 0.0, "vy": 0.0, "w": 0.0})
+        if parsed is None:
+            return _err("velocity arguments must be numbers")
+        vx, vy, w = parsed
         if session.robot is None:
-            return _err("Not connected — call connect.connect first.")
-        vx = float(params.get("vx", 0.0))
-        vy = float(params.get("vy", 0.0))
-        w = float(params.get("w", 0.0))
-        session.robot.drive(vx=vx, vy=vy, w=w)
-        return _text({"ok": True, "vx": vx, "vy": vy, "w": w})
+            return _not_connected(catalog=True)
+        report = _velocity_report(session.robot, vx, vy, w)
+        refused = _motion_error(session, catalog=True, report=report)
+        if refused is not None:
+            return refused
+        bot = session.robot
+        assert bot is not None
+        applied = report["applied"]
+        bot.drive(vx=applied["vx"], vy=applied["vy"], w=applied["w"])
+        return _text({"ok": True, "backend": _backend(bot), **report})
 
-    def connect_emergency_stop(_: Dict[str, Any]) -> Dict[str, Any]:
+    def latch_emergency_stop(_: Dict[str, Any]) -> Dict[str, Any]:
         if session.robot is None:
-            return _err("Not connected — call connect.connect first.")
-        session.robot.emergency_stop()
-        return _text({"estop": True})
+            return _not_connected(catalog=False)
+        bot = session.robot
+        bot.emergency_stop()
+        return _text(
+            {
+                "estop": True,
+                "latched": _is_latched(bot),
+                "backend": _backend(bot),
+            }
+        )
 
     def bridge_list_adapters(_: Dict[str, Any]) -> Dict[str, Any]:
         return _text(available_adapters())
 
     def pilot_apply_joystick(params: Dict[str, Any]) -> Dict[str, Any]:
+        parsed = _parse_velocity(params, {"vx": 0.0, "w": 0.0})
+        if parsed is None:
+            return _err("velocity arguments must be numbers")
+        vx, w = parsed
         if session.robot is None:
-            return _err("Not connected — call connect.connect first.")
-        vx = float(params.get("vx", 0.0))
-        w = float(params.get("w", 0.0))
-        session.robot.drive(vx=vx, w=w)
-        return _text({"ok": True})
+            return _not_connected(catalog=True)
+        report = _velocity_report(session.robot, vx, 0.0, w)
+        refused = _motion_error(session, catalog=True, report=report)
+        if refused is not None:
+            return refused
+        bot = session.robot
+        assert bot is not None
+        applied = report["applied"]
+        bot.drive(vx=applied["vx"], vy=applied["vy"], w=applied["w"])
+        return _text({"ok": True, "backend": _backend(bot), **report})
 
     def autonomy_navigate_to(params: Dict[str, Any]) -> Dict[str, Any]:
-        if session.robot is None:
-            return _err("Not connected — call connect.connect first.")
-        x = float(params.get("x", 0.0))
-        y = float(params.get("y", 0.0))
+        refused = _motion_error(session, catalog=True)
+        if refused is not None:
+            return refused
+        bot = session.robot
+        assert bot is not None
+        try:
+            x = float(params.get("x", 0.0))
+            y = float(params.get("y", 0.0))
+        except (TypeError, ValueError):
+            return _err("x and y must be numbers")
         # Lightweight stub: drive toward the target using a bearing heuristic.
-        t = session.robot.telemetry()
+        t = bot.telemetry()
         if t.odom is None:
-            return _err("No odometry available for navigation.")
+            return _structured_error(
+                {
+                    "error": "no_odometry",
+                    "backend": _backend(bot),
+                    "message": "No odometry available for navigation.",
+                }
+            )
         dx, dy = x - t.odom.x, y - t.odom.y
         import math
 
         bearing = math.atan2(dy, dx)
         err = bearing - t.odom.theta
-        session.robot.drive(
-            vx=min(0.15, (dx * dx + dy * dy) ** 0.5), w=max(-0.6, min(0.6, err))
+        report = _velocity_report(
+            bot, min(0.15, (dx * dx + dy * dy) ** 0.5), 0.0, max(-0.6, min(0.6, err))
         )
-        return _text({"navigating": True, "target": {"x": x, "y": y}})
+        applied = report["applied"]
+        bot.drive(vx=applied["vx"], vy=applied["vy"], w=applied["w"])
+        return _text(
+            {
+                "navigating": True,
+                "target": {"x": x, "y": y},
+                "backend": _backend(bot),
+                **report,
+            }
+        )
 
     def frame_list_processes(_: Dict[str, Any]) -> Dict[str, Any]:
         return _text(
@@ -313,63 +649,65 @@ def build_tools(session: RobotSession) -> List[McpTool]:
         return _text([])
 
     def sim_connect(params: Dict[str, Any]) -> Dict[str, Any]:
-        robot_id = str(params.get("robot") or session.robot_id)
-        raw_transport = params.get("transport")
-        try:
-            transport = _normalize_sim_transport(
-                None if raw_transport is None else str(raw_transport)
-            )
-        except ValueError as exc:
-            return _err(str(exc))
+        opened = _open(params, robot_key="robot")
+        if "bot" not in opened:
+            return opened
+        bot = opened["bot"]
         world = str(params.get("world") or "")
-        runtime = str(params.get("runtime") or session.runtime)
-        session.disconnect()
-        session.robot_id = robot_id
-        session.transport = transport
-        session.runtime = runtime
-        try:
-            bot = session.connect()
-        except UnknownRobot as exc:
-            return _err(str(exc))
-        _maybe_demo_world(bot, world)
-        if world == "demo":
-            session._world = "demo"
+        if bot.simulated:
+            _maybe_demo_world(bot, world)
+            if world == "demo":
+                session._world = "demo"
         status = bot.status()
         return _text(
             {
                 "connected": True,
                 "robot": bot.spec.id,
-                "transport": transport,
+                "transport": opened["transport"],
                 "protocol": status.protocol,
                 "label": status.label,
+                "backend": _backend(bot),
             }
         )
 
     def sim_drive(params: Dict[str, Any]) -> Dict[str, Any]:
-        refused = _require_sim(session)
+        parsed = _parse_velocity(
+            params, {"vx": 0.1, "vy": 0.0, "w": 0.0, "seconds": 1.0}
+        )
+        if parsed is None:
+            return _err("velocity arguments must be numbers")
+        vx, vy, w, seconds = parsed
+        if session.robot is None:
+            return _not_connected(catalog=False)
+        report = _velocity_report(session.robot, vx, vy, w)
+        refused = _motion_error(session, report=report)
         if refused is not None:
             return refused
         bot = session.robot
         assert bot is not None
-        _hold_velocity(
-            bot,
-            float(params.get("vx", 0.1)),
-            float(params.get("vy", 0.0)),
-            float(params.get("w", 0.0)),
-            float(params.get("seconds", 1.0)),
+        applied = report["applied"]
+        _hold_velocity(bot, applied["vx"], applied["vy"], applied["w"], seconds)
+        return _text(
+            {
+                "drove": True,
+                "backend": _backend(bot),
+                **report,
+                "telemetry": _telemetry_payload(bot),
+            }
         )
-        return _text({"drove": True, "telemetry": _telemetry_payload(bot)})
 
     def sim_telemetry(_: Dict[str, Any]) -> Dict[str, Any]:
-        refused = _require_sim(session)
+        refused = _require_link(session)
         if refused is not None:
             return refused
         bot = session.robot
         assert bot is not None
-        return _text(_telemetry_payload(bot))
+        payload = _telemetry_payload(bot)
+        payload["backend"] = _backend(bot)
+        return _text(payload)
 
     def sim_nav_goto(params: Dict[str, Any]) -> Dict[str, Any]:
-        refused = _require_sim(session)
+        refused = _motion_error(session)
         if refused is not None:
             return refused
         if "x" not in params or "y" not in params:
@@ -378,6 +716,18 @@ def build_tools(session: RobotSession) -> List[McpTool]:
 
         bot = session.robot
         assert bot is not None
+        if not bot.simulated:
+            return _structured_error(
+                {
+                    "error": "sim_only",
+                    "reason": "nav_is_sim",
+                    "backend": "hardware",
+                    "message": (
+                        "nav_goto uses the simulator map and only supports sim://. "
+                        + _ASK_HUMAN
+                    ),
+                }
+            )
         _apply_demo_world(session, str(params.get("world") or ""))
         result = Navigator(bot).navigate_to(
             float(params["x"]),
@@ -392,12 +742,13 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                 "x": result.x,
                 "y": result.y,
                 "distance_remaining": result.distance_remaining,
+                "backend": _backend(bot),
                 "telemetry": _telemetry_payload(bot),
             }
         )
 
     def sim_look(params: Dict[str, Any]) -> Dict[str, Any]:
-        refused = _require_sim(session)
+        refused = _require_link(session)
         if refused is not None:
             return refused
         from .memory import SpatialMemory, default_memory_path
@@ -405,6 +756,15 @@ def build_tools(session: RobotSession) -> List[McpTool]:
 
         bot = session.robot
         assert bot is not None
+        if not bot.simulated:
+            return _structured_error(
+                {
+                    "error": "sim_only",
+                    "reason": "look_is_sim_perception",
+                    "backend": "hardware",
+                    "message": "look reads the simulator's labeled world and only supports sim://.",
+                }
+            )
         _apply_demo_world(session, str(params.get("world") or ""))
         detections = SimPerceptor(bot).look()
         path = session.memory_path or default_memory_path(bot.spec.id)
@@ -426,6 +786,7 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                 ],
                 "remembered": remembered,
                 "memory_path": str(path),
+                "backend": _backend(bot),
             }
         )
 
@@ -490,9 +851,9 @@ def build_tools(session: RobotSession) -> List[McpTool]:
         ),
         McpTool(
             "connect.emergencyStop",
-            "Latch emergency stop on the connected robot.",
+            "Latch emergency stop on the connected robot. Always allowed; does not release the latch or arm.",
             _obj({}),
-            connect_emergency_stop,
+            latch_emergency_stop,
             "connect",
             False,
         ),
@@ -554,7 +915,7 @@ def build_tools(session: RobotSession) -> List[McpTool]:
         ),
         McpTool(
             "connect",
-            "Connect to a robot in simulation (sim:// only). Replaces any existing session.",
+            "Connect to a robot. sim:// only, unless the human started the server with --allow-hardware. Replaces any existing session. Never arms.",
             _obj(
                 {
                     "robot": {
@@ -563,7 +924,7 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                     },
                     "transport": {
                         "type": "string",
-                        "description": "Must be sim:// for this tool.",
+                        "description": "sim:// unless the server was started with --allow-hardware. A tool argument cannot enable hardware.",
                     },
                     "world": {
                         "type": "string",
@@ -577,7 +938,7 @@ def build_tools(session: RobotSession) -> List[McpTool]:
         ),
         McpTool(
             "drive",
-            "Send a velocity command on the connected sim robot for a duration, then stop.",
+            "Hold a velocity command, then stop. Clamped to the sim or safety-profile cap. Refused when a hardware link is disarmed.",
             _obj(
                 {
                     "vx": {"type": "number", "description": "Forward m/s"},
@@ -638,12 +999,17 @@ def build_tools(session: RobotSession) -> List[McpTool]:
             "connect",
             False,
         ),
+        McpTool(
+            "emergency_stop",
+            "Latch emergency stop on the connected robot (simulation or hardware). Always allowed. Does not clear the latch and does not arm.",
+            _obj({}),
+            latch_emergency_stop,
+            "connect",
+            False,
+        ),
     ]
 
-    for t in tools:
-        if t.product not in ON_ROBOT_MCP_PRODUCTS:
-            raise ValueError(f"tool {t.name} has non on-robot product {t.product}")
-    return tools
+    return _finalize_tools(tools)
 
 
 def tools_by_name(session: RobotSession) -> Dict[str, McpTool]:

@@ -179,7 +179,8 @@ def _cmd_doctor(args) -> int:
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
-        f"  mcp         : stdio (built-in) — sim tools: {', '.join(SIM_TOOL_NAMES)}; "
+        f"  mcp         : stdio (built-in) — sim:// unless --allow-hardware; "
+        f"tools: {', '.join(SIM_TOOL_NAMES)}, emergency_stop; "
         "clients: ohho mcp connect --list"
     )
     print("  rules       : ohho rules list  |  ohho rules install --client <id>")
@@ -363,6 +364,44 @@ def _cmd_serve(args) -> int:
     except ServeUnavailable as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _cmd_run_policy(args) -> int:
+    transport = args.transport if args.transport is not None else "sim://"
+    if not str(transport).startswith("sim://"):
+        print(
+            "error: run-policy is sim-only — never use on real hardware (OHH-128)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        bot = Robot.connect(args.robot, transport=transport, runtime=args.runtime)
+    except UnknownRobot as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    from .serve.runner import PolicyRunner
+
+    hz = float(args.hz)
+    dt = 1.0 / max(hz, 1e-6)
+    step_fn = getattr(bot.transport, "step", None)
+    step = (lambda: step_fn(dt)) if callable(step_fn) else None
+
+    try:
+        runner = PolicyRunner(bot, args.serve, hz=hz, step=step)
+        result = runner.run(
+            args.instruction,
+            duration_s=args.seconds,
+            goal_x=args.goal_x,
+            max_steps=args.max_steps,
+        )
+        print(
+            f"policy stopped: {result.stopped_reason} "
+            f"after {result.steps} steps (odom.x={result.last_odom_x:.3f})"
+        )
+    finally:
+        bot.disconnect()
     return 0
 
 
@@ -626,17 +665,28 @@ def _cmd_memory(args) -> int:
 
 
 def _cmd_mcp_serve(args) -> int:
+    from .adapters.errors import AdapterUnavailable
     from .mcp_server import run_stdio
-    from .mcp_tools import RobotSession
+    from .mcp_tools import RobotSession, normalize_mcp_transport
 
-    transport = "sim://" if args.sim else (args.transport or "sim://")
+    # Only this flag enables a non-sim URI. Environment variables are ignored.
+    allow_hardware = bool(getattr(args, "allow_hardware", False))
+    raw = "sim://" if args.sim else (args.transport or "sim://")
+    try:
+        transport = normalize_mcp_transport(raw, allow_hardware=allow_hardware)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     session = RobotSession(
-        robot_id=args.robot, transport=transport, runtime=args.runtime
+        robot_id=args.robot,
+        transport=transport,
+        runtime=args.runtime,
+        allow_hardware=allow_hardware,
     )
     if args.preconnect:
         try:
             session.connect()
-        except UnknownRobot as e:
+        except (UnknownRobot, AdapterUnavailable, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
     return run_stdio(session=session)
@@ -706,6 +756,15 @@ def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
         "--preconnect",
         action="store_true",
         help="connect before serving (uses --robot and transport)",
+    )
+    parser.add_argument(
+        "--allow-hardware",
+        action="store_true",
+        help=(
+            "allow a non-sim transport URI (human only). Motion stays refused: "
+            "this process cannot arm, because stdin is the MCP pipe, not a TTY. "
+            "No environment variable and no tool argument enables hardware."
+        ),
     )
 
 
@@ -1024,6 +1083,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sv.set_defaults(func=_cmd_serve)
 
+    rp = sub.add_parser(
+        "run-policy",
+        help="closed-loop policy from ohho serve (simulation only)",
+    )
+    _add_robot_args(rp, transport_default="sim://")
+    rp.add_argument(
+        "--serve",
+        required=True,
+        help="policy server base URL, e.g. http://localhost:8000",
+    )
+    rp.add_argument(
+        "--instruction",
+        required=True,
+        help='natural-language task, e.g. "go forward"',
+    )
+    rp.add_argument("--hz", type=float, default=10.0, help="control loop rate")
+    rp.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="optional max duration before stopping",
+    )
+    rp.add_argument(
+        "--goal-x",
+        type=float,
+        default=None,
+        dest="goal_x",
+        help="stop once odometry x reaches this distance (meters)",
+    )
+    rp.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        dest="max_steps",
+        help="optional max policy steps",
+    )
+    rp.set_defaults(func=_cmd_run_policy)
+
     ss = sub.add_parser("sim-serve", help="serve robot simulation over WebSocket")
     ss.add_argument(
         "--backend",
@@ -1258,7 +1355,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="MCP stdio server (serve) and AI-client config (connect)",
     )
     mcp_sub = mcp.add_subparsers(dest="mcp_command")
-    serve_help = "run the stdio MCP server (sim:// tools: connect, drive, telemetry, nav_goto, look)"
+    serve_help = (
+        "run the stdio MCP server (sim:// tools: connect, drive, telemetry, "
+        "nav_goto, look, emergency_stop; a human --allow-hardware allows a "
+        "non-sim URI and cannot arm)"
+    )
     serve = mcp_sub.add_parser("serve", help=serve_help, description=serve_help)
     _add_mcp_serve_args(serve)
     # `ohho mcp --sim` keeps working: the same flags live on the parent parser.

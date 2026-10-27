@@ -69,9 +69,12 @@ check passes only when every client has the block. Until then the detail is
 - Use `ohho doctor --agent`, `ohho verify --sim`, and the `ohho mcp serve`
   tools `connect`, `drive`, `telemetry`, `nav_goto`, and `look` with `sim://`.
 
-The text tells the agent not to arm. It does not claim the MCP server rejects
-`arm` or `release_stop`. That server-side guarantee is a later change. The
-CLI already wraps non-sim transports in `SafetyGate` ([safety.md](safety.md)).
+The text tells the agent not to arm and not to point MCP tools at a hardware
+URI. It does not claim the server enforces that. The server-side guarantee
+is OHH-278, described in [mcp.md](mcp.md) and [safety.md](safety.md):
+`ohho mcp serve` is `sim://` unless a human passes `--allow-hardware`, the
+process never arms and never releases an e-stop, and `emergency_stop` latches.
+The CLI already wraps non-sim transports in `SafetyGate`.
 
 Setup playbook: https://ohho-robotics.com/onboard.md
 

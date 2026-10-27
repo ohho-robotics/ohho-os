@@ -2,7 +2,7 @@
 
 **Engine:** [ohho-os](https://github.com/ohho-robotics/ohho-os) · **Client SDK:** [ohho-sdk](https://github.com/ohho-robotics/ohho-sdk)
 
-Python package `ohho-os` (import `ohho`), version 1.1.3.
+Python package `ohho-os` (import `ohho`), version 1.2.0.
 Homepage: [ohho-robotics.com](https://ohho-robotics.com).
 Source: [ohho-robotics/ohho-os](https://github.com/ohho-robotics/ohho-os).
 
@@ -41,7 +41,7 @@ green on `main`. Tag `v1.1.2` published `ohho-os` 1.1.2 to PyPI.
 
 ## Protocol pin (not yet tagged)
 
-`protocolVersion` `1.0.0` is not in this commit (`85db848268168fa27b4ebb1b5992220b3bfacfcd`). Package version stays `1.1.3`. Do not push a `v*` tag for that pin: [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes PyPI on `v*` when the tag matches `pyproject.toml`. The paperwork name is `protocol-v1.0.0`. `ohho.telemetry.v1` and `RobotDescriptor` live in the ohho-sdk npm repository, also not yet tagged. Draft: [CHANGELOG.md](CHANGELOG.md). Human commands: [docs/releases/protocol-tag-commands.md](docs/releases/protocol-tag-commands.md).
+`protocolVersion` `1.0.0` is not in this commit (`85db848268168fa27b4ebb1b5992220b3bfacfcd`). The package version on that baseline is `1.1.3`. This tree's package version is `1.2.0`. Do not push a `v*` tag for that pin: [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes PyPI on `v*` when the tag matches `pyproject.toml`. The paperwork name is `protocol-v1.0.0`. `ohho.telemetry.v1` and `RobotDescriptor` live in the ohho-sdk npm repository, also not yet tagged. Draft: [CHANGELOG.md](CHANGELOG.md). Human commands: [docs/releases/protocol-tag-commands.md](docs/releases/protocol-tag-commands.md).
 
 ## Tests
 
@@ -245,9 +245,14 @@ Apache-2.0. The full text is [`LICENSE`](LICENSE).
 
 ## Releasing
 
+The 1.2.0 checklist (merge order, tag, post-release checks) is
+[`docs/releases/ohho-os-1.2.0.md`](docs/releases/ohho-os-1.2.0.md).
+Do not push a `v*` tag until that checklist says to. Pushing a `v*` tag
+runs `.github/workflows/release.yml`, which publishes to PyPI.
+
 ```bash
-git tag v1.1.3
-git push origin v1.1.3
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 The tag version must match `version` in `pyproject.toml`.
