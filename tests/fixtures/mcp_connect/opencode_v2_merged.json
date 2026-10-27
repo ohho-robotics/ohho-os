@@ -1,0 +1,22 @@
+{
+  "mcp": {
+    "servers": {
+      "other": {
+        "type": "local",
+        "command": [
+          "npx",
+          "-y",
+          "other-server"
+        ]
+      },
+      "ohho": {
+        "type": "local",
+        "command": [
+          "/opt/ohho/bin/ohho",
+          "mcp",
+          "serve"
+        ]
+      }
+    }
+  }
+}

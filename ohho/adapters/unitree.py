@@ -18,6 +18,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Optional, Tuple
 
+from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
@@ -53,6 +54,7 @@ _DEFAULT_SIM_DOMAIN = 1
 _STALE_STATE_SEC = 1.0
 _MSG_RATE_WINDOW_SEC = 5.0
 _SPORT_RPC_TIMEOUT_SEC = 1.0
+_READER_HZ = 20.0
 
 
 def parse_dds_address(address: str, iface_kw: str = "") -> Tuple[str, int]:
@@ -317,6 +319,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._last_msg_mono: Optional[float] = None
         self._last_msg_timestamp: Optional[float] = None
         self._recv_times: Deque[float] = deque()
+        self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
     @property
     def iface(self) -> str:
@@ -463,22 +466,36 @@ class UnitreeDdsTransport(BaseTransport):
         )
 
     # ── reader / watchdog threads ─────────────────────────────────────────────
-    def _start_reader(self, hz: float = 20.0) -> None:
-        if self._state_getter is None:
-            return
+    def loop_stats(self) -> LoopStats:
+        """Timing of the state reader thread."""
+        return self._loop_timer.stats()
+
+    def _start_reader(self, hz: float = _READER_HZ) -> None:
         if self._thread is not None:
             return
-        self._stop.clear()
         period = 1.0 / hz
+        if self._loop_timer.period_s != period:
+            self._loop_timer = LoopTimer(period)
+        self._stop.clear()
+        timer = self._loop_timer
 
         def loop() -> None:
+            timer.start()
             while not self._stop.is_set():
-                state = self._state_getter()
-                if state is not None:
-                    with self._lock:
-                        self._sport_partial = dict(state)
-                        self._merge_and_emit()
-                time.sleep(period)
+                timer.begin()
+                try:
+                    if self._state_getter is not None:
+                        state = self._state_getter()
+                        if state is not None:
+                            with self._lock:
+                                self._sport_partial = dict(state)
+                                self._merge_and_emit()
+                finally:
+                    delay = timer.end()
+                if self._stop.is_set():
+                    return
+                if delay > 0.0 and self._stop.wait(delay):
+                    return
 
         self._thread = threading.Thread(
             target=loop, name="ohho-unitree-rx", daemon=True
