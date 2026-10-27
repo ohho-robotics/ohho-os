@@ -104,6 +104,9 @@ class PolicyRunner:
         goal_x: Optional[float] = None,
     ) -> PolicyRunResult:
         """Run until max_steps, duration, goal_x (odom.x), or a predict fault."""
+        stand = getattr(self.robot, "stand", None)
+        if callable(stand):
+            stand()
         self._running = True
         steps = 0
         reason = "completed"
