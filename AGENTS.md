@@ -593,7 +593,10 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
    ceilings. A stale command on a humanoid zeros velocity and does not damp.
    Upright e-stop in `WALK`/`PREPARE` holds `PREPARE`. Fall state other than
    `upright`, or roll/pitch above 0.5 rad for 100 ms, latches. Hardware speed
-   stays at 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. A plugin may only tighten.
+   stays at 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. The published safety
+   profile `max_vx` for a humanoid with no built-in profile stays at most
+   0.3 m/s. Sim forward on a sim target remains 0.5 m/s. A plugin may only
+   tighten.
 8. **Tilt / fault.** `|roll|` or `|pitch|` > 0.6 rad, or `error_code != 0` →
    stop + latch, armed or not.
 9. **Arming.** Never automatic, including tests and CI. Any non-loopback

@@ -118,7 +118,7 @@ raise ground, arm, or quadruped caps. Humanoid uses `ohho/humanoid_policy.py`.
 | Control | Rule |
 |---|---|
 | Arming | Disarmed until `arm()`. `sim://` and `simulated://` arm through the existing simulator check. Loopback `humanoid-mujoco` arms only when the transport sets `sim_target=True` (the URI carries that exact token). Any other URI needs `OHHO_ARM_HARDWARE=1`, a TTY and the arming phrase. |
-| Speed | Sim: 0.5 m/s forward, 0.3 m/s back, 0.3 m/s lateral, 0.6 rad/s yaw. Hardware: 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. Clamps are audited as `clamp` with reason `velocity_cap`. |
+| Speed | Sim: 0.5 m/s forward, 0.3 m/s back, 0.3 m/s lateral, 0.6 rad/s yaw. Hardware: 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. A humanoid with no built-in profile publishes symmetric `max_vx` at that 0.3 m/s hardware forward cap (and never above the robot's own `max_lin`). A sim target still clamps forward speed to 0.5 m/s. Clamps are audited as `clamp` with reason `velocity_cap`. |
 | Watchdog | 300 ms without a command zeros velocity and stays in `WALK` or `PREPARE`. It does not damp. |
 | Fall | Latch when `fall_state` is not `upright` (`unknown` and a missing state count), or when roll/pitch stay above 0.5 rad for 100 ms. On latch, stop commanding. `damp()` runs once the vendor reports fallen or the mode is `FALLEN`. |
 | E-stop | Upright in `WALK` or `PREPARE`: zero velocity and hold `PREPARE`. In `CUSTOM`, or when fallen: `damp()`. No zero-torque and no drag. |

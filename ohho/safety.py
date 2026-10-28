@@ -473,6 +473,10 @@ def profile_for(
         from .humanoid_policy import caps_from_spec, class_profile
 
         base = class_profile(caps_from_spec(spec))
+        # Same ceiling as every other robot that has no built-in profile.
+        # Sim forward is a HumanoidCaps value, not this symmetric field.
+        lin = min(spec.max_lin, _GENERIC_MAX_LIN)
+        base = dataclasses.replace(base, max_vx=min(base.max_vx, lin))
     elif base is None:
         if spec is not None and spec.has(caps.AERIAL):
             base = DRONE_PROFILE

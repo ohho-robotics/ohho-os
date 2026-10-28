@@ -158,15 +158,16 @@ HARDWARE_CAPS = HumanoidCaps(
 
 
 def class_profile(caps: HumanoidCaps) -> Any:
-    """Safety profile whose symmetric fields are the sim-class ceiling.
+    """Safety profile for the symmetric fields a humanoid publishes.
 
-    Forward speed is stored in ``max_vx``. The back cap stays on
-    :class:`HumanoidCaps`. Timeouts and tilt stay inside ``SafetyProfile``'s
-    own upper bounds.
+    ``max_vx`` is the hardware forward ceiling, so a robot with no built-in
+    profile is not published above that cap. Sim forward speed stays on
+    :class:`HumanoidCaps` and is applied on a sim target. The back cap stays
+    on the caps. Timeouts and tilt stay inside ``SafetyProfile``'s bounds.
     """
     safety = _safety()
     return safety.SafetyProfile(
-        max_vx=min(caps.max_vx_forward, SIM_MAX_VX_FORWARD),
+        max_vx=min(caps.max_vx_forward, HARDWARE_MAX_VX_FORWARD),
         max_vy=min(caps.max_vy, SIM_MAX_VY),
         max_wz=min(caps.max_wz, SIM_MAX_WZ),
         max_accel_x=_CLASS_ACCEL,
@@ -354,13 +355,21 @@ class HumanoidPolicy(SafetyPolicy):
         return needed
 
     def active_caps(self) -> HumanoidCaps:
-        """Sim caps on a sim target, hardware caps otherwise, then any tighter bound."""
+        """Sim caps on a sim target, hardware caps otherwise, then any tighter bound.
+
+        The published ``max_vx`` is the hardware forward ceiling. On a sim
+        target that ceiling does not cut the sim forward cap. A smaller
+        ``max_vx`` still does.
+        """
         runtime = SIM_CAPS if self._sim_target else HARDWARE_CAPS
         merged = intersect_caps(runtime, self.caps)
         profile = self.profile
+        forward_limit = float(profile.max_vx)
+        if self._sim_target and math.isclose(forward_limit, HARDWARE_MAX_VX_FORWARD):
+            forward_limit = max(forward_limit, merged.max_vx_forward)
         return replace(
             merged,
-            max_vx_forward=min(merged.max_vx_forward, profile.max_vx),
+            max_vx_forward=min(merged.max_vx_forward, forward_limit),
             max_vx_back=min(merged.max_vx_back, profile.max_vx),
             max_vy=min(merged.max_vy, profile.max_vy),
             max_wz=min(merged.max_wz, profile.max_wz),
