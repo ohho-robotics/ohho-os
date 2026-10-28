@@ -6,6 +6,13 @@ built-in plugin (see :mod:`ohho.plugins`). Users add their own with
 what a robot *is* — its class, capabilities, degrees of freedom, limits and
 which adapter speaks its native protocol — not how it does any of it.
 
+``max_lin`` is the horizontal speed cap (m/s) and ``max_ang`` is the yaw-rate
+cap (rad/s). Aerial specs also set ``max_climb`` (m/s) and ``gps_fix`` on
+``AerialLimits``; :class:`RobotSpec` exposes them as read-only properties.
+``requires_hardware_arming`` is true when a non-loopback URI needs a human
+present. ``flight_ready`` is false on every built-in spec; nothing here sets
+it true.
+
 ``category`` is the legacy free string. ``robot_class`` is the closed enum.
 The additive fields and the category table live in ``ohho.robot_spec``. The
 rule is ``docs/architecture/robot-plugins.md``.
@@ -58,8 +65,10 @@ class RobotSpec:
 
     ``category`` is the legacy free string. ``robot_class`` is derived from it
     when omitted. ``joint_groups``, ``limits``, ``assets``, ``ci_sim``,
-    ``source`` and ``capability_params`` all default, so existing constructors
-    and manifests keep working.
+    ``source``, ``capability_params`` and ``sim_backend`` all default, so
+    existing constructors and manifests keep working. An empty ``sim_backend``
+    means ``sim://`` keeps today's simulator. A name selects a plugin sim
+    backend (``kinematic``, and whatever else a plugin registers).
 
     ``limits`` describes the class. It is not a safety cap. ``SafetyGate`` still
     uses ``SafetyProfile``, and ``Robot.drive`` still clamps with ``max_lin``
@@ -83,6 +92,7 @@ class RobotSpec:
     ci_sim: CiSim | None = None
     source: str = ""
     capability_params: Mapping[str, Any] | None = field(default=None, hash=False)
+    sim_backend: str = ""
 
     def __post_init__(self) -> None:
         robot_class = self.robot_class
@@ -96,6 +106,9 @@ class RobotSpec:
 
         if not isinstance(self.source, str):
             raise TypeError("source must be a string")
+        if not isinstance(self.sim_backend, str):
+            raise TypeError("sim_backend must be a string")
+        object.__setattr__(self, "sim_backend", self.sim_backend.strip())
 
         assets = self.assets if self.assets is not None else RobotAssets()
         if not isinstance(assets, RobotAssets):
@@ -171,6 +184,7 @@ class RobotSpec:
             "assets": assets_to_dict(assets),
             "ci_sim": ci_sim_to_dict(ci_sim),
             "source": self.source,
+            "sim_backend": self.sim_backend,
         }
 
     def _aerial_limits(self) -> AerialLimits | None:
@@ -289,6 +303,69 @@ _BUILTINS: dict[str, RobotSpec] = {
         robot_class=RobotClass.MOBILE_BASE,
         source=BUILTIN_SOURCE,
     ),
+    # Ohho caps, not PX4 MPC_XY_VEL_MAX. Default transport is sim:// (drone-sim).
+    # px4-x500 is spec only: nothing connects. Its arming flag is for a
+    # non-loopback URI (px4+dds://, mavlink+serial://) when that exists.
+    "px4-sitl": RobotSpec(
+        id="px4-sitl",
+        name="PX4 SITL",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="sim",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="3d",
+            requires_hardware_arming=False,
+            experimental=True,
+            flight_ready=False,
+        ),
+    ),
+    "crazyflie-sim": RobotSpec(
+        id="crazyflie-sim",
+        name="Crazyflie sim",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="sim",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="none",
+            requires_hardware_arming=False,
+            experimental=True,
+            flight_ready=False,
+        ),
+    ),
+    "px4-x500": RobotSpec(
+        id="px4-x500",
+        name="PX4 X500",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="px4-dds",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="3d",
+            requires_hardware_arming=True,
+            experimental=True,
+            flight_ready=False,
+        ),
+    ),
 }
 
 # Filled by plugin discovery on first lookup. Not seeded from ``_BUILTINS``:
@@ -331,6 +408,7 @@ def register(spec: RobotSpec) -> RobotSpec:
     change safety caps. Plugin specs are loaded first so a later ``register``
     replaces one id without hiding the others.
     """
+    _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
     _ensure_plugins()
     _REGISTRY[spec.id] = spec
@@ -398,6 +476,11 @@ def spec_from_dict(d: dict) -> RobotSpec:
         source = ""
     if not isinstance(source, str):
         raise ValueError("source must be a string")
+    sim_backend = d.get("sim_backend", "")
+    if sim_backend is None:
+        sim_backend = ""
+    if not isinstance(sim_backend, str):
+        raise ValueError("sim_backend must be a string")
 
     return RobotSpec(
         id=d["id"],
@@ -413,10 +496,14 @@ def spec_from_dict(d: dict) -> RobotSpec:
         max_ang=max_ang,
         joint_names=tuple(d.get("joint_names", ())),
         joint_groups=d.get("joint_groups"),
+        # Aerial max_climb, gps_fix, arming, experimental, and flight_ready
+        # are read from the manifest into AerialLimits. A flat manifest cannot
+        # set flight_ready true.
         limits=limits_from_manifest(raw_limits, robot_class, max_lin, max_ang, d),
         assets=assets_from_dict(d.get("assets")),
         ci_sim=ci_sim_from_dict(d.get("ci_sim")),
         source=source,
+        sim_backend=sim_backend,
     )
 
 

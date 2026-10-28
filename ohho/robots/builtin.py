@@ -25,11 +25,11 @@ def _sim_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     return SimTransport(spec)
 
 
-def _serial_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
+def _serial_transport(spec: RobotSpec | None, address: str, runtime: Any) -> Transport:
     """Yahboom base, or a base+arm composite when the spec can manipulate.
 
-    Mirrors today's ``resolve_transport`` special case. C-03 will ask plugins
-    first; until then ``resolve_transport`` keeps its own scheme dict.
+    Same split as the scheme-dict branch in ``resolve_transport``. That branch
+    remains the fallback when this plugin did not load.
     """
     del runtime
     from .. import capabilities as caps
@@ -38,7 +38,7 @@ def _serial_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     from ..adapters.feetech import FeetechTransport
     from ..adapters.yahboom import YahboomTransport
 
-    if spec.has(caps.MANIPULATION):
+    if spec is not None and spec.has(caps.MANIPULATION):
         if "," in address:
             base_port, arm_port = address.split(",", 1)
             base_port, arm_port = base_port.strip(), arm_port.strip()
@@ -48,7 +48,8 @@ def _serial_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
             YahboomTransport(spec, base_port),
             FeetechTransport(spec, arm_port),
         )
-    return YahboomTransport(spec, address)
+    # Callers may pass spec=None; the class stores it the same way the scheme dict does.
+    return YahboomTransport(spec, address)  # type: ignore[arg-type]
 
 
 def _feetech_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
