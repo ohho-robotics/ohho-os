@@ -19,12 +19,14 @@ humanoid walks with ``drive`` and does not change posture that way.
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Union
+from collections.abc import Mapping
+from typing import Any, Iterable, Optional, Union
 
 from . import capabilities as caps
 from . import humanoid
 from .adapters import resolve_transport
 from .aerial import Frame, finite_number, require_frame
+from .config import RobotProfile, merge_safety_overrides, spec_with_overrides
 from .registry import RobotSpec, get_spec
 from .runtime import Runtime, get_runtime
 from .planner import agent_max_linear_speed
@@ -51,6 +53,9 @@ class Robot:
         safety_config: Optional[str] = None,
         estop_damp: bool = False,
         read_only: bool = False,
+        sim_backend: Optional[str] = None,
+        asset_path: Optional[str] = None,
+        safety_overrides: Optional[Mapping[str, Any]] = None,
     ) -> "Robot":
         """Connect to a robot and start its runtime.
 
@@ -67,14 +72,25 @@ class Robot:
         opens the Unitree link without a SportClient, so motion commands are
         not sent. Any other transport raises
         :class:`~ohho.adapters.errors.AdapterUnavailable`.
+
+        ``sim_backend``, ``asset_path`` and ``safety_overrides`` come from a
+        :class:`~ohho.config.RobotProfile`. They are omitted by existing callers.
+        Overrides may only tighten caps; a looser profile is refused at load,
+        before this method runs. The gate's own rules are unchanged.
         """
         spec = get_spec(robot_id)
+        if sim_backend or asset_path:
+            spec = spec_with_overrides(
+                spec, sim_backend=sim_backend, asset_path=asset_path
+            )
         rt = get_runtime(runtime)
         tp = resolve_transport(transport, spec, rt, read_only=read_only)
         if tp.protocol != "simulated":
-            tp = SafetyGate(
-                tp, spec, config=resolve_config(safety_config), estop_damp=estop_damp
-            )
+            cfg = resolve_config(safety_config)
+            if safety_overrides:
+                checked = RobotProfile(spec.id, safety_overrides=dict(safety_overrides))
+                cfg = merge_safety_overrides(cfg, spec.id, checked.safety_overrides)
+            tp = SafetyGate(tp, spec, config=cfg, estop_damp=estop_damp)
         tp.connect()
         bot = cls(spec, tp, rt)
         # live backends that own a loop start it here
@@ -505,6 +521,9 @@ def connect(
     safety_config: Optional[str] = None,
     estop_damp: bool = False,
     read_only: bool = False,
+    sim_backend: Optional[str] = None,
+    asset_path: Optional[str] = None,
+    safety_overrides: Optional[Mapping[str, Any]] = None,
 ) -> Robot:
     """Module-level shortcut for :meth:`Robot.connect`."""
     return Robot.connect(
@@ -514,4 +533,7 @@ def connect(
         safety_config=safety_config,
         estop_damp=estop_damp,
         read_only=read_only,
+        sim_backend=sim_backend,
+        asset_path=asset_path,
+        safety_overrides=safety_overrides,
     )

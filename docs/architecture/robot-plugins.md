@@ -41,8 +41,9 @@ plugins, extract safety policies, or edit the open drone branches.
 5. **One switch point.** The robot id is resolved once: `--robot` on the CLI,
    then `OHHO_ROBOT`, then `~/.ohho/config.toml`, then `sim`. sim-serve, MCP,
    the recorder, the console (`/sim/[robotId]`) and VR all pass that id and
-   nothing else robot-specific. The resolver is C-06. It is not implemented
-   here.
+   nothing else robot-specific. C-06 (`ohho/config.py`, OHH-314) is that
+   resolver. Per-robot files are `~/.ohho/robots/<id>.toml` or a repo-local
+   `ohho.toml`. Their safety overrides may only tighten caps.
 
 6. **Sims, CI and the console are parameterised by robot.** One CI matrix over
    registered robots, one scenario per robot class, one console sim page driven
@@ -223,5 +224,8 @@ leave both a field and a property of the same name:
   scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
   default) selects a plugin sim backend for `sim://` and for auto; an empty
   name keeps today's simulator return. `dds://` stays the Unitree scheme.
-  The robot-id resolver and the CI matrix remain later issues (C-06, C-08).
-  They should follow this ADR rather than grow more fields on the flat spec.
+  The robot-id resolver is C-06 / OHH-314 (`ohho/config.py`): flag, then
+  `OHHO_ROBOT`, then `~/.ohho/config.toml`, then `sim`. Policy lookup uses
+  `robot_class` on the spec for that id. `RobotProfile` may only tighten caps.
+  The CI matrix remains a later issue (C-08). Both follow this ADR rather than
+  grow more fields on the flat spec.

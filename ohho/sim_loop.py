@@ -15,7 +15,16 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .adapters import resolve_transport
 from .adapters.sim import SimTransport
+from .config import (
+    ConfigError,
+    RobotProfile,
+    apply_profile_to_spec,
+    default_home,
+    load_robot_profile,
+    resolve_robot_id,
+)
 from .data import Recorder
 from .data.reader import DatasetReader
 from .data.recorder import _telemetry_to_state
@@ -24,17 +33,68 @@ from .robot import Robot
 from .runtime import NativeRuntime
 
 
+def _open_sim_robot(
+    robot_id: Optional[str],
+    *,
+    home: Optional[str] = None,
+    cwd: Optional[str] = None,
+    environ: Optional[dict] = None,
+    config_path: Optional[str] = None,
+) -> Tuple[str, Any, Any]:
+    """Resolve ``robot_id`` and open the stepped simulator for that profile.
+
+    An explicit id with no injected config path skips profile files, so
+    existing callers keep today's simulator. Omit the id, or pass ``home`` /
+    ``cwd`` / ``config_path``, and the shared resolver plus robot profile apply.
+    """
+    explicit = isinstance(robot_id, str) and bool(robot_id.strip())
+    resolved = resolve_robot_id(
+        robot_id if explicit else None,
+        home=home,
+        environ=environ,
+        config_path=config_path,
+    )
+    reads_profile = (
+        not explicit or home is not None or cwd is not None or config_path is not None
+    )
+    if reads_profile:
+        profile = load_robot_profile(resolved.robot_id, home=home, cwd=cwd)
+    else:
+        profile = RobotProfile(resolved.robot_id)
+    spec = apply_profile_to_spec(get_spec(resolved.robot_id), profile)
+    if profile.sim_backend:
+        transport = resolve_transport("sim://", spec)
+        if not hasattr(transport, "step"):
+            raise ConfigError(
+                f"sim backend {profile.sim_backend!r} has no step(); "
+                "sim-loop needs a stepped simulator"
+            )
+    else:
+        transport = SimTransport(spec)
+    return resolved.robot_id, spec, transport
+
+
 def record_sim_episodes(
-    robot_id: str = "omnibot",
+    robot_id: Optional[str] = None,
     num_episodes: int = 5,
     steps_per_episode: int = 20,
     fps: float = 10.0,
     repo_id: str = "local/sim_loop",
     output_dir: str = "./sim_loop_output/dataset",
+    *,
+    home: Optional[str] = None,
+    cwd: Optional[str] = None,
+    environ: Optional[dict] = None,
+    config_path: Optional[str] = None,
 ) -> str:
     """Record simulated teleoperation episodes and save a LeRobot v2 dataset."""
-    spec = get_spec(robot_id)
-    tp = SimTransport(spec)
+    robot_id, spec, tp = _open_sim_robot(
+        robot_id,
+        home=home,
+        cwd=cwd,
+        environ=environ,
+        config_path=config_path,
+    )
     tp.connect()
     bot = Robot(spec, tp, NativeRuntime())
 
@@ -275,13 +335,23 @@ def compute_percentiles(values: List[float]) -> Tuple[float, float]:
 
 def evaluate_policy_sim(
     client: Any,
-    robot_id: str = "omnibot",
+    robot_id: Optional[str] = None,
     eval_steps: int = 50,
     instruction: str = "simulated reach and grasp demonstration",
+    *,
+    home: Optional[str] = None,
+    cwd: Optional[str] = None,
+    environ: Optional[dict] = None,
+    config_path: Optional[str] = None,
 ) -> Tuple[int, List[float]]:
     """Execute closed-loop policy steps on simulated robot and measure serve latency."""
-    spec = get_spec(robot_id)
-    tp = SimTransport(spec)
+    robot_id, spec, tp = _open_sim_robot(
+        robot_id,
+        home=home,
+        cwd=cwd,
+        environ=environ,
+        config_path=config_path,
+    )
     tp.connect()
     bot = Robot(spec, tp, NativeRuntime())
 
@@ -392,7 +462,7 @@ def format_summary(results: Dict[str, Any]) -> str:
 
 
 def run_sim_loop(
-    robot_id: str = "omnibot",
+    robot_id: Optional[str] = None,
     episodes: int = 5,
     steps_per_episode: int = 20,
     train_steps: int = 200,
@@ -402,6 +472,11 @@ def run_sim_loop(
     mock: bool = False,
     batch_size: int = 8,
     lr: float = 1e-4,
+    *,
+    home: Optional[str] = None,
+    cwd: Optional[str] = None,
+    environ: Optional[dict] = None,
+    config_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute end-to-end CPU sim loop: Record -> Validate -> Train -> Serve -> Evaluate."""
     root = Path(output_dir).expanduser()
@@ -409,14 +484,22 @@ def run_sim_loop(
     checkpoint_dir = root / "checkpoint"
     root.mkdir(parents=True, exist_ok=True)
 
+    chosen = robot_id if isinstance(robot_id, str) and robot_id.strip() else None
+    label = resolve_robot_id(
+        chosen, home=home, environ=environ, config_path=config_path
+    ).robot_id
     print(
-        f"[1/5] Recording {episodes} sim episodes ({steps_per_episode} steps each) on {robot_id}..."
+        f"[1/5] Recording {episodes} sim episodes ({steps_per_episode} steps each) on {label}..."
     )
     dataset_path = record_sim_episodes(
         robot_id=robot_id,
         num_episodes=episodes,
         steps_per_episode=steps_per_episode,
         output_dir=str(dataset_dir),
+        home=home,
+        cwd=cwd,
+        environ=environ,
+        config_path=config_path,
     )
     print(f"      Dataset saved to: {dataset_path}")
 
@@ -492,6 +575,10 @@ def run_sim_loop(
         client=client,
         robot_id=robot_id,
         eval_steps=eval_steps,
+        home=home,
+        cwd=cwd,
+        environ=environ,
+        config_path=config_path,
     )
     p50, p95 = compute_percentiles(latencies)
     print(
@@ -530,7 +617,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Run nightly CPU sim loop: Record -> Validate -> Train ACT -> Serve -> Drive sim",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--robot", default="omnibot", help="robot spec ID to simulate")
+    parser.add_argument(
+        "--robot",
+        default=None,
+        help="robot spec id (else OHHO_ROBOT, ~/.ohho/config.toml, or sim)",
+    )
     parser.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )
@@ -577,6 +668,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             device=args.device,
             output_dir=args.output_dir,
             mock=args.mock,
+            home=str(default_home()),
         )
         return 0
     except Exception as e:
