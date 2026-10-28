@@ -26,11 +26,12 @@ nothing above it changes; it decides what actually reaches the motors:
   tilt latch is quadruped-only. A non-zero ``error_code`` still latches an
   aircraft.
 - **Arming.** Motion is refused until ``arm()``. On hardware (anything except a
-  simulator or a loopback interface on a non-zero DDS domain) arming needs
-  ``OHHO_ARM_HARDWARE=1``, an interactive TTY and the typed confirmation
-  phrase. CI and non-TTY callers fail closed. Aerial arm and takeoff have one
-  GitHub Actions opt-in for a proven simulator (``OHHO_CI_SIM_ARMING=1``). It
-  never applies to hardware or ``release_stop()``.
+  simulator, a loopback interface on a non-zero DDS domain, localhost-only
+  ROS 2 CI, or a ``px4-dds`` transport that reports ``sim_target`` True)
+  arming needs ``OHHO_ARM_HARDWARE=1``, an interactive TTY and the typed
+  confirmation phrase. CI and non-TTY callers fail closed. Aerial arm and
+  takeoff have one GitHub Actions opt-in for a proven simulator
+  (``OHHO_CI_SIM_ARMING=1``). It never applies to hardware or ``release_stop()``.
 - **Audit.** Arm/disarm, e-stops, releases, clamps, refusals and watchdog trips
   are appended as JSON Lines to ``~/.ohho/safety/<UTC date>.jsonl``.
 
@@ -617,7 +618,13 @@ def requires_hardware_arming(
     transport: Transport,
     environ: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """False only for simulators, loopback DDS, and explicit CI fake ROS 2."""
+    """False for simulators, loopback DDS, localhost-only ROS 2 CI, and a px4 sim target.
+
+    ``px4-dds`` is a sim target only when the transport reports ``sim_target``
+    True. That flag is the loopback-agent check from the px4 adapter. This
+    function does not parse a ``px4+dds://`` URI. A missing flag or any other
+    host still needs a hardware arming phrase.
+    """
     env = os.environ if environ is None else environ
     proto = getattr(transport, "protocol", "")
     if proto == "simulated":
@@ -629,6 +636,8 @@ def requires_hardware_arming(
         if _is_loopback(iface) and is_int and domain != 0:
             return False
     if proto == "ros2" and _ros2_localhost_ci(env):
+        return False
+    if proto == "px4-dds" and getattr(transport, "sim_target", None) is True:
         return False
     return True
 

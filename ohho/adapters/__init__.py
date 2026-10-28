@@ -3,10 +3,11 @@
 Adapters connect the unified Transport interface to a robot's native protocol.
 This build bundles: ``sim`` (always), ``serial`` (Yahboom / OmniBot base, needs
 the ``[serial]`` extra at connect time), ``feetech`` (SO-101 arm, needs ``[arm]``),
-``composite`` (base+arm merge for mobile-manipulators), and ``dds`` (Unitree Go2,
-needs ``[unitree]``). ``sim://`` for robot ids ``px4-sitl`` and ``crazyflie-sim``
-selects the kinematic ``drone-sim`` backend. ``px4-x500`` is a registry spec
-only; nothing in this build connects to it.
+``composite`` (base+arm merge for mobile-manipulators), ``dds`` (Unitree Go2,
+needs ``[unitree]``), and ``px4+dds`` (PX4 v1.17 uXRCE-DDS, needs a ROS 2
+graph and ``px4_msgs`` release/1.17 at connect time). ``sim://`` for robot ids
+``px4-sitl`` and ``crazyflie-sim`` selects the kinematic ``drone-sim`` backend.
+``px4-x500`` is a registry spec only; nothing in this build connects to it.
 
 Policy: **auto (no explicit transport) runs in simulation** so zero-config use and
 tests never touch hardware; pass an explicit transport URI (``serial://…``,
@@ -33,6 +34,7 @@ from .drone_sim import DroneSimTransport
 from .errors import AdapterUnavailable
 from .feetech import DEFAULT_PORT as DEFAULT_ARM_PORT
 from .feetech import FeetechTransport
+from .px4_dds import Px4DdsTransport
 from .ros2 import Ros2Transport
 from .sim import SimTransport
 from .unitree import UnitreeDdsTransport
@@ -66,6 +68,11 @@ def available_adapters() -> list[str]:
         out.append("dds")
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
+    if (
+        importlib.util.find_spec("rclpy") is not None
+        and importlib.util.find_spec("px4_msgs") is not None
+    ):
+        out.append("px4+dds")
     return out
 
 
@@ -137,6 +144,10 @@ def resolve_transport(
       ``dds://lo?domain=1`` for local simulators such as unitree_mujoco).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
+    - ``uri="px4+dds://HOST:PORT?ns=NAME"`` → PX4 uXRCE-DDS transport. This is
+      not ``dds://`` (that scheme stays Unitree). ``Robot.connect`` wraps the
+      result in ``SafetyGate``. Loopback hosts set ``sim_target``, which is
+      how the gate tells a sim agent from a vehicle.
     - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
     - ``read_only=True`` is only valid for ``dds://`` and ``unitree-dds://``.
@@ -146,8 +157,8 @@ def resolve_transport(
     if spec is not None and spec.id in _SPEC_ONLY_IDS:
         raise AdapterUnavailable(
             f"{spec.id} is a registry spec only; this build does not connect to it. "
-            "requires_hardware_arming applies to non-loopback px4+dds:// and "
-            "mavlink+serial:// URIs, which are not implemented."
+            "requires_hardware_arming applies to a non-loopback px4+dds:// URI "
+            "and to mavlink+serial://, which is not implemented."
         )
     scheme = _uri_scheme(uri)
     if read_only and scheme not in _READ_ONLY_SCHEMES:
@@ -185,13 +196,16 @@ def resolve_transport(
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
 
+    if scheme == "px4+dds":
+        return Px4DdsTransport(spec, uri, runtime=runtime)
+
     cls = _HARDWARE.get(scheme)
     if cls is None:
         from ..plugins import describe_plugin_schemes
 
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation. "
+            f"dds, ros2, px4+dds — or omit the transport to run in simulation. "
             f"{describe_plugin_schemes()}"
         )
     if cls is UnitreeDdsTransport:
@@ -206,6 +220,7 @@ __all__ = [
     "FeetechTransport",
     "UnitreeDdsTransport",
     "Ros2Transport",
+    "Px4DdsTransport",
     "CompositeTransport",
     "AdapterUnavailable",
     "resolve_transport",

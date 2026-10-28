@@ -44,7 +44,7 @@ dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
-ros2 = []                                    # rclpy ships with your ROS 2 distro — source it, then install this extra
+ros2 = []                                    # rclpy ships with ROS 2 (Jazzy, or Humble). px4+dds also needs px4_msgs release/1.17, a ROS package, not pip. PX4 v1.17.0.
 dev = ["pytest>=7", "coverage>=7", "httpx>=0.27,<0.28"]
 all = [
   "pyyaml>=6.0",
