@@ -189,7 +189,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 #### Client sends (JSON):
 - `velocity`: Target linear and angular velocity, e.g. `{"linear": {"x": 0.2, "y": 0.0}, "angular": {"z": 0.1}}`.
 - `joints`: Mapping of joint name to radians, e.g. `{"arm_shoulder_pan": 0.5}`.
-- `deadman` (`bool`): Deadman switch. If `false` or if no client message arrives for 300 ms, the commanded velocity is zero.
+- `deadman` (`bool`): Deadman switch. Missing or `false` commands zero immediately. No client message for 300 ms, or a dropped socket, also commands zero within 300 ms.
 - `estop` (`bool`): Emergency stop. If `true`, estop latches until a message with `estop: false` arrives.
 - `mode` (optional): `"stand"`, `"lie_down"`, or `"recover"` — forwarded as allowlisted high-level actions on legged robots (via `SafetyGate` when armed).
 
@@ -219,7 +219,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ```bash
    ohho sim-serve --backend ros2 --rosbridge ws://localhost:9090
    ```
-   Forwards velocity commands to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the `[ros2]` extra.
+   Forwards velocity to `/cmd_vel`, joints to `/arm/joint_commands`, and e-stop to `/emergency_stop`. Reads `/odom`, joint state, and `/camera/front/image_raw` (or `no_camera` when none arrives) via rosbridge. Depends on the `[ros2]` extra. Tests cover this with a fake rosbridge and do not launch Gazebo.
    > **Note:** Gazebo itself is launched from the OmniBot repo, not from this package.
 
 4. **Unsupported backends:**
@@ -227,7 +227,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ohho sim-serve --backend isaac
    ohho sim-serve --backend mujoco
    ```
-   Both exit non-zero and print `not built`.
+   Both exit non-zero, print `not built`, and return `not-implemented`.
 
 ## Simulation Demo (OHH-134)
 

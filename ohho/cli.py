@@ -385,11 +385,13 @@ def _cmd_run_policy(args) -> int:
 
 
 def _cmd_sim_serve(args) -> int:
-    if args.backend in ("isaac", "mujoco"):
-        print("not built", file=sys.stderr)
-        return 1
+    from .sim_serve import SimServeUnavailable, backend_entry, serve_sim
 
-    from .sim_serve import SimServeUnavailable, serve_sim
+    if backend_entry(args.backend) == "not-implemented":
+        # Isaac Sim and MuJoCo have no runtime in this package.
+        print("not built", file=sys.stderr)
+        print("not-implemented", file=sys.stderr)
+        return 1
 
     try:
         serve_sim(
