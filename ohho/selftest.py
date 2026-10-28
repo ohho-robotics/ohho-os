@@ -680,12 +680,16 @@ def check_camera_frames(
     # Hardware check via OpenCV
     try:
         import cv2  # type: ignore
-    except Exception:
+    except Exception as exc:
         dur = time.monotonic() - start_t
         return CheckResult(
             name="camera_frames",
             status="SKIP",
-            reason="OpenCV (cv2) not installed; install 'opencv-python' to capture camera frames",
+            reason=(
+                "OpenCV (cv2) not installed or failed to load "
+                f"({type(exc).__name__}: {exc}); install 'opencv-python' "
+                "to capture camera frames"
+            ),
             measurements={"cv2_available": False, "camera_idx": camera_idx},
             duration_s=dur,
         )
