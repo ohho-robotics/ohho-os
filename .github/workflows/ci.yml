@@ -29,6 +29,11 @@ jobs:
         run: python -m pip install -e plugins/ohho-booster --no-deps
       - name: JSON schemas up to date
         run: python scripts/export_json_schemas.py --check
+      - name: Install humanoid sim extras (CPU)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[humanoid-sim]"
       - name: Unit tests
         run: python -m unittest discover -s tests
       - name: SafetyGate coverage gate (ohho/safety.py >= 95% line+branch)

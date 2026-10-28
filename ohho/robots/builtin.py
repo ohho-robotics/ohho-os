@@ -72,6 +72,16 @@ def _ros2_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     return Ros2Transport(spec, address, runtime=runtime)
 
 
+def _humanoid_mujoco_transport(
+    spec: RobotSpec, address: str, runtime: Any
+) -> Transport:
+    """Generic humanoid MuJoCo link. MuJoCo itself is imported on connect."""
+    del runtime
+    from ..adapters.humanoid_mujoco import HumanoidMujocoTransport
+
+    return HumanoidMujocoTransport(spec, address=address)
+
+
 class BuiltinPlugin:
     """Specs and schemes that ship with ohho-os."""
 
@@ -93,7 +103,12 @@ class BuiltinPlugin:
         }
 
     def sim_backends(self) -> dict[str, Any]:
-        return {"kinematic": _sim_transport}
+        from ..humanoid_sim import HUMANOID_MUJOCO_BACKEND
+
+        return {
+            "kinematic": _sim_transport,
+            HUMANOID_MUJOCO_BACKEND: _humanoid_mujoco_transport,
+        }
 
     def safety_policy(self, spec: RobotSpec) -> None:
         """``None`` keeps the class default (ground, arm or legged).

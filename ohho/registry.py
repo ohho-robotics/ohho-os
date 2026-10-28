@@ -405,7 +405,9 @@ def register(spec: RobotSpec) -> RobotSpec:
 
     Capability names must be in the vocabulary. Parameter objects are checked
     against their schemas. The parameters describe the robot; they do not
-    change safety caps.
+    change safety caps. Discovery still fills the registry from plugins, and
+    this spec is stored after that, so a failed built-in plugin is not hidden
+    by a second copy of the built-in table.
     """
     _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
