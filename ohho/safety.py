@@ -18,11 +18,13 @@ nothing above it changes; it decides what actually reaches the motors:
   actions; flips, jumps, pounce, dance, handstand, walk-upright, ``free_*`` and
   cross-step are refused even if a config file lists them. Aerial robots use a
   separate allowlist (``hold``, ``land``, ``rtl``, ``offboard_velocity``,
-  ``offboard_position``). They do not reuse the Go2 set.
-- **Tilt / fault guard.** On ground robots, ``|roll|`` or ``|pitch|`` over
-  0.6 rad, a non-zero ``error_code``, or unreadable orientation values → stop
-  + latch. The 0.6 rad tilt latch is quadruped-only. A non-zero ``error_code``
-  still latches an aircraft.
+  ``offboard_position``). They do not reuse the Go2 set. Humanoid action
+  names are not on the built-in lists, so they are refused unless a profile
+  names them, and they are never sport calls. ``move_joints`` stays refused.
+- **Tilt / fault guard.** ``|roll|`` or ``|pitch|`` over 0.6 rad, a non-zero
+  ``error_code``, or unreadable orientation values → stop + latch. The 0.6 rad
+  tilt latch is quadruped-only. A non-zero ``error_code`` still latches an
+  aircraft.
 - **Arming.** Motion is refused until ``arm()``. On hardware (anything except a
   simulator, a loopback interface on a non-zero DDS domain, localhost-only
   ROS 2 CI, or a ``px4-dds`` transport that reports ``sim_target`` True)
@@ -38,6 +40,11 @@ Every refusal also sends a zero-velocity command. Joint *positions* are never
 
 ``sim://`` bypasses the gate in ``Robot.connect``. Wrapping a ``SimTransport``
 explicitly is supported (tests, demos) and arms without a TTY prompt.
+
+Class decisions are delegated to a :class:`~ohho.safety_policy.SafetyPolicy`
+chosen from ``spec.robot_class`` (ground, arm, legged; a mobile manipulator
+uses both). A plugin may supply a stricter policy. One that loosens a class
+cap is refused when the policy is loaded. Audit records include ``policy``.
 
 This is a software guard inside the Python process. Code in the same process
 can reach private attributes; it does not replace a hardware e-stop.
@@ -77,6 +84,7 @@ log = logging.getLogger("ohho.safety")
 ARM_ENV = "OHHO_ARM_HARDWARE"
 CI_SIM_ARMING_ENV = "OHHO_CI_SIM_ARMING"
 CI_SITL_ENV = "OHHO_CI_SITL"
+CI_FAKE_ROBOT_ENV = "OHHO_CI_FAKE_ROBOT"
 CONFIG_ENV = "OHHO_SAFETY_CONFIG"
 AUDIT_DIR_ENV = "OHHO_SAFETY_DIR"
 CI_ENV_VARS = (
@@ -154,6 +162,24 @@ TAKEOFF_MIN_BATTERY = 0.3
 _FENCE_EPS = 1e-6
 _CRAZYFLIE_BACKENDS = frozenset({"crazyflie", "crazyflie-cf21"})
 _SIM_BACKENDS = frozenset({"drone-sim", "sim", "px4-sitl", "crazyflie-sim"})
+
+# High-level humanoid actions. Absent from the built-in allowlists, so
+# command() refuses them until a profile names them. ``move_joints`` stays
+# refused even then. These are never forwarded to sport_command.
+HUMANOID_ACTIONS = frozenset(
+    {
+        "prepare",
+        "walk_mode",
+        "damp",
+        "get_up",
+        "lie_down",
+        "look",
+        "move_ee",
+        "gripper",
+        "hand",
+        "move_joints",
+    }
+)
 
 _DENIED_FRAGMENTS = (
     "flip",
@@ -327,10 +353,12 @@ class SafetyProfile:
         if self.aerial and self.takeoff_alt_m > self.fence_max_alt_m + _FENCE_EPS:
             raise ValueError("safety profile: takeoff altitude exceeds the geofence")
 
-        universe = DRONE_ACTIONS if self.aerial else GO2_ACTIONS
         allow = frozenset(normalize_action(str(a)) for a in self.allowlist)
+        allowable = (
+            DRONE_ACTIONS if self.aerial else (GO2_ACTIONS | HUMANOID_ACTIONS)
+        )
         for a in allow:
-            if is_denied(a) or a not in universe:
+            if is_denied(a) or a not in allowable:
                 raise ValueError(f"safety profile: action '{a}' cannot be allowlisted")
 
         joints: dict[str, tuple[float, float]] = {}
@@ -557,7 +585,15 @@ def _is_loopback(iface: str) -> bool:
 
 
 def _ros2_localhost_ci(environ: Mapping[str, str]) -> bool:
-    """True when ROS 2 discovery is localhost-only on a non-zero domain (CI fake robot)."""
+    """True only when CI opts in and ROS 2 is localhost-only on a non-zero domain.
+
+    ROS discovery env vars alone never skip hardware arming. ``ROS_STATIC_PEERS``
+    blocks the bypass (fail closed).
+    """
+    if str(environ.get(CI_FAKE_ROBOT_ENV, "")).strip() != "1":
+        return False
+    if str(environ.get("ROS_STATIC_PEERS", "")).strip():
+        return False
     loc = str(environ.get("ROS_LOCALHOST_ONLY", "")).strip().lower()
     if loc in ("1", "true", "yes"):
         localhost_only = True
@@ -865,14 +901,6 @@ def _as_float(v: Any) -> float:
         return math.nan
 
 
-def _accel_step(prev: float, target: float, dmax: float) -> float:
-    """Braking toward zero is free; speeding up (or reversing) moves ≤ dmax."""
-    base = prev if prev * target > 0 else 0.0
-    if abs(target) <= abs(base):
-        return target
-    return base + math.copysign(min(abs(target) - abs(base), dmax), target)
-
-
 def _orientation(t: Telemetry) -> Optional[tuple[float, float]]:
     c = t.custom
     if "roll" in c or "pitch" in c:
@@ -881,15 +909,6 @@ def _orientation(t: Telemetry) -> Optional[tuple[float, float]]:
     if isinstance(rpy, (list, tuple)) and len(rpy) >= 2:
         return _as_float(rpy[0]), _as_float(rpy[1])
     return None
-
-
-def _is_lying_down(t: Optional[Telemetry], p: SafetyProfile) -> bool:
-    if t is None:
-        return False
-    h = t.custom.get("body_height")
-    if isinstance(h, bool) or not isinstance(h, (int, float)) or not math.isfinite(h):
-        return False
-    return h < p.lying_body_height
 
 
 # ── the gate ──────────────────────────────────────────────────────────────────
@@ -928,10 +947,13 @@ class SafetyGate(BaseTransport):
         self.protocol = getattr(inner, "protocol", "unknown")
         self._env: Mapping[str, str] = os.environ if environ is None else environ
         cfg = config if config is not None else resolve_config(environ=self._env)
-        base = profile or profile_for(spec.id if spec else None, spec, cfg)
-        if estop_damp:
-            base = dataclasses.replace(base, estop_damp=True)
+        from .safety_policy import arming_uri, prepare_gate_profile
+
+        chosen, base = prepare_gate_profile(
+            spec, profile=profile, config=cfg, estop_damp=estop_damp
+        )
         self._profile = _apply_ceiling(base, cfg)
+        self._policy = chosen.bind(self._profile)
         self._audit_log = audit or AuditLog(
             default_audit_dir(self._env), wall_clock=wall_clock
         )
@@ -940,7 +962,7 @@ class SafetyGate(BaseTransport):
         self._input = input_fn or _prompt
         self._auto_tick = auto_tick
         self._tick_period = tick_period_s
-        self._hw = requires_hardware_arming(inner, self._env)
+        self._hw = self._policy.arming(arming_uri(inner), self._env)
 
         self._lock = threading.RLock()
         self._armed = False
@@ -990,6 +1012,13 @@ class SafetyGate(BaseTransport):
         if flag is not None:
             return bool(flag)
         return False
+
+    def get_camera_frame(self) -> Optional[bytes]:
+        """Fetch a camera frame from the inner transport if supported."""
+        fn = getattr(self._inner, "get_camera_frame", None)
+        if callable(fn):
+            return fn()
+        return None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
@@ -1158,8 +1187,10 @@ class SafetyGate(BaseTransport):
             self._latch_reason = reason
             self._moving = False
             self._last_sent = _ZERO
-            inner_error = False
             if self._profile.aerial:
+                # Flight e-stop is the aerial profile, not a ground damp.
+                # GroundPolicy.on_estop would call transport.emergency_stop.
+                inner_error = False
                 estop_meta: dict[str, Any] = {
                     "flight_request": None,
                     "frame": None,
@@ -1182,45 +1213,17 @@ class SafetyGate(BaseTransport):
                     **fields,
                 )
                 return
-            try:
-                self._inner.emergency_stop()
-            except Exception as e:
-                inner_error = True
-                log.error("safety: inner emergency_stop failed: %r", e)
-                self._zero_inner()
-            if self._profile.estop_damp:
-                damp_why = "estop_damp"
-            elif _is_lying_down(self._latest, self._profile):
-                damp_why = "lying_down"
-            else:
-                damp_why = ""
-            sport = getattr(self._inner, "sport_command", None)
-            if damp_why and callable(sport):
-                try:
-                    sport("damp")
-                    self._audit("damp", why=damp_why)
-                except Exception as e:
-                    log.error("safety: damp failed: %r", e)
+            action = self._policy.on_estop(self._inner, self._latest)
+            if action.damp_why:
+                self._audit("damp", why=action.damp_why)
             log.error("safety: %s E-STOP latched (%s)", self.robot_id, reason)
-            self._audit("estop", reason=reason, inner_error=inner_error, **details)
+            self._audit(
+                "estop", reason=reason, inner_error=action.inner_error, **details
+            )
 
     # ── state + watchdogs ─────────────────────────────────────────────────────
     def _fault(self, t: Telemetry) -> Optional[tuple[str, dict]]:
-        c = t.custom
-        if "error_code" in c:
-            try:
-                code = int(c["error_code"])
-            except (TypeError, ValueError):
-                return "fault", {"error_code": repr(c["error_code"])}
-            if code != 0:
-                return "fault", {"error_code": code}
-        if self._profile.tilt_guard:
-            o = _orientation(t)
-            if o is not None:
-                lim = self._profile.tilt_limit_rad
-                if not (abs(o[0]) <= lim and abs(o[1]) <= lim):
-                    return "tilt", {"roll": o[0], "pitch": o[1]}
-        return None
+        return self._policy.fall_or_tilt(t)
 
     def _on_inner_tele(self, t: Telemetry) -> None:
         with self._lock:
@@ -1254,7 +1257,9 @@ class SafetyGate(BaseTransport):
             idle = now - self._last_cmd_t
             if self._moving and idle >= self._profile.cmd_timeout_s:
                 self._audit("watchdog_trip", kind="command", idle_s=idle)
-                self._zero_inner()
+                self._last_sent = _ZERO
+                self._moving = False
+                self._policy.on_watchdog(self._inner, self._latest)
 
     def _watchdog_loop(self, stop: threading.Event) -> None:
         while not stop.wait(self._tick_period):
@@ -1266,8 +1271,10 @@ class SafetyGate(BaseTransport):
 
     # ── plumbing ──────────────────────────────────────────────────────────────
     def _audit(self, event: str, **fields: Any) -> bool:
+        extra = dict(fields)
+        extra.setdefault("policy", self._policy.name)
         ok = self._audit_log.write(
-            event, robot=self.robot_id, protocol=self.protocol, **fields
+            event, robot=self.robot_id, protocol=self.protocol, **extra
         )
         if not ok and not self._audit_failing:
             self._audit_failing = True
@@ -1331,26 +1338,15 @@ class SafetyGate(BaseTransport):
             if not self._motion_allowed(command, requested=req):
                 return False
             now = self._clock()
-            p = self._profile
-            capped = (
-                clamp(req[0], -p.max_vx, p.max_vx),
-                clamp(req[1], -p.max_vy, p.max_vy),
-                clamp(req[2], -p.max_wz, p.max_wz),
+            decision = self._policy.clamp(
+                "velocity",
+                (req, self._last_sent, now - self._last_cmd_t),
+                self._latest,
             )
-            if p.aerial and p.max_horizontal > 0.0:
-                hx, hy = clip_horizontal(capped[0], capped[1], p.max_horizontal)
-                capped = (hx, hy, capped[2])
-            dt = min(max(now - self._last_cmd_t, 0.0), p.cmd_timeout_s)
-            accels = (p.max_accel_x, p.max_accel_y, p.max_accel_wz)
-            applied = tuple(
-                _accel_step(prev, tgt, a * dt)
-                for prev, tgt, a in zip(self._last_sent, capped, accels)
-            )
-            reasons = []
-            if capped != req:
-                reasons.append("velocity_cap")
-            if applied != capped:
-                reasons.append("accel_cap")
+            if decision.reject:
+                return self._reject(command, decision.reject, requested=req)
+            applied = decision.applied
+            reasons = list(decision.reasons)
             if reasons and not self._audit(
                 "clamp",
                 command=command,
@@ -1381,26 +1377,17 @@ class SafetyGate(BaseTransport):
                 return
             if not self._motion_allowed(cmd, joint=name, requested=position):
                 return
-            p = self._profile
-            if self.spec is not None and self.spec.joint_names:
-                if name not in self.spec.joint_names:
-                    self._reject(cmd, "unknown_joint", joint=name)
-                    return
-            limits = p.joint_limits.get(name)
-            if limits is None:
-                self._reject(cmd, "no_joint_limit", joint=name)
+            names = self.spec.joint_names if self.spec is not None else ()
+            decision = self._policy.clamp(
+                "joint",
+                (name, position, self._joint_reference(name), names),
+                self._latest,
+            )
+            if decision.reject:
+                self._reject(cmd, decision.reject, joint=name)
                 return
-            ref = self._joint_reference(name)
-            if ref is None:
-                self._reject(cmd, "no_joint_reference", joint=name)
-                return
-            target = clamp(position, limits[0], limits[1])
-            applied = clamp(target, ref - p.max_joint_step, ref + p.max_joint_step)
-            reasons = []
-            if target != position:
-                reasons.append("joint_limit")
-            if applied != target:
-                reasons.append("joint_step")
+            applied = decision.applied[0]
+            reasons = list(decision.reasons)
             if reasons and not self._audit(
                 "clamp",
                 command=cmd,
@@ -1436,40 +1423,45 @@ class SafetyGate(BaseTransport):
             if not callable(fn):
                 self._reject(cmd, "effort_unsupported", joint=name)
                 return
-            limit = self._profile.effort_limits.get(name)
-            if limit is None:
-                self._reject(cmd, "no_effort_limit", joint=name)
+            decision = self._policy.clamp("effort", (name, effort), self._latest)
+            if decision.reject:
+                self._reject(cmd, decision.reject, joint=name)
                 return
-            applied = clamp(effort, -limit, limit)
-            if applied != effort and not self._audit(
+            applied = decision.applied[0]
+            if decision.reasons and not self._audit(
                 "clamp",
                 command=cmd,
                 joint=name,
                 requested=effort,
                 applied=applied,
-                reasons=["effort_cap"],
+                reasons=list(decision.reasons),
             ):
                 return
             self._forward(lambda: fn(name, applied), cmd)
 
     def command(self, action: Any, *args: Any) -> bool:
-        """Run a high-level (sport-mode) action if it is allowlisted.
+        """Run a high-level action if it is allowlisted.
 
         ``stop_move`` is always accepted. ``move`` goes through the velocity
         caps; ``euler`` angles are clamped to ``profile.euler_limit_rad``.
         Aerial profiles dispatch flight requests instead of sport actions.
-        Returns True when the action was forwarded.
+        Humanoid names are refused unless the profile lists them, and then
+        they go to ``send_humanoid`` rather than ``sport_command``.
+        ``move_joints`` is refused even when listed. Returns True when the
+        action was forwarded.
         """
         cmd = "command"
         with self._lock:
             if not isinstance(action, str) or not action.strip():
                 return self._reject(cmd, "invalid_action", action=repr(action))
             a = normalize_action(action)
-            if is_denied(a):
+            if self._policy.denied(a):
                 return self._reject(cmd, "denied", action=a)
             if self._profile.aerial:
                 return self._aerial_command(a, args)
-            if a not in self._profile.allowlist:
+            if a in HUMANOID_ACTIONS:
+                return self._humanoid_command(a, args)
+            if a not in self._policy.allowlist:
                 return self._reject(cmd, "not_allowlisted", action=a)
             if a == "stop_move":
                 if args:
@@ -1493,17 +1485,16 @@ class SafetyGate(BaseTransport):
                 nums = _floats(args, 3, finite=True)
                 if nums is None:
                     return self._reject(cmd, "bad_arguments", action=a)
-                lim = self._profile.euler_limit_rad
-                applied = tuple(clamp(v, -lim, lim) for v in nums)
-                if applied != nums and not self._audit(
+                decision = self._policy.clamp("euler", nums, self._latest)
+                if decision.reasons and not self._audit(
                     "clamp",
                     command="euler",
                     requested=nums,
-                    applied=applied,
-                    reasons=["euler_limit"],
+                    applied=decision.applied,
+                    reasons=list(decision.reasons),
                 ):
                     return False
-                return self._sport(a, *applied)
+                return self._sport(a, *decision.applied)
             if args:
                 return self._reject(cmd, "bad_arguments", action=a)
             return self._sport(a)
@@ -1729,7 +1720,7 @@ class SafetyGate(BaseTransport):
         self.last_error = None
         if action in DRONE_TTY_ACTIONS or action == "disarm":
             return self._aerial_privileged(action, args)
-        if action not in self._profile.allowlist:
+        if action not in self._policy.allowlist:
             return self._aerial_reject(action, None, "not_allowlisted")
         if action in {"hold", "land", "rtl"}:
             if args:
@@ -1884,11 +1875,51 @@ class SafetyGate(BaseTransport):
             frame=frame,
         )
 
+    def _humanoid_command(self, action: str, args: tuple[Any, ...]) -> bool:
+        """Allowlisted humanoid actions only. Never a sport-mode call.
+
+        ``move_joints`` is refused here. CUSTOM mode, a simulated link and the
+        class policy are required before low-level joints can be sent, and
+        that policy is not this gate.
+        """
+        if action == "move_joints" or action not in self._policy.allowlist:
+            return self._reject("command", "not_allowlisted", action=action)
+        if not self._motion_allowed("command", action=action):
+            return False
+        send = getattr(self._inner, "send_humanoid", None)
+        if not callable(send):
+            return self._reject("command", "unsupported_by_transport", action=action)
+        return self._forward(lambda: send(action, *args), f"command:{action}")
+
     def _sport(self, action: str, *args: float) -> bool:
         fn = getattr(self._inner, "sport_command", None)
-        if not callable(fn):
-            return self._reject("command", "unsupported_by_transport", action=action)
-        return self._forward(lambda: fn(action, *args), f"command:{action}")
+        if callable(fn):
+            return self._forward(lambda: fn(action, *args), f"command:{action}")
+        mode = getattr(self._inner, "send_mode", None)
+        if callable(mode) and type(self._inner).send_mode is not BaseTransport.send_mode:
+            if action == "euler" and len(args) == 3:
+                r, p, y = args
+                return self._forward(
+                    lambda: mode("euler", roll=r, pitch=p, yaw=y),
+                    f"command:{action}",
+                )
+            if args:
+                return self._reject("command", "bad_arguments", action=action)
+            return self._forward(lambda: mode(action), f"command:{action}")
+        return self._reject("command", "unsupported_by_transport", action=action)
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Forward a legged posture command through the sport allowlist."""
+        action = normalize_action(name)
+        if action == "euler":
+            self.command(
+                "euler",
+                float(params.get("roll", 0.0)),
+                float(params.get("pitch", 0.0)),
+                float(params.get("yaw", 0.0)),
+            )
+        else:
+            self.command(action)
 
 
 __all__ = [
@@ -1897,6 +1928,7 @@ __all__ = [
     "AUDIT_DIR_ENV",
     "AuditLog",
     "CI_ENV_VARS",
+    "CI_FAKE_ROBOT_ENV",
     "CI_SIM_ARMING_ENV",
     "CI_SITL_ENV",
     "CONFIG_ENV",
@@ -1911,6 +1943,7 @@ __all__ = [
     "DRONE_TAKEOFF_ALT_M",
     "DRONE_TTY_ACTIONS",
     "GO2_PROFILE",
+    "HUMANOID_ACTIONS",
     "HARD_MAX_ANG",
     "HARD_MAX_LIN",
     "OMNIBOT_PROFILE",
