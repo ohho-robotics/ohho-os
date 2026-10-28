@@ -84,7 +84,8 @@ background ROS 2 runtime thread; the suite still exits 0.
 not open a serial port, a camera, or a GPU. The simulator is in-process.
 
 `tests/hil/` talks to real robots. Every test in that package is
-skipped unless `OHHO_HIL=1`. The ports they use:
+skipped unless `OHHO_HIL=1` and the device variable for that test is set.
+An unset variable skips the test.
 
 | Test | Device | Environment variable | Default |
 |---|---|---|---|
@@ -92,6 +93,24 @@ skipped unless `OHHO_HIL=1`. The ports they use:
 | OmniBot arm | Feetech bus | `OHHO_OMNIBOT_ARM` | `/dev/ttyACM0` |
 | OmniBot base + arm | both of the above | both | both defaults |
 | Unitree Go2 | DDS (**untested on hardware** — use `ohho sim --robot unitree-go2` first; see [Install](#install)) | `OHHO_GO2_IFACE` | `eth0` |
+
+Those defaults are typical device nodes, not implicit HIL values. An unset
+variable still skips `tests/hil/`. CI runs the same four scenarios on fake
+transports (`ohho hil --mock`). On the bench, after
+[`docs/hil-preflight.md`](docs/hil-preflight.md):
+
+```bash
+OHHO_HIL=1 \
+OHHO_OMNIBOT_PORT=/dev/ttyUSB0 \
+OHHO_OMNIBOT_ARM=/dev/ttyACM0 \
+OHHO_GO2_IFACE=eth0 \
+ohho hil --hardware --preflight-ok
+```
+
+Use the device nodes you confirmed. Those example paths are typical on the
+Pi. The 2-minute MCAP steps are in [`docs/hil-bag.md`](docs/hil-bag.md).
+[`docs/hil-results.md`](docs/hil-results.md) stays an empty template until
+that bench run.
 
 Those adapters are not installed by `pip install ohho-os`. The extras are
 `serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds — you also
