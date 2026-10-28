@@ -45,6 +45,7 @@ The server periodically broadcasts robot telemetry to all connected clients:
 
 | Field | Type | Description |
 |---|---|---|
+| `protocolVersion` | `string` | OhhO wire protocol semver (`ohho.PROTOCOL_VERSION`, see `schemas/manifest.json`). |
 | `odom` | `object` | Current pose containing `{"x": float, "y": float, "yaw": float}`. |
 | `joints` | `object` | Present joint positions `{"<name>": float, ...}`. |
 | `backend` | `string` | Active backend identifier (`"sim"`, `"ros2"`, or `"robot"`). |
@@ -61,6 +62,7 @@ The server periodically broadcasts robot telemetry to all connected clients:
 Example server message:
 ```json
 {
+  "protocolVersion": "1.0.0",
   "odom": {
     "x": 0.125,
     "y": 0.0,
@@ -80,15 +82,19 @@ Example server message:
 
 ### 1. In-process simulation
 ```bash
-ohho sim-serve --backend sim --port 8765
+ohho sim-serve --backend sim --port 8790
 ```
 Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
+
+Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
+
+The default port is **8790**. Port 8765 is the Foxglove bridge in OmniBot (`robot.launch.py`, `simulation.launch.py`); sim-serve does not bind it unless you pass `--port 8765` yourself.
 
 ### 2. Live robot
 ```bash
 ohho sim-serve --backend robot --robot unitree-go2 --transport 'dds://lo?domain=1'
 ```
-Connects through `Robot.connect` with the given transport URI. Hardware links use `SafetyGate` (disarmed until `bot.arm()` in an interactive session).
+Connects through `Robot.connect` with the given transport URI. Hardware links use `SafetyGate` and stay disarmed until an operator arms them. A loopback or simulated link (`dds://lo` on a domain other than 0, or `sim://`) is armed automatically so teleop can drive the sim.
 
 ### 3. ROS 2 bridge
 ```bash

@@ -25,6 +25,7 @@ Protocol:
     Server sends:
         - ``odom``: ``{"x": float, "y": float, "yaw": float}`` (planar shadow)
         - ``joints``: ``{"<joint_name>": float, ...}``
+        - ``protocolVersion``: ``ohho.PROTOCOL_VERSION``
         - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
         - ``posture`` / ``battery`` (optional, when the robot reports them)
         - ``drone``: the ``custom["drone"]`` object when the robot publishes one
@@ -59,6 +60,7 @@ from typing import Any, Mapping, Optional
 
 from .aerial import Frame
 from .capabilities import AERIAL
+from .protocol import PROTOCOL_VERSION
 from .safety import ARM_ENV, ARM_PHRASE, DRONE_TAKEOFF_ALT_M
 from .schema import Telemetry
 
@@ -98,6 +100,10 @@ def _vertical(value: Any) -> float:
     if not math.isfinite(number):
         return 0.0
     return number
+
+
+# OmniBot's Foxglove bridge binds 8765 (robot.launch.py, simulation.launch.py).
+DEFAULT_PORT = 8790
 
 
 def parse_twist(val: Any) -> tuple[float, float, float, float]:
@@ -303,7 +309,7 @@ class SimServe:
         robot: str = "omnibot",
         transport: Optional[str] = None,
         host: str = "0.0.0.0",
-        port: int = 8765,
+        port: int = DEFAULT_PORT,
         rosbridge: str = "ws://localhost:9090",
         rate_hz: float = 20.0,
     ) -> None:
@@ -377,6 +383,7 @@ class SimServe:
             uri = "sim://" if self.backend == "sim" else self._transport_uri
             assert uri is not None
             self._bot = Robot.connect(self.robot_id, transport=uri, runtime="native")
+            await self._arm_sim_link()
         elif self.backend == "ros2":
             self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
             await self._rosbridge_ws.send(
@@ -405,6 +412,26 @@ class SimServe:
             self.port = self._server.sockets[0].getsockname()[1]
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+
+    async def _arm_sim_link(self) -> None:
+        """Arm a simulator or loopback link. A hardware link stays disarmed."""
+        bot = self._bot
+        if bot is None or not getattr(bot, "gated", False):
+            return
+        gate = getattr(bot, "transport", None)
+        if getattr(gate, "requires_hardware_arming", True):
+            return
+        arm = getattr(bot, "arm", None)
+        if not callable(arm):
+            return
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                if arm():
+                    return
+            except Exception:
+                return
+            await asyncio.sleep(0.05)
 
     async def stop(self) -> None:
         """Shut down the server and disconnect backends."""
@@ -603,6 +630,7 @@ class SimServe:
         self, odom: dict[str, float], joints: dict[str, float]
     ) -> dict[str, Any]:
         msg: dict[str, Any] = {
+            "protocolVersion": PROTOCOL_VERSION,
             "odom": odom,
             "joints": joints,
             "backend": self.backend,
@@ -907,7 +935,7 @@ def serve_sim(
     robot: str = "omnibot",
     transport: Optional[str] = None,
     host: str = "0.0.0.0",
-    port: int = 8765,
+    port: int = DEFAULT_PORT,
     rosbridge: str = "ws://localhost:9090",
     rate_hz: float = 20.0,
     stop_event: Optional[threading.Event] = None,
@@ -916,10 +944,11 @@ def serve_sim(
 
     Parameters:
         backend: "sim", "ros2", or "robot".
-        robot: robot spec id (e.g. "omnibot", "unitree-go2", "px4-sitl").
+        robot: robot spec id (e.g. "omnibot", "unitree-go2", "legged-base", "px4-sitl").
         transport: transport URI for the "robot" backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
-        port: WebSocket server port.
+        port: WebSocket server port. Defaults to 8790 so it does not clash
+            with OmniBot's Foxglove bridge on 8765.
         rosbridge: rosbridge WebSocket URL (for "ros2" backend).
         rate_hz: telemetry broadcast rate in Hz (default 20.0).
         stop_event: optional threading.Event to request server shutdown.
