@@ -414,8 +414,8 @@ DRONE_PROFILE = SafetyProfile(
     fence_max_alt_m=DRONE_FENCE_ALT_M,
 )
 
-# Built-in ids only. The mobile manipulator registers its own ceiling from
-# ohho.robots.omnibot so core does not name that robot.
+# Built-in ids only. Any other robot registers its ceiling from its plugin
+# via register_baseline, so this table stays robot-agnostic.
 PROFILES: Mapping[str, SafetyProfile] = MappingProxyType(
     {
         "unitree-go2": GO2_PROFILE,
