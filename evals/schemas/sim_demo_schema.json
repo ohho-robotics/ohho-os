@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OhhO OS Sim Demo Evaluation Schema (OHH-134)",
+  "description": "Evaluation schema for the OHH-134 typed-goal agent Go2 in MuJoCo simulation demo.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "eval_id",
+    "timestamp",
+    "robot",
+    "sim_backend",
+    "transport",
+    "simulation_only",
+    "hardware_tested",
+    "disclaimer",
+    "shots",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "eval_id": {
+      "type": "string"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "robot": {
+      "type": "object",
+      "required": ["id", "name", "category", "capabilities"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "sim_backend": {
+      "type": "object",
+      "required": ["engine", "shim", "domain", "interface"],
+      "properties": {
+        "engine": { "type": "string" },
+        "shim": { "type": "string" },
+        "domain": { "type": "integer" },
+        "interface": { "type": "string" }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "required": ["uri", "protocol", "gated"],
+      "properties": {
+        "uri": { "type": "string" },
+        "protocol": { "type": "string" },
+        "gated": { "type": "boolean" }
+      }
+    },
+    "simulation_only": {
+      "type": "boolean",
+      "const": true
+    },
+    "hardware_tested": {
+      "type": "boolean",
+      "const": false
+    },
+    "disclaimer": {
+      "type": "string"
+    },
+    "shots": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "shot_index",
+          "id",
+          "name",
+          "target_duration_s",
+          "actual_duration_s",
+          "status",
+          "overlay_text",
+          "events"
+        ],
+        "properties": {
+          "shot_index": { "type": "integer", "minimum": 1, "maximum": 6 },
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "target_duration_s": { "type": "number", "minimum": 0 },
+          "actual_duration_s": { "type": "number", "minimum": 0 },
+          "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIP"] },
+          "overlay_text": { "type": "string" },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["type", "description"],
+              "properties": {
+                "type": { "type": "string" },
+                "description": { "type": "string" },
+                "details": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_shots",
+        "passed_shots",
+        "failed_shots",
+        "total_duration_s",
+        "safety_clamp_verified",
+        "prohibited_action_refused",
+        "estop_latched",
+        "simulation_only_banner_verified",
+        "overall_result"
+      ],
+      "properties": {
+        "total_shots": { "type": "integer" },
+        "passed_shots": { "type": "integer" },
+        "failed_shots": { "type": "integer" },
+        "total_duration_s": { "type": "number" },
+        "safety_clamp_verified": { "type": "boolean" },
+        "prohibited_action_refused": { "type": "boolean" },
+        "estop_latched": { "type": "boolean" },
+        "simulation_only_banner_verified": { "type": "boolean" },
+        "overall_result": { "type": "string", "enum": ["PASS", "FAIL"] }
+      }
+    }
+  }
+}
