@@ -40,6 +40,34 @@ def _has_websockets() -> bool:
     return importlib.util.find_spec("websockets") is not None
 
 
+# Scheduler slack for a loaded CI runner. The 300 ms deadman edge itself is
+# checked with a fake clock in TestTeleopSessionProtocol.
+_CI_DEADLINE_SLACK_S = 2.0
+
+
+async def _latest_json(
+    client: Any, *, first_timeout: float = 1.0, quiet_s: float = 0.05
+) -> dict[str, Any]:
+    """Newest JSON message from a periodic telemetry socket.
+
+    ``quiet_s`` is one deadline. A timeout that restarts on every frame never
+    fires when frames arrive faster than that timeout: the sim backend
+    broadcasts at 40 Hz (25 ms), so a 50 ms ``recv`` timeout blocks forever.
+    """
+    raw = await asyncio.wait_for(client.recv(), timeout=first_timeout)
+    msg = json.loads(raw)
+    deadline = time.monotonic() + quiet_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return msg
+        try:
+            raw = await asyncio.wait_for(client.recv(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return msg
+        msg = json.loads(raw)
+
+
 class TestVelocityParser(unittest.TestCase):
     def test_parse_nested(self):
         vx, vy, w = parse_velocity(
@@ -246,17 +274,8 @@ class TestSimServeRobotBackend(unittest.TestCase):
 
         fake = _FakeBot()
 
-        async def drain_latest(client: Any, timeout: float = 0.05) -> dict[str, Any]:
-            latest = None
-            while True:
-                try:
-                    raw = await asyncio.wait_for(client.recv(), timeout=timeout)
-                    latest = json.loads(raw)
-                    timeout = 0.01
-                except asyncio.TimeoutError:
-                    break
-            assert latest is not None
-            return latest
+        async def drain_latest(client: Any, timeout: float = 1.0) -> dict[str, Any]:
+            return await _latest_json(client, first_timeout=timeout)
 
         async def run_test() -> None:
             from unittest.mock import patch
@@ -294,14 +313,15 @@ class TestSimServeRobotBackend(unittest.TestCase):
                     self.assertGreater(fake.transport.last_vel[0], 0.0)
 
                     t0 = time.monotonic()
-                    await asyncio.sleep(0.35)
+                    await asyncio.sleep(DEADMAN_TIMEOUT_S + 0.05)
                     await drain_latest(client)
-                    while time.monotonic() - t0 < 0.45:
+                    limit = DEADMAN_TIMEOUT_S + _CI_DEADLINE_SLACK_S
+                    while time.monotonic() - t0 < limit:
                         if fake.transport.last_vel == (0.0, 0.0, 0.0):
                             break
                         await asyncio.sleep(0.02)
                     self.assertEqual(fake.transport.last_vel, (0.0, 0.0, 0.0))
-                    self.assertLess(time.monotonic() - t0, 0.45)
+                    self.assertLess(time.monotonic() - t0, limit)
 
                     await client.send(
                         json.dumps(
@@ -314,7 +334,8 @@ class TestSimServeRobotBackend(unittest.TestCase):
                             }
                         )
                     )
-                    for _ in range(20):
+                    drive_deadline = time.monotonic() + _CI_DEADLINE_SLACK_S
+                    while time.monotonic() < drive_deadline:
                         if fake.transport.last_vel[0] == 0.4:
                             break
                         await asyncio.sleep(0.02)
@@ -331,14 +352,12 @@ class TestSimServeRobotBackend(unittest.TestCase):
                             }
                         )
                     )
-                    stopped = False
-                    for _ in range(30):
+                    while time.monotonic() - released < _CI_DEADLINE_SLACK_S:
                         if fake.transport.last_vel == (0.0, 0.0, 0.0):
-                            stopped = True
                             break
                         await asyncio.sleep(0.01)
-                    self.assertTrue(stopped)
-                    self.assertLess(time.monotonic() - released, 0.3)
+                    self.assertEqual(fake.transport.last_vel, (0.0, 0.0, 0.0))
+                    self.assertLess(time.monotonic() - released, _CI_DEADLINE_SLACK_S)
 
                     await client.send(json.dumps({"mode": "stand"}))
                     await asyncio.sleep(0.05)
@@ -368,17 +387,8 @@ class TestSimServeSimBackend(unittest.TestCase):
 
         start_time = time.monotonic()
 
-        async def drain_latest(client: Any, timeout: float = 0.05) -> dict[str, Any]:
-            latest = None
-            while True:
-                try:
-                    raw = await asyncio.wait_for(client.recv(), timeout=timeout)
-                    latest = json.loads(raw)
-                    timeout = 0.01
-                except asyncio.TimeoutError:
-                    break
-            assert latest is not None
-            return latest
+        async def drain_latest(client: Any, timeout: float = 1.0) -> dict[str, Any]:
+            return await _latest_json(client, first_timeout=timeout)
 
         async def run_test():
             server = SimServe(
@@ -499,11 +509,12 @@ class TestSimServeSimBackend(unittest.TestCase):
 
         asyncio.run(run_test())
         elapsed = time.monotonic() - start_time
-        # Must drive and complete all checks in under 3 seconds (macOS runners)
+        # Scripted waits are about 2s. The cap leaves room for a slow runner
+        # and still fails if the session stalls.
         self.assertLess(
             elapsed,
-            3.0,
-            f"Test took {elapsed:.2f}s, expected under 3 seconds",
+            20.0,
+            f"Test took {elapsed:.2f}s, expected under 20 seconds",
         )
 
 
@@ -805,12 +816,12 @@ def _commanded_velocity(server: SimServe) -> tuple[float, float, float]:
 
 
 async def _hold_deadman_until_moved(
-    client: Any, server: SimServe, *, min_dx: float = 0.01, timeout: float = 2.0
+    client: Any, server: SimServe, *, min_dx: float = 0.01, timeout: float = 8.0
 ) -> float:
     """Hold deadman until the base moves at least ``min_dx`` meters.
 
-    The physics thread aims for 50 Hz. On macOS CI, after merging main, a
-    fixed 200 ms burst only integrates one or two 4 mm steps. Wait until the
+    The physics thread aims for 50 Hz. A fixed 200 ms burst can integrate
+    only one or two 4 mm steps when that thread is starved. Wait until the
     base has actually moved. Sends stay inside the 300 ms deadman window.
     """
     x0 = _live_odom_x(server)
@@ -832,9 +843,7 @@ async def _hold_deadman_until_moved(
         if x - x0 > min_dx:
             return x
         if time.monotonic() >= deadline:
-            raise AssertionError(
-                f"deadman hold moved {x - x0:.4f} m in {timeout:.1f}s"
-            )
+            raise AssertionError(f"deadman hold moved {x - x0:.4f} m in {timeout:.1f}s")
 
 
 @unittest.skipUnless(
@@ -962,15 +971,7 @@ class TestSimServeDeadmanEdges(unittest.TestCase):
                         )
                     )
                     await asyncio.sleep(0.25)
-                    raw = await asyncio.wait_for(client.recv(), timeout=1.0)
-                    # Drain to the newest snapshot.
-                    latest = json_mod.loads(raw)
-                    while True:
-                        try:
-                            raw = await asyncio.wait_for(client.recv(), timeout=0.05)
-                            latest = json_mod.loads(raw)
-                        except asyncio.TimeoutError:
-                            break
+                    latest = await _latest_json(client)
                 self.assertGreater(latest["joints"].get("arm_shoulder_pan", 0.0), 0.05)
                 self.assertEqual(latest["backend"], "sim")
                 self.assertTrue(latest.get("no_camera"))
@@ -1051,7 +1052,7 @@ class TestRos2ProtocolWithoutGazebo(unittest.TestCase):
 
             await asyncio.gather(pump_in(), pump_out())
 
-        async def wait_for(predicate: Any, timeout: float = 1.0) -> None:
+        async def wait_for(predicate: Any, timeout: float = 5.0) -> None:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if predicate():
@@ -1078,19 +1079,10 @@ class TestRos2ProtocolWithoutGazebo(unittest.TestCase):
                 ) as client:
 
                     async def latest() -> dict[str, Any]:
-                        raw = await asyncio.wait_for(client.recv(), timeout=1.0)
-                        msg = json_mod.loads(raw)
-                        while True:
-                            try:
-                                raw = await asyncio.wait_for(
-                                    client.recv(), timeout=0.05
-                                )
-                                msg = json_mod.loads(raw)
-                            except asyncio.TimeoutError:
-                                return msg
+                        return await _latest_json(client)
 
                     async def until_pose() -> dict[str, Any]:
-                        deadline = time.monotonic() + 1.0
+                        deadline = time.monotonic() + 5.0
                         last: dict[str, Any] = {}
                         while time.monotonic() < deadline:
                             last = await latest()
@@ -1154,7 +1146,7 @@ class TestRos2ProtocolWithoutGazebo(unittest.TestCase):
                     )
 
                     async def until_camera() -> dict[str, Any]:
-                        deadline = time.monotonic() + 1.0
+                        deadline = time.monotonic() + 5.0
                         last = still_quiet
                         while time.monotonic() < deadline:
                             last = await latest()
