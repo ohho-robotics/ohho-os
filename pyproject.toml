@@ -76,7 +76,7 @@ builtin = "ohho.robots.builtin:plugin"
 omnibot = "ohho.robots.omnibot:plugin"
 
 [tool.setuptools.packages.find]
-include = ["ohho*"]
+include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
 ohho = ["robots/*.json", "agent_rules/*.md"]
