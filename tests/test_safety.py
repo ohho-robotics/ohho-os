@@ -1639,6 +1639,13 @@ class TestCliSafetyFlags(unittest.TestCase):
             cli._connect(args)
         fake.arm.assert_not_called()
 
+    def test_get_camera_frame_forwarding(self):
+        inner = FakeTransport()
+        gate = SafetyGate(inner, get_spec("omnibot"), auto_tick=False)
+        self.assertIsNone(gate.get_camera_frame())
+        inner.get_camera_frame = lambda: b"fake_frame_bytes"
+        self.assertEqual(gate.get_camera_frame(), b"fake_frame_bytes")
+
 
 if __name__ == "__main__":
     unittest.main()

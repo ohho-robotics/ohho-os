@@ -10,11 +10,18 @@ State arrives on DDS topics ``rt/sportmodestate`` (pose, IMU, gait) and
 ``Scan`` (see :func:`ohho.lidar.pointcloud_to_scan`) whether state is polled or
 delivered by subscribers. A ``state_factory``, ``subscriber_factory``, or
 ``pointcloud_factory`` can be injected for tests (no DDS, no hardware).
+
+Front-camera frames (OHH-125) come from ``get_camera_frame()``. On hardware that
+is ``VideoClient``; tests and sim inject ``frame_factory`` or ``OHHO_STUB_DDS=1``
+on a loopback interface and a non-zero domain. Planar lidar scans are published
+on ``Telemetry.scan`` from the point cloud (``pointcloud_factory`` or the lidar
+DDS topic) on the same transport.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -23,7 +30,7 @@ from typing import Any, Callable, Deque, Optional, Tuple
 from ..lidar import pointcloud2_to_scan, pointcloud_to_scan
 from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
-from ..safety import normalize_action
+from ..safety import _is_loopback, normalize_action
 from ..schema import (
     ConnectionState,
     JointReading,
@@ -417,6 +424,7 @@ _SPORT_WHILE_ESTOPPED = frozenset({"stop_move", "damp"})
 
 
 StateFactory = Callable[[], Callable[[], Optional[dict]]]
+FrameFactory = Callable[[], Callable[[], Optional[bytes]]]
 SubscriberFactory = Callable[[str, Any, Callable[[Any], None]], Any]
 PointCloudFactory = Callable[[], Optional[object]]
 
@@ -431,6 +439,7 @@ class UnitreeDdsTransport(BaseTransport):
         *,
         iface: str = "",
         state_factory: Optional[StateFactory] = None,
+        frame_factory: Optional[FrameFactory] = None,
         subscriber_factory: Optional[SubscriberFactory] = None,
         lowstate_factory: Optional[StateFactory] = None,
         pointcloud_factory: Optional[PointCloudFactory] = None,
@@ -442,11 +451,14 @@ class UnitreeDdsTransport(BaseTransport):
         self._iface, self.domain_id = parse_dds_address(address, iface)
         self.address = self._iface
         self._state_factory = state_factory
+        self._frame_factory = frame_factory
         self._subscriber_factory = subscriber_factory
         self._lowstate_factory = lowstate_factory
         self._pointcloud_factory = pointcloud_factory
         self._client: Optional[object] = None
+        self._video_client: Optional[object] = None
         self._state_getter: Optional[Callable[[], Optional[dict]]] = None
+        self._frame_getter: Optional[Callable[[], Optional[bytes]]] = None
         self._lowstate_getter: Optional[Callable[[], Optional[dict]]] = None
         self._latest_lowstate: Optional[dict] = None
         self._sport_times: Deque[float] = deque(maxlen=256)
@@ -454,6 +466,7 @@ class UnitreeDdsTransport(BaseTransport):
         self._sport_sub: Optional[object] = None
         self._low_sub: Optional[object] = None
         self._lidar_sub: Optional[object] = None
+        self._odom_received = False
         self._sport_partial: Optional[dict] = None
         self._low_partial: Optional[dict] = None
         self._sport_mono: Optional[float] = None
@@ -505,6 +518,11 @@ class UnitreeDdsTransport(BaseTransport):
         """The DDS network interface."""
         return self._iface
 
+    @property
+    def odom_received(self) -> bool:
+        """True after a live state sample replaces the placeholder pose."""
+        return self._odom_received
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
         self._stop.clear()
@@ -513,6 +531,8 @@ class UnitreeDdsTransport(BaseTransport):
             self._state_getter = self._state_factory()
         else:
             self._connect_dds()
+        if self._frame_factory is not None:
+            self._frame_getter = self._frame_factory()
         if self._lowstate_factory is not None:
             self._lowstate_getter = self._lowstate_factory()
         self._state = ConnectionState.CONNECTED
@@ -536,6 +556,38 @@ class UnitreeDdsTransport(BaseTransport):
         self._recv_times.clear()
 
     def _connect_dds(self) -> None:
+        # Fabricated state only for loopback on a non-zero domain. Any other
+        # interface, and domain 0, initialize the real SDK client.
+        if (
+            os.environ.get("OHHO_STUB_DDS") == "1"
+            and self.domain_id != 0
+            and _is_loopback(self._iface)
+        ):
+            sample = {
+                "position": [1.0, 2.0, 0.0],
+                "velocity": [0.0, 0.0, 0.0],
+                "yaw_speed": 0.0,
+                "imu_rpy": [0.0, 0.0, 0.5],
+                "battery": 0.95,
+                "error_code": 0,
+                "body_height": 0.32,
+                "mode": 1,
+            }
+            self._state_getter = lambda: sample
+            if self._frame_getter is None:
+                self._frame_getter = lambda: (
+                    b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00`\x00`\x00\x00"
+                    b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c"
+                    b"\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c"
+                    b"\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01"
+                    b"\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01"
+                    b"\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08"
+                    b"\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
+                )
+            # Publish the sample now so callers do not observe the placeholder pose.
+            self._on_state(sample)
+            return
+
         try:
             from unitree_sdk2py.core.channel import (  # type: ignore
                 ChannelFactoryInitialize,
@@ -587,6 +639,20 @@ class UnitreeDdsTransport(BaseTransport):
                 self._sport_sub.Init(self._on_sport_message, 10)
                 self._low_sub = ChannelSubscriber("rt/lowstate", LowState_)
                 self._low_sub.Init(self._on_low_message, 10)
+            # Camera setup is optional: a missing VideoClient must not abort
+            # the sport/low subscription or the read-only DDS path.
+            try:
+                from unitree_sdk2py.go2.video.video_client import (  # type: ignore
+                    VideoClient,
+                )
+
+                vclient = VideoClient()
+                vclient.Init()
+                self._video_client = vclient
+                self._frame_getter = self._make_video_frame_getter(vclient)
+            except Exception as e:
+                _log.debug("VideoClient unavailable; no front-camera frames: %r", e)
+                self._video_client = None
             self._connect_lidar_sub()
         except Exception:
             self._close_subscribers()
@@ -674,6 +740,10 @@ class UnitreeDdsTransport(BaseTransport):
     def _on_state(self, state: dict) -> None:
         """Bridge a merged state dict to telemetry and emit."""
         self._latest = self._attach_lidar_scan(sportstate_to_telemetry(state))
+        # Low-only merges omit position. sport_message_to_dict uses [] when the
+        # sample has none. A real pose, including the origin, is a non-empty list.
+        if state.get("position"):
+            self._odom_received = True
         self._emit_telemetry(self._latest)
 
     def _on_lowstate(self, state: dict) -> None:
@@ -1007,6 +1077,46 @@ class UnitreeDdsTransport(BaseTransport):
     def _sportstate_to_dict(msg: object) -> dict:
         """Backward-compatible alias for tests."""
         return sport_message_to_dict(msg)
+
+    @staticmethod
+    def _make_video_frame_getter(client: object) -> Callable[[], Optional[bytes]]:
+        """Build a callable that polls VideoClient for a front-camera frame."""
+
+        def getter() -> Optional[bytes]:
+            try:
+                fn = getattr(client, "GetImageSample", None)
+                if callable(fn):
+                    res = fn()
+                    if isinstance(res, tuple) and len(res) >= 2:
+                        code, data = res[0], res[1]
+                        if code == 0 and data is not None:
+                            return bytes(data)
+                    elif res is not None:
+                        return bytes(res)
+                fn_img = getattr(client, "GetImage", None)
+                if callable(fn_img):
+                    data = fn_img()
+                    if data is not None:
+                        return bytes(data)
+                return None
+            except Exception:
+                return None
+
+        return getter
+
+    def get_camera_frame(self) -> Optional[bytes]:
+        """Fetch one front-camera frame (typically JPEG), or None.
+
+        Real Go2 uses ``VideoClient`` over DDS. Sim and tests inject
+        ``frame_factory`` or the ``OHHO_STUB_DDS`` loopback. The planar scan
+        is separate and rides on ``Telemetry.scan``.
+        """
+        if self._frame_getter is None:
+            return None
+        try:
+            return self._frame_getter()
+        except Exception:
+            return None
 
 
 def _log_rpc_result(name: str, code: object) -> None:

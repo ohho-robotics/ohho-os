@@ -726,6 +726,13 @@ class SafetyGate(BaseTransport):
             return bool(flag)
         return False
 
+    def get_camera_frame(self) -> Optional[bytes]:
+        """Fetch a camera frame from the inner transport if supported."""
+        fn = getattr(self._inner, "get_camera_frame", None)
+        if callable(fn):
+            return fn()
+        return None
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def connect(self) -> TransportStatus:
         self._inner.connect()

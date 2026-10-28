@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import Optional
@@ -10,6 +11,7 @@ from typing import Optional
 from . import __version__
 from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
+from .adapters.errors import AdapterUnavailable
 from .agent import Agent
 from .hardware import resolve_device
 from .registry import UnknownRobot, list_specs
@@ -564,18 +566,114 @@ def _cmd_nav(args) -> int:
         bot.disconnect()
 
 
-def _cmd_look(args) -> int:
-    from .memory import SpatialMemory, default_memory_path
-    from .perception import SimPerceptor, remember_detections
+def _look_loopback_dds(transport: Optional[str]) -> bool:
+    """True for a ``dds://`` URI on loopback with a non-zero domain."""
+    if transport is None:
+        return False
+    uri = transport.strip()
+    scheme, sep, rest = uri.partition("://")
+    if not sep or scheme.lower() != "dds":
+        return False
+    from .adapters.unitree import parse_dds_address
+    from .safety import _is_loopback
 
     try:
-        bot = _connect(args)
-    except UnknownRobot as e:
+        iface, domain = parse_dds_address(rest)
+    except ValueError:
+        return False
+    return domain != 0 and _is_loopback(iface)
+
+
+def _look_mock_transport_allowed(transport: Optional[str]) -> bool:
+    """Whether mock VLM detections may be stored for this ``look`` transport.
+
+    An omitted transport and ``sim://`` stay in simulation. A DDS URI is allowed
+    only on a loopback interface with a non-zero domain. Any other transport can
+    reach a real robot, so fixed detections must not be written to its memory.
+    """
+    if transport is None:
+        return True
+    uri = transport.strip()
+    if not uri:
+        return False
+    scheme, sep, _rest = uri.partition("://")
+    if not sep:
+        return False
+    scheme = scheme.lower()
+    if scheme in ("sim", "simulated"):
+        return True
+    return _look_loopback_dds(transport)
+
+
+def _cmd_look(args) -> int:
+    from .memory import SpatialMemory, default_memory_path
+    from .perception import (
+        CameraPerceptor,
+        SimPerceptor,
+        VlmPerceptor,
+        _FakeClient,
+        remember_detections,
+    )
+
+    transport = getattr(args, "transport", None)
+    mock_flag = bool(getattr(args, "mock", False))
+    env_mock = os.environ.get("OHHO_MOCK_VLM") == "1"
+    fake_vlm = mock_flag or env_mock
+    if fake_vlm and not _look_mock_transport_allowed(transport):
+        print(
+            "error: mock vision is refused for transport "
+            f"{transport!r}; use the default, sim://, or a loopback "
+            "DDS URI on a non-zero domain",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The DDS stub is only for choosing the transport inside connect().
+    # ``--mock`` always stubs that window. ``OHHO_MOCK_VLM=1`` stubs an allowed
+    # loopback DDS URI too, so the fixed detections are not paired with a live
+    # camera. Other transports are left unchanged.
+    mock_stub = mock_flag or (env_mock and _look_loopback_dds(transport))
+    previous_stub = os.environ.get("OHHO_STUB_DDS") if mock_stub else None
+    if mock_stub:
+        os.environ["OHHO_STUB_DDS"] = "1"
+
+    try:
+        try:
+            bot = _connect(args)
+        finally:
+            if mock_stub:
+                if previous_stub is None:
+                    os.environ.pop("OHHO_STUB_DDS", None)
+                else:
+                    os.environ["OHHO_STUB_DDS"] = previous_stub
+    except (UnknownRobot, AdapterUnavailable) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     _maybe_world(bot, args.world)
     try:
-        detections = SimPerceptor(bot).look()
+        # Simulated robots that expose a world model stay on SimPerceptor.
+        # Transport.get_camera_frame exists on every adapter and returns None
+        # unless a subclass supplies frames, so a callable check is not enough.
+        world_fn = getattr(bot.transport, "world_objects", None)
+        if bot.simulated and callable(world_fn):
+            detections = SimPerceptor(bot).look()
+        else:
+            client = None
+            if getattr(args, "mock", False) or os.environ.get("OHHO_MOCK_VLM") == "1":
+                client = _FakeClient(
+                    '[{"label": "chair", "confidence": 0.85, "x": 0.35}, '
+                    '{"label": "table", "confidence": 0.9, "x": 0.65}]'
+                )
+            try:
+                vlm = VlmPerceptor(client=client)
+                detections = CameraPerceptor(bot, vlm=vlm).look()
+            except Exception as e:
+                print(f"error: vision perception failed: {e}", file=sys.stderr)
+                return 2
+
         if not detections:
             print("nothing detected")
             return 0
@@ -585,7 +683,7 @@ def _cmd_look(args) -> int:
         memory = SpatialMemory(path=path)
         n = remember_detections(memory, detections)
         memory.save()
-        print(f"remembered {n} object(s) → {path}")
+        print(f"remembered {n} object(s) -> {path}")
         return 0
     finally:
         bot.disconnect()
@@ -1207,6 +1305,14 @@ def build_parser() -> argparse.ArgumentParser:
     lk = sub.add_parser("look", help="perceive surroundings and remember them")
     _add_robot_args(lk)
     lk.add_argument("--world", default="", help="'demo' adds demo obstacles (sim)")
+    lk.add_argument(
+        "--mock",
+        action="store_true",
+        help=(
+            "use synthetic camera frames and mock VLM detections "
+            "(default transport, sim://, or loopback DDS on a non-zero domain)"
+        ),
+    )
     lk.set_defaults(func=_cmd_look)
 
     me = sub.add_parser("memory", help="query the robot's spatio-temporal memory")
