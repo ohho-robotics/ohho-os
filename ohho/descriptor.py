@@ -7,6 +7,14 @@ joint step). This module does not raise a cap.
 
 ``capability_params`` is an optional descriptive field. It copies the spec's
 parameters and is not copied into ``drive.caps`` or ``safety.hard``.
+
+``telemetry.schema_id`` is ``ohho.telemetry.v1``. A humanoid spec lists
+``humanoid`` in ``telemetry.fields``. The payload is
+``Telemetry.custom["humanoid"]`` with ``mode``, ``vendor_mode``,
+``fall_state``, ``base_rpy``, ``base_ang_vel``, ``joints``, ``odom``,
+``battery`` and ``experimental`` (:data:`~ohho.humanoid_telemetry.HUMANOID_BLOCK_SCHEMA`).
+Planar ``odom`` is shadowed onto ``Telemetry.odom``. Fall state ``unknown``
+is never upright.
 """
 
 from __future__ import annotations
@@ -19,12 +27,13 @@ from typing import Any, Mapping, Optional, Union
 
 from . import capabilities as caps
 from .capability_params import validate_capability_params
+from .humanoid_telemetry import HUMANOID_BLOCK_SCHEMA
 from .registry import RobotSpec, get_spec
 from .robot_spec import RobotAssets, RobotClass, thaw_json
 from .safety import PROFILES
+from .schema import TELEMETRY_SCHEMA_ID
 
 DESCRIPTOR_VERSION = "1.0.0"
-TELEMETRY_SCHEMA_ID = "ohho.telemetry.v1"
 
 # Ceilings. Do not raise these. A tighter producer clamp stays in force.
 MAX_VX_MPS = 0.2
@@ -64,6 +73,7 @@ _TELEMETRY_BLOCKS = {
     "policy",
     "rec",
     "sys",
+    "humanoid",
 }
 
 _JOINT_LABELS = {
@@ -235,10 +245,21 @@ def _omnibot_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) 
     }
 
 
+def telemetry_schema_docs() -> dict[str, Any]:
+    """``ohho.telemetry.v1`` blocks, including the humanoid custom payload."""
+    return {
+        "schema_id": TELEMETRY_SCHEMA_ID,
+        "blocks": sorted(_TELEMETRY_BLOCKS),
+        "humanoid": HUMANOID_BLOCK_SCHEMA,
+    }
+
+
 def _generic_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) -> dict:
     fields = ["base"]
     if spec.joint_names or spec.dof_arm:
         fields.append("joints")
+    if spec.robot_class is RobotClass.HUMANOID:
+        fields.append("humanoid")
     return {
         "v": DESCRIPTOR_VERSION,
         "id": spec.id,
