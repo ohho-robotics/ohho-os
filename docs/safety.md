@@ -214,5 +214,7 @@ every matrix job and fails below 95 % line + branch coverage.
   MuJoCo launcher (`ohho sim-serve --backend mujoco` prints `not built`).
 - `ohho selftest` and `tests/hil/` build adapters directly, not through
   `Robot.connect`, so they are not gated. They have their own operator consent
-  (`--allow-spin`, `OHHO_HIL=1`).
+  (`--allow-spin`, or `OHHO_HIL=1` plus an explicit device variable).
+  `ohho hil --hardware` also requires `--preflight-ok` and an interactive
+  terminal. Unset device variables are skipped.
 - A consumer-side SafetyGate (OHH-143) and an MCU e-stop are separate work.
