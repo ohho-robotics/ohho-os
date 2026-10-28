@@ -84,9 +84,11 @@ A `ros2://` link still needs confirmation unless CI sets `OHHO_CI_FAKE_ROBOT=1`
 `ROS_STATIC_PEERS` is unset. ROS env vars alone never skip arming.
 
 Agents never get `arm` or `release_stop` as tools. The TTY check stops a
-headless agent or CI job. It does not stop code that runs in the same Python
-process and reaches into private attributes; this is a software guard, not a
-replacement for the robot's own e-stop or the remote.
+headless agent or CI job, except aerial arm and takeoff on a proven simulator
+when GitHub Actions sets `OHHO_CI_SIM_ARMING=1` (see `docs/drone-safety.md`).
+Hardware and `release_stop()` stay refused. It does not stop code that runs
+in the same Python process and reaches into private attributes; this is a
+software guard, not a replacement for the robot's own e-stop or the remote.
 
 ## Class policies
 
@@ -102,8 +104,11 @@ e-stop mapping, arming and the tilt latch to a `SafetyPolicy`
 | `quadruped` (`unitree-go2`) | `LeggedPolicy` | `legged` |
 
 The numbers in the table below are unchanged. A class with no built-in
-profile still gets the conservative caps. Aerial and humanoid policies are
-not in this release; those classes keep today's generic rules.
+profile still gets the conservative caps. There is no `AerialPolicy` or
+`HumanoidPolicy` class. A built-in aerial id uses `DRONE_PROFILE` on
+`GroundPolicy`: the tilt latch stays off, horizontal speed is clipped to
+the cylinder, and e-stop maps to the flight commands. That profile does not
+raise ground, arm, or quadruped caps. Humanoid keeps the conservative caps.
 
 A plugin's `safety_policy(spec)` may return `None` (the class default) or a
 stricter policy. Velocity, acceleration, joint, effort, timeout, tilt and
@@ -209,5 +214,7 @@ every matrix job and fails below 95 % line + branch coverage.
   MuJoCo launcher (`ohho sim-serve --backend mujoco` prints `not built`).
 - `ohho selftest` and `tests/hil/` build adapters directly, not through
   `Robot.connect`, so they are not gated. They have their own operator consent
-  (`--allow-spin`, `OHHO_HIL=1`).
+  (`--allow-spin`, or `OHHO_HIL=1` plus an explicit device variable).
+  `ohho hil --hardware` also requires `--preflight-ok` and an interactive
+  terminal. Unset device variables are skipped.
 - A consumer-side SafetyGate (OHH-143) and an MCU e-stop are separate work.
