@@ -24,8 +24,16 @@ from .robot import Robot
 from .runtime import NativeRuntime
 
 
+def _robot_id(robot_id: str | None) -> str:
+    if robot_id:
+        return robot_id
+    from .plugins import preferred_robot_id
+
+    return preferred_robot_id()
+
+
 def record_sim_episodes(
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     num_episodes: int = 5,
     steps_per_episode: int = 20,
     fps: float = 10.0,
@@ -33,6 +41,7 @@ def record_sim_episodes(
     output_dir: str = "./sim_loop_output/dataset",
 ) -> str:
     """Record simulated teleoperation episodes and save a LeRobot v2 dataset."""
+    robot_id = _robot_id(robot_id)
     spec = get_spec(robot_id)
     tp = SimTransport(spec)
     tp.connect()
@@ -275,11 +284,12 @@ def compute_percentiles(values: List[float]) -> Tuple[float, float]:
 
 def evaluate_policy_sim(
     client: Any,
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     eval_steps: int = 50,
     instruction: str = "simulated reach and grasp demonstration",
 ) -> Tuple[int, List[float]]:
     """Execute closed-loop policy steps on simulated robot and measure serve latency."""
+    robot_id = _robot_id(robot_id)
     spec = get_spec(robot_id)
     tp = SimTransport(spec)
     tp.connect()
@@ -392,7 +402,7 @@ def format_summary(results: Dict[str, Any]) -> str:
 
 
 def run_sim_loop(
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     episodes: int = 5,
     steps_per_episode: int = 20,
     train_steps: int = 200,
@@ -404,6 +414,7 @@ def run_sim_loop(
     lr: float = 1e-4,
 ) -> Dict[str, Any]:
     """Execute end-to-end CPU sim loop: Record -> Validate -> Train -> Serve -> Evaluate."""
+    robot_id = _robot_id(robot_id)
     root = Path(output_dir).expanduser()
     dataset_dir = root / "dataset"
     checkpoint_dir = root / "checkpoint"
@@ -530,7 +541,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Run nightly CPU sim loop: Record -> Validate -> Train ACT -> Serve -> Drive sim",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--robot", default="omnibot", help="robot spec ID to simulate")
+    parser.add_argument("--robot", default=None, help="robot spec id to simulate")
     parser.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )

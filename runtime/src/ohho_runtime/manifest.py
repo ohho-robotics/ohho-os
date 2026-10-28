@@ -889,18 +889,11 @@ def plugin_for_spec(spec: RobotSpec) -> object | None:
         raise TypeError(f"spec must be a RobotSpec, not {type(spec).__name__}")
     from ohho.plugins import loaded_plugins
 
-    owner: str | None = None
     for info in loaded_plugins():
         if info.error is not None:
             continue
         if spec.id in info.spec_ids:
-            owner = info.name
-            break
-    if owner is None:
-        return None
-    for plugin in _plugin_objects():
-        if getattr(plugin, "name", None) == owner:
-            return plugin
+            return info.plugin
     return None
 
 

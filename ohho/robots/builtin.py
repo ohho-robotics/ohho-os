@@ -1,8 +1,9 @@
-"""Built-in robot plugin: sim, OmniBot and Unitree Go2.
+"""Built-in robot plugin: sim, Unitree Go2, and the aerial specs.
 
-Registered in ``pyproject.toml`` under the ``ohho.robots`` group, so the
-built-ins take the same discovery path as an installed plugin. Spec data stays
-in :mod:`ohho.registry`; this module only exposes it.
+Registered in ``pyproject.toml`` under the ``ohho.robots`` group, so these
+specs take the same discovery path as an installed plugin. The mobile
+manipulator ships as its own entry point. Spec data stays in
+:mod:`ohho.registry`; this module only exposes it.
 
 Importing this module must not import a vendor SDK (``pyserial``, ``lerobot``,
 ``cyclonedds``, ``unitree_sdk2py``, ``rclpy``, ``pymavlink``). Those imports
@@ -23,33 +24,6 @@ def _sim_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     from ..adapters.sim import SimTransport
 
     return SimTransport(spec)
-
-
-def _serial_transport(spec: RobotSpec | None, address: str, runtime: Any) -> Transport:
-    """Yahboom base, or a base+arm composite when the spec can manipulate.
-
-    Same split as the scheme-dict branch in ``resolve_transport``. That branch
-    remains the fallback when this plugin did not load.
-    """
-    del runtime
-    from .. import capabilities as caps
-    from ..adapters.composite import CompositeTransport
-    from ..adapters.feetech import DEFAULT_PORT as default_arm_port
-    from ..adapters.feetech import FeetechTransport
-    from ..adapters.yahboom import YahboomTransport
-
-    if spec is not None and spec.has(caps.MANIPULATION):
-        if "," in address:
-            base_port, arm_port = address.split(",", 1)
-            base_port, arm_port = base_port.strip(), arm_port.strip()
-        else:
-            base_port, arm_port = address.strip(), default_arm_port
-        return CompositeTransport(
-            YahboomTransport(spec, base_port),
-            FeetechTransport(spec, arm_port),
-        )
-    # Callers may pass spec=None; the class stores it the same way the scheme dict does.
-    return YahboomTransport(spec, address)  # type: ignore[arg-type]
 
 
 def _feetech_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
@@ -84,8 +58,6 @@ class BuiltinPlugin:
         return {
             "sim": _sim_transport,
             "simulated": _sim_transport,
-            "serial": _serial_transport,
-            "yahboom-serial": _serial_transport,
             "feetech": _feetech_transport,
             "dds": _dds_transport,
             "unitree-dds": _dds_transport,

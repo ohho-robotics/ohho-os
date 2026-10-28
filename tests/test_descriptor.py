@@ -17,7 +17,8 @@ from ohho.descriptor import (
 from ohho.profiles import emit_robot_descriptor, load_robot_descriptor
 from ohho.registry import RobotSpec, _REGISTRY, get_spec, register
 from ohho.robot_spec import AerialLimits, thaw_json
-from ohho.safety import GO2_PROFILE, OMNIBOT_PROFILE
+from ohho.robots.omnibot.policy import OMNIBOT_PROFILE
+from ohho.safety import GO2_PROFILE
 
 
 class TestRobotDescriptor(unittest.TestCase):

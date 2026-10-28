@@ -2,8 +2,11 @@
 
 Emits the ohho.descriptor.v1 document from the registry spec, the safety
 profile, and the capability vocabulary. Hard caps are the minimum of those
-sources and the OmniBot ceilings (0.2 m/s linear, 1.0 rad/s yaw, 0.15 rad
+sources and the module ceilings (0.2 m/s linear, 1.0 rad/s yaw, 0.15 rad
 joint step). This module does not raise a cap.
+
+A plugin may return its own document from ``descriptor(spec)``. Core fills
+``telemetry.kind`` and ``capability_params`` and validates the result.
 
 ``capability_params`` is an optional descriptive field. It copies the spec's
 parameters and is not copied into ``drive.caps`` or ``safety.hard``.
@@ -11,6 +14,7 @@ parameters and is not copied into ``drive.caps`` or ``safety.hard``.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -65,60 +69,6 @@ _TELEMETRY_BLOCKS = {
     "rec",
     "sys",
 }
-
-_JOINT_LABELS = {
-    "arm_shoulder_pan": "Pan",
-    "arm_shoulder_lift": "Lift",
-    "arm_elbow_flex": "Elbow",
-    "arm_wrist_flex": "Wrist",
-    "arm_wrist_roll": "Roll",
-    "arm_gripper": "Grip",
-}
-
-# Topics already published or named by the OmniBot stack. Heartbeat and
-# telemetry are the ohho.telemetry.v1 contract on /ohho/. No AprilTags are
-# installed, so the tag list stays empty.
-_OMNIBOT_TOPICS = {
-    "cmd": "/cmd_vel",
-    "state": "/odom",
-    "estop": "/emergency_stop",
-    "heartbeat": "/ohho/heartbeat",
-    "telemetry": "/ohho/telemetry",
-    "images": [
-        "/camera/front/image_raw",
-        "/camera/wrist/image_raw",
-        "/camera/depth/image_raw",
-        "/camera/bev/image_raw",
-    ],
-}
-_OMNIBOT_CAMERAS = (
-    {
-        "name": "front",
-        "kind": "rgb",
-        "frame": "front_camera_link",
-        "topic": "/camera/front/image_raw",
-    },
-    {
-        "name": "wrist",
-        "kind": "rgb",
-        "frame": "wrist_camera_link",
-        "topic": "/camera/wrist/image_raw",
-    },
-    {
-        "name": "depth",
-        "kind": "depth",
-        "frame": "depth_camera_optical_frame",
-        "topic": "/camera/depth/image_raw",
-    },
-    {
-        "name": "bev",
-        "kind": "bev",
-        "frame": "bev_frame",
-        "topic": "/camera/bev/image_raw",
-    },
-)
-_OMNIBOT_URDF = "package://omnibot_description/urdf/omnibot.urdf.xacro"
-_OMNIBOT_FIELDS = ("base", "joints", "imu")
 
 
 def _min_cap(*values: float) -> float:
@@ -186,53 +136,20 @@ def _urdf_url(spec: RobotSpec) -> str:
     return f"package://ohho/robots/{spec.id}.urdf"
 
 
-def _omnibot_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) -> dict:
-    profile = PROFILES["omnibot"]
-    joints = []
-    for name in spec.joint_names:
-        if name not in profile.joint_limits:
-            raise ValueError(f"joint {name} has no safety limit")
-        lo, hi = profile.joint_limits[name]
-        if name not in _JOINT_LABELS:
-            raise ValueError(f"joint {name} has no label")
-        joints.append(
-            {
-                "name": name,
-                "label": _JOINT_LABELS[name],
-                "min": lo,
-                "max": hi,
-                "home": 0.0,
-            }
-        )
-    return {
-        "v": DESCRIPTOR_VERSION,
-        "id": spec.id,
-        "model": spec.name,
-        "drive": {
-            "kind": "mecanum",
-            "holonomic": spec.has(caps.BASE_HOLONOMIC),
-            "caps": drive_caps,
-        },
-        "arms": [{"name": "so101", "joints": joints}] if joints else [],
-        "topics": {
-            "cmd": _OMNIBOT_TOPICS["cmd"],
-            "state": _OMNIBOT_TOPICS["state"],
-            "estop": _OMNIBOT_TOPICS["estop"],
-            "heartbeat": _OMNIBOT_TOPICS["heartbeat"],
-            "telemetry": _OMNIBOT_TOPICS["telemetry"],
-            "images": list(_OMNIBOT_TOPICS["images"]),
-        },
-        "cameras": [dict(camera) for camera in _OMNIBOT_CAMERAS],
-        "urdf_url": _OMNIBOT_URDF,
-        "apriltags": [],
-        "telemetry": {
-            "schema_id": TELEMETRY_SCHEMA_ID,
-            "robot_id": spec.id,
-            "kind": kind,
-            "fields": list(_OMNIBOT_FIELDS),
-        },
-        "safety": {"hard": hard},
-    }
+def _plugin_document(spec: RobotSpec) -> dict | None:
+    """A plugin descriptor, or ``None`` when the plugin does not supply one."""
+    from .plugins import plugin_named
+
+    source = spec.source if isinstance(spec.source, str) else ""
+    plugin = plugin_named(source) if source else None
+    if plugin is None:
+        return None
+    custom = plugin.descriptor(spec)
+    if custom is None:
+        return None
+    if isinstance(custom, (str, bytes)) or not isinstance(custom, Mapping):
+        raise TypeError("plugin descriptor() must return a mapping or None")
+    return copy.deepcopy(dict(custom))
 
 
 def _generic_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) -> dict:
@@ -273,18 +190,22 @@ def _generic_document(spec: RobotSpec, kind: str, hard: dict, drive_caps: dict) 
 def robot_descriptor(robot_id: str, *, kind: str = "real") -> dict:
     """Build a RobotDescriptor for a registered robot.
 
-    OmniBot keeps its topic map, cameras and URDF. Every other registered spec
-    gets a document in the same schema. ``capability_params`` is copied from
-    the spec. Drive and safety caps cannot exceed the module ceilings.
+    A plugin document keeps that robot's topic map, cameras and URDF. Every
+    other registered spec gets a document in the same schema.
+    ``capability_params`` is copied from the spec. Drive and safety caps
+    cannot exceed the module ceilings.
     """
     if kind not in _SAMPLE_KINDS:
         raise ValueError("telemetry kind must be sim or real")
     spec = get_spec(robot_id)
-    hard, drive_caps = _hard_and_drive_caps(spec)
-    if spec.id == "omnibot":
-        document = _omnibot_document(spec, kind, hard, drive_caps)
-    else:
+    document = _plugin_document(spec)
+    if document is None:
+        hard, drive_caps = _hard_and_drive_caps(spec)
         document = _generic_document(spec, kind, hard, drive_caps)
+    else:
+        telemetry = dict(document.get("telemetry") or {})
+        telemetry["kind"] = kind
+        document["telemetry"] = telemetry
     document["capability_params"] = thaw_json(spec.capability_params)
     validate_descriptor(document)
     return document
@@ -333,7 +254,7 @@ def spec_from_descriptor(document: Mapping[str, Any]) -> RobotSpec:
         name=document["model"],
         category="mobile-manipulator" if joints else "wheeled",
         capabilities=caps.capabilities_from_descriptor(document),
-        adapter="yahboom-serial" if document["id"] == "omnibot" else "sim",
+        adapter="serial" if joints else "sim",
         dof_base=0 if drive["kind"] == "fixed-base" else 3,
         dof_arm=len(joints),
         max_lin=max_lin,

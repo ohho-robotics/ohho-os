@@ -804,8 +804,16 @@ def _cmd_rules(args) -> int:
     )
 
 
+def _default_robot() -> str:
+    from .plugins import preferred_robot_id
+
+    return preferred_robot_id()
+
+
 def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--robot", default="omnibot", help="default robot id for tools")
+    parser.add_argument(
+        "--robot", default=_default_robot(), help="default robot id for tools"
+    )
     parser.add_argument(
         "--transport",
         default="",
@@ -919,7 +927,7 @@ def _cmd_verify(args) -> int:
     return run_verify_cli(
         sim=bool(getattr(args, "sim", False)),
         as_json=bool(getattr(args, "json", False)),
-        robot=getattr(args, "robot", "omnibot"),
+        robot=getattr(args, "robot", None) or _default_robot(),
         console=bool(getattr(args, "console", False)),
         transport=getattr(args, "transport", None),
     )
@@ -1017,8 +1025,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--robot",
-        default="omnibot",
-        help="robot id to simulate (default: omnibot)",
+        default=_default_robot(),
+        help="robot id to simulate",
     )
     verify.add_argument(
         "--console",
@@ -1069,7 +1077,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")
-    s.add_argument("--robot", default="omnibot")
+    s.add_argument("--robot", default=_default_robot())
     s.add_argument("--seconds", type=float, default=8.0)
     s.set_defaults(func=_cmd_sim)
 
@@ -1143,7 +1151,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ss.add_argument(
         "--robot",
-        default="omnibot",
+        default=_default_robot(),
         help="robot spec id (sim or robot backend)",
     )
     ss.add_argument(
@@ -1160,7 +1168,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PORT,
         help=(
             "WebSocket port (default: 8790). "
-            "Do not use 8765: that is OmniBot's Foxglove bridge"
+            "Do not use 8765: that port is a Foxglove bridge"
         ),
     )
     ss.add_argument(
@@ -1177,7 +1185,9 @@ def build_parser() -> argparse.ArgumentParser:
         "sim-loop",
         help="run nightly CPU sim loop (record -> validate -> train ACT -> serve -> drive sim)",
     )
-    sl.add_argument("--robot", default="omnibot", help="robot spec ID to simulate")
+    sl.add_argument(
+        "--robot", default=_default_robot(), help="robot spec ID to simulate"
+    )
     sl.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )
@@ -1338,7 +1348,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
-        "--robot", default="omnibot", help="robot to self-test (default: omnibot)"
+        "--robot",
+        default=_default_robot(),
+        help="robot to self-test",
     )
     st.add_argument(
         "--sim",

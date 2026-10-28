@@ -51,7 +51,7 @@ class SimServeUnavailable(RuntimeError):
     """Raised when sim-serve requirements are missing."""
 
 
-# OmniBot's Foxglove bridge binds 8765 (robot.launch.py, simulation.launch.py).
+# A Foxglove bridge binds 8765 (robot.launch.py, simulation.launch.py).
 DEFAULT_PORT = 8790
 
 
@@ -161,7 +161,7 @@ class SimServe:
     def __init__(
         self,
         backend: str = "sim",
-        robot: str = "omnibot",
+        robot: str | None = None,
         transport: Optional[str] = None,
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
@@ -176,6 +176,10 @@ class SimServe:
             raise ValueError("backend 'robot' requires a transport URI (--transport)")
 
         self.backend = backend
+        if not robot:
+            from .plugins import preferred_robot_id
+
+            robot = preferred_robot_id()
         self.robot_id = robot
         self._transport_uri = transport
         self.host = host
@@ -593,7 +597,7 @@ class SimServe:
 
 def serve_sim(
     backend: str = "sim",
-    robot: str = "omnibot",
+    robot: str | None = None,
     transport: Optional[str] = None,
     host: str = "0.0.0.0",
     port: int = DEFAULT_PORT,
@@ -605,11 +609,11 @@ def serve_sim(
 
     Parameters:
         backend: "sim", "ros2", or "robot".
-        robot: robot spec id (e.g. "omnibot", "unitree-go2", "legged-base").
+        robot: robot spec id from ``ohho list``.
         transport: transport URI for the "robot" backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
         port: WebSocket server port. Defaults to 8790 so it does not clash
-            with OmniBot's Foxglove bridge on 8765.
+            with a Foxglove bridge on 8765.
         rosbridge: rosbridge WebSocket URL (for "ros2" backend).
         rate_hz: telemetry broadcast rate in Hz (default 20.0).
         stop_event: optional threading.Event to request server shutdown.

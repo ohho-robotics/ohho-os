@@ -3,7 +3,7 @@
 Public surface:
 
     from ohho import Robot, connect
-    bot = Robot.connect("omnibot")
+    bot = Robot.connect("sim")
 """
 
 from __future__ import annotations

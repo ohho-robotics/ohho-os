@@ -143,7 +143,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "(change --transport only; runtime defaults per transport)."
         )
     )
-    p.add_argument("--robot", default="omnibot", help="robot spec id")
+    p.add_argument("--robot", default=None, help="robot spec id")
     p.add_argument(
         "--transport",
         default="sim://",
@@ -182,6 +182,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
+    if not args.robot:
+        from .plugins import preferred_robot_id
+
+        args.robot = preferred_robot_id()
     runtime = args.runtime or default_runtime_for_transport(args.transport)
     print(
         f"demo_drive: robot={args.robot} transport={args.transport} runtime={runtime} "

@@ -1,7 +1,7 @@
 import struct
 import unittest
 
-from ohho.adapters import _yahboom_proto as proto
+from ohho.robots.omnibot import proto
 
 
 def make_rx_velocity(vx: float, vy: float, vz: float) -> bytes:
