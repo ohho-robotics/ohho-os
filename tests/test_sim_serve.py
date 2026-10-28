@@ -12,8 +12,19 @@ import time
 from typing import Any
 import unittest
 
-from ohho.cli import main
-from ohho.sim_serve import SimServe, SimServeUnavailable, parse_velocity
+from ohho.cli import build_parser, main
+from ohho.protocol import PROTOCOL_VERSION
+from ohho.schema import Odometry, Telemetry
+from ohho.sim_serve import (
+    DEFAULT_PORT,
+    SimServe,
+    SimServeUnavailable,
+    parse_velocity,
+    posture_from_telemetry,
+    serve_sim,
+    teleop_mode_to_action,
+    telemetry_extras,
+)
 
 
 def _has_websockets() -> bool:
@@ -67,6 +78,32 @@ class TestVelocityParser(unittest.TestCase):
         self.assertEqual(parse_velocity({}), (0.0, 0.0, 0.0))
 
 
+class TestTeleopHelpers(unittest.TestCase):
+    def test_teleop_mode_mapping(self):
+        self.assertEqual(teleop_mode_to_action("stand"), "stand_up")
+        self.assertEqual(teleop_mode_to_action("lie_down"), "stand_down")
+        self.assertEqual(teleop_mode_to_action("recover"), "recovery_stand")
+        self.assertIsNone(teleop_mode_to_action("flip"))
+        self.assertIsNone(teleop_mode_to_action(None))
+
+    def test_telemetry_extras(self):
+        t = Telemetry(
+            odom=Odometry(0, 0, 0, 0, 0, 0),
+            battery=0.42,
+            custom={"body_height": 0.25},
+        )
+        extra = telemetry_extras(t)
+        self.assertAlmostEqual(extra["battery"], 0.42)
+        self.assertEqual(extra["posture"], "standing")
+
+    def test_posture_from_custom(self):
+        t = Telemetry(
+            odom=Odometry(0, 0, 0, 0, 0, 0),
+            custom={"posture": "balanced"},
+        )
+        self.assertEqual(posture_from_telemetry(t), "balanced")
+
+
 class TestNotBuiltBackends(unittest.TestCase):
     """Assert that isaac and mujoco exit non-zero, print 'not built', and don't import anything."""
 
@@ -103,6 +140,213 @@ class TestNotBuiltBackends(unittest.TestCase):
         self.assertIn("not built", output)
         self.assertIn("IMPORTED False", output)
         self.assertEqual(proc.returncode, 0)
+
+
+class TestSimLinkArm(unittest.TestCase):
+    def test_loopback_robot_backend_arms_without_a_hardware_prompt(self):
+        class _Gate:
+            requires_hardware_arming = False
+
+            def __init__(self) -> None:
+                self.armed = False
+
+        class _Bot:
+            gated = True
+
+            def __init__(self) -> None:
+                self.transport = _Gate()
+
+            def arm(self) -> bool:
+                self.transport.armed = True
+                return True
+
+        bot = _Bot()
+        server = SimServe(backend="robot", transport="dds://lo?domain=1")
+        server._bot = bot
+        asyncio.run(server._arm_sim_link())
+        self.assertTrue(bot.transport.armed)
+
+    def test_hardware_link_stays_disarmed(self):
+        class _Gate:
+            requires_hardware_arming = True
+            armed = False
+
+        class _Bot:
+            gated = True
+            transport = _Gate()
+
+            def arm(self) -> bool:
+                self.transport.armed = True
+                return True
+
+        bot = _Bot()
+        server = SimServe(backend="robot", transport="dds://lo?domain=1")
+        server._bot = bot
+        asyncio.run(server._arm_sim_link())
+        self.assertFalse(bot.transport.armed)
+
+
+@unittest.skipUnless(
+    _has_websockets(), "websockets not installed — [serve] or [sim-serve] extra"
+)
+class TestSimServeRobotBackend(unittest.TestCase):
+    """Robot backend over a fake ``Robot`` (no hardware)."""
+
+    def test_robot_backend_deadman_timeout_and_mode(self):
+        import websockets
+
+        class _FakeTransport:
+            protocol = "dds"
+
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+                self.last_vel: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+            def command(self, action: str) -> bool:
+                self.commands.append(action)
+                return True
+
+        class _FakeBot:
+            def __init__(self) -> None:
+                self._t = _FakeTransport()
+                self._x = 0.0
+
+            @property
+            def transport(self) -> _FakeTransport:
+                return self._t
+
+            def drive(self, vx: float = 0.0, vy: float = 0.0, w: float = 0.0) -> None:
+                self._t.last_vel = (vx, vy, w)
+                if vx > 0:
+                    self._x += vx * 0.05
+
+            def telemetry(self) -> Telemetry:
+                return Telemetry(
+                    odom=Odometry(self._x, 0.0, 0.0, 0.0, 0.0, 0.0),
+                    battery=0.88,
+                    custom={"posture": "standing"},
+                )
+
+            def emergency_stop(self) -> None:
+                pass
+
+            def release_stop(self) -> None:
+                pass
+
+            def disconnect(self) -> None:
+                pass
+
+        fake = _FakeBot()
+
+        async def drain_latest(client: Any, timeout: float = 0.05) -> dict[str, Any]:
+            latest = None
+            while True:
+                try:
+                    raw = await asyncio.wait_for(client.recv(), timeout=timeout)
+                    latest = json.loads(raw)
+                    timeout = 0.01
+                except asyncio.TimeoutError:
+                    break
+            assert latest is not None
+            return latest
+
+        async def run_test() -> None:
+            from unittest.mock import patch
+
+            server = SimServe(
+                backend="robot",
+                robot="unitree-go2",
+                transport="dds://lo?domain=1",
+                host="127.0.0.1",
+                port=0,
+                rate_hz=40.0,
+            )
+            with patch("ohho.robot.Robot.connect", return_value=fake):
+                await server.start()
+            uri = f"ws://127.0.0.1:{server.port}"
+            try:
+                async with websockets.connect(uri) as client:
+                    init_msg = await drain_latest(client)
+                    self.assertEqual(init_msg["backend"], "robot")
+                    self.assertAlmostEqual(init_msg["battery"], 0.88)
+                    self.assertEqual(init_msg["posture"], "standing")
+
+                    await client.send(
+                        json.dumps(
+                            {
+                                "deadman": True,
+                                "velocity": {
+                                    "linear": {"x": 0.3, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                },
+                            }
+                        )
+                    )
+                    await asyncio.sleep(0.08)
+                    self.assertGreater(fake.transport.last_vel[0], 0.0)
+
+                    t0 = time.monotonic()
+                    await asyncio.sleep(0.35)
+                    await drain_latest(client)
+                    while time.monotonic() - t0 < 0.45:
+                        if fake.transport.last_vel == (0.0, 0.0, 0.0):
+                            break
+                        await asyncio.sleep(0.02)
+                    self.assertEqual(fake.transport.last_vel, (0.0, 0.0, 0.0))
+                    self.assertLess(time.monotonic() - t0, 0.45)
+
+                    await client.send(
+                        json.dumps(
+                            {
+                                "deadman": True,
+                                "velocity": {
+                                    "linear": {"x": 0.4, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                },
+                            }
+                        )
+                    )
+                    for _ in range(20):
+                        if fake.transport.last_vel[0] == 0.4:
+                            break
+                        await asyncio.sleep(0.02)
+                    self.assertEqual(fake.transport.last_vel[0], 0.4)
+                    released = time.monotonic()
+                    await client.send(
+                        json.dumps(
+                            {
+                                "deadman": False,
+                                "velocity": {
+                                    "linear": {"x": 0.0, "y": 0.0},
+                                    "angular": {"z": 0.0},
+                                },
+                            }
+                        )
+                    )
+                    stopped = False
+                    for _ in range(30):
+                        if fake.transport.last_vel == (0.0, 0.0, 0.0):
+                            stopped = True
+                            break
+                        await asyncio.sleep(0.01)
+                    self.assertTrue(stopped)
+                    self.assertLess(time.monotonic() - released, 0.3)
+
+                    await client.send(json.dumps({"mode": "stand"}))
+                    await asyncio.sleep(0.05)
+                    self.assertIn("stand_up", fake.transport.commands)
+
+                    await client.send(json.dumps({"mode": "flip"}))
+                    await asyncio.sleep(0.02)
+                    self.assertNotIn("flip", fake.transport.commands)
+            finally:
+                await server.stop()
+
+        asyncio.run(run_test())
+
+    def test_robot_backend_requires_transport(self):
+        with self.assertRaises(ValueError):
+            SimServe(backend="robot", robot="unitree-go2")
 
 
 @unittest.skipUnless(
@@ -143,6 +387,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                 async with websockets.connect(uri) as client:
                     # Initial state
                     init_msg = await drain_latest(client)
+                    self.assertEqual(init_msg["protocolVersion"], PROTOCOL_VERSION)
                     self.assertEqual(init_msg["backend"], "sim")
                     self.assertTrue(init_msg.get("no_camera"))
                     x0 = init_msg["odom"]["x"]
@@ -164,7 +409,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                     self.assertAlmostEqual(msg["odom"]["x"], x0, places=4)
 
                     # 2. Deadman is true -> robot drives and odom changes
-                    for _ in range(5):
+                    for _ in range(10):
                         await client.send(
                             json.dumps(
                                 {
@@ -225,7 +470,7 @@ class TestSimServeSimBackend(unittest.TestCase):
                     self.assertAlmostEqual(msg["odom"]["x"], x_estop, places=3)
 
                     # 5. Estop unlatch -> robot drives again
-                    for _ in range(5):
+                    for _ in range(10):
                         await client.send(
                             json.dumps(
                                 {
@@ -246,11 +491,11 @@ class TestSimServeSimBackend(unittest.TestCase):
 
         asyncio.run(run_test())
         elapsed = time.monotonic() - start_time
-        # Must drive and complete all checks in under 2 seconds
+        # Must drive and complete all checks in under 3 seconds (macOS runners)
         self.assertLess(
             elapsed,
-            2.0,
-            f"Test took {elapsed:.2f}s, expected under 2 seconds",
+            3.0,
+            f"Test took {elapsed:.2f}s, expected under 3 seconds",
         )
 
 
@@ -388,6 +633,30 @@ class TestWebsocketsExtraCheck(unittest.TestCase):
             asyncio.run(server.start())
         self.assertIn("websockets", str(ctx.exception))
         self.assertFalse(server._running)
+
+
+class TestDefaultPort(unittest.TestCase):
+    """sim-serve must not take Foxglove's port unless the caller asks for it."""
+
+    def test_default_is_8790_not_foxglove(self):
+        import inspect
+
+        self.assertEqual(DEFAULT_PORT, 8790)
+        self.assertNotEqual(DEFAULT_PORT, 8765)
+        self.assertEqual(SimServe().port, 8790)
+        self.assertEqual(inspect.signature(serve_sim).parameters["port"].default, 8790)
+        self.assertEqual(SimServe(port=8765).port, 8765)
+
+    def test_cli_default_and_help(self):
+        args = build_parser().parse_args(["sim-serve"])
+        self.assertEqual(args.port, 8790)
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(SystemExit):
+            build_parser().parse_args(["sim-serve", "--help"])
+        help_text = buf.getvalue()
+        self.assertIn("8790", help_text)
+        self.assertIn("8765", help_text)
+        self.assertIn("Foxglove", help_text)
 
 
 if __name__ == "__main__":

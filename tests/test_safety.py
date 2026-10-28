@@ -29,6 +29,7 @@ from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
     BASE_ACTIONS,
+    CI_FAKE_ROBOT_ENV,
     GO2_ACTIONS,
     GO2_PROFILE,
     HUMANOID_ACTIONS,
@@ -1254,26 +1255,67 @@ class TestArming(GateCase):
 
     def test_ros2_arming_localhost_domain_rules(self):
         ros2 = FakeTransport("ros2")
-        base = {
+        serial = FakeTransport("serial")
+        bypass_env = {
+            CI_FAKE_ROBOT_ENV: "1",
             "ROS_LOCALHOST_ONLY": "1",
             "ROS_DOMAIN_ID": "199",
         }
-        with mock.patch.dict(os.environ, base, clear=False):
+
+        # ROS localhost vars without explicit CI opt-in -> arming required
+        with mock.patch.dict(
+            os.environ,
+            {"ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "199"},
+            clear=True,
+        ):
+            self.assertTrue(requires_hardware_arming(ros2))
+
+        # Opt-in + localhost + non-zero domain -> bypass (ros2 only)
+        with mock.patch.dict(os.environ, bypass_env, clear=True):
             self.assertFalse(requires_hardware_arming(ros2))
         with mock.patch.dict(
             os.environ,
-            {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_DOMAIN_ID": "199"},
-            clear=False,
+            {
+                CI_FAKE_ROBOT_ENV: "1",
+                "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST",
+                "ROS_DOMAIN_ID": "199",
+            },
+            clear=True,
         ):
             self.assertFalse(requires_hardware_arming(ros2))
+
+        # Opt-in but domain 0 -> arming required
         with mock.patch.dict(
-            os.environ, {"ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "0"}
+            os.environ,
+            {CI_FAKE_ROBOT_ENV: "1", "ROS_LOCALHOST_ONLY": "1", "ROS_DOMAIN_ID": "0"},
+            clear=True,
         ):
             self.assertTrue(requires_hardware_arming(ros2))
-        with mock.patch.dict(os.environ, {"ROS_DOMAIN_ID": "199"}, clear=False):
-            os.environ.pop("ROS_LOCALHOST_ONLY", None)
-            os.environ.pop("ROS_AUTOMATIC_DISCOVERY_RANGE", None)
+
+        # Opt-in with static peers -> arming required
+        with mock.patch.dict(
+            os.environ,
+            {
+                **bypass_env,
+                "ROS_STATIC_PEERS": "192.168.1.10",
+            },
+            clear=True,
+        ):
             self.assertTrue(requires_hardware_arming(ros2))
+
+        # Opt-in value must be exactly "1"
+        for bad in ("0", "false", ""):
+            with mock.patch.dict(
+                os.environ,
+                {**bypass_env, CI_FAKE_ROBOT_ENV: bad},
+                clear=True,
+            ):
+                self.assertTrue(requires_hardware_arming(ros2))
+
+        # Non-loopback transport: env must not bypass serial/dds
+        with mock.patch.dict(os.environ, bypass_env, clear=True):
+            self.assertTrue(requires_hardware_arming(serial))
+            self.assertTrue(requires_hardware_arming(FakeGo2("eth0", 1)))
 
     def test_loopback_sim_arms_without_tty(self):
         self.tty = False
@@ -1429,7 +1471,9 @@ class TestGatePlumbing(GateCase):
         self.assertTrue(bot.gated)
         sim._emit_telemetry(sim.read())
         self.assertTrue(bot.arm())  # simulated link: no TTY needed
+        bot.stand()  # Go2 sim starts lying; drive is refused until standing
         self.clock.advance(0.01)
+        bot.stand()
         bot.drive(vx=2.0)
         sim.step(1.0)
         self.assertAlmostEqual(sim.read().odom.x, 0.5, places=5)
@@ -1580,6 +1624,7 @@ class TestCliSafetyFlags(unittest.TestCase):
             runtime="auto",
             safety_config="s.json",
             estop_damp=True,
+            read_only=False,
         )
         fake.arm.assert_called_once_with()
 
@@ -1593,6 +1638,44 @@ class TestCliSafetyFlags(unittest.TestCase):
         with mock.patch.object(cli.Robot, "connect", return_value=fake):
             cli._connect(args)
         fake.arm.assert_not_called()
+
+    def test_get_camera_frame_forwarding(self):
+        inner = FakeTransport()
+        gate = SafetyGate(inner, get_spec("omnibot"), auto_tick=False)
+        self.assertIsNone(gate.get_camera_frame())
+        inner.get_camera_frame = lambda: b"fake_frame_bytes"
+        self.assertEqual(gate.get_camera_frame(), b"fake_frame_bytes")
+
+
+def load_tests(loader, standard_tests, pattern):
+    """CI coverage runs ``unittest tests.test_safety`` and nothing else.
+
+    Drone profile coverage lives in ``tests.test_drone_safety``. The sim-only
+    CI arming tests live in ``tests.test_ci_sim_arming``. Load both when this
+    module is named directly (``pattern is None``) and when discovery is
+    narrowed to this file (``pattern == "test_safety.py"``). A directory
+    discovery pattern such as ``test*.py`` loads those modules on its own.
+    Paths are loaded from this directory so a third-party ``tests`` package
+    on ``sys.path`` cannot hide them.
+    """
+    suite = unittest.TestSuite()
+    suite.addTests(standard_tests)
+    if pattern not in (None, "test_safety.py"):
+        return suite
+    import importlib.util
+
+    for filename, module_name in (
+        ("test_drone_safety.py", "ohho_test_drone_safety"),
+        ("test_ci_sim_arming.py", "ohho_test_ci_sim_arming"),
+    ):
+        path = Path(__file__).with_name(filename)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        suite.addTests(loader.loadTestsFromModule(module))
+    return suite
 
 
 if __name__ == "__main__":
