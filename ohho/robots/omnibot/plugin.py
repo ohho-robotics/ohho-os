@@ -95,6 +95,16 @@ class OmniBotPlugin:
         """Training checkpoint id for ``policy``, or ``None`` when unset."""
         return _CHECKPOINTS.get(policy)
 
+    def hil_bench(self) -> dict[str, Any]:
+        """Bench cases and fake-transport checks for this robot.
+
+        ``ohho.hil`` calls this when the harness loads. Discovery does not.
+        The hook does not open a port or command motion.
+        """
+        from .hil_bench import bundle
+
+        return bundle()
+
 
 def plugin() -> OmniBotPlugin:
     """Entry-point target: ``ohho.robots.omnibot:plugin``."""
