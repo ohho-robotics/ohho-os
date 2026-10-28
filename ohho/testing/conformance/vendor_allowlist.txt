@@ -100,3 +100,8 @@ pyproject.toml	go2	R-02
 pyproject.toml	omnibot	R-01
 pyproject.toml	unitree	R-02
 pyproject.toml	yahboom	R-01
+ohho/hil.py	feetech	R-01
+ohho/hil.py	omnibot	R-01
+ohho/hil.py	yahboom	R-01
+ohho/hil.py	go2	R-02
+ohho/hil.py	unitree	R-02
