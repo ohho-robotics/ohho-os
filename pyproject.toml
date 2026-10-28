@@ -41,6 +41,7 @@ data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
 # cyclonedds is a build/runtime dep of unitree_sdk2py (not on PyPI — install from GitHub).
 unitree = ["cyclonedds>=0.10"]               # Unitree DDS adapter (G1, Go2, H1, B2 …)
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
+mavlink = ["mavsdk>=4,<5", "pymavlink>=2.4"]  # native MAVSDK 4.x (no mavsdk_server)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)

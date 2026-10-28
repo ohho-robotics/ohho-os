@@ -26,7 +26,8 @@ nothing above it changes; it decides what actually reaches the motors:
   tilt latch is quadruped-only. A non-zero ``error_code`` still latches an
   aircraft.
 - **Arming.** Motion is refused until ``arm()``. On hardware (anything except a
-  simulator or a loopback interface on a non-zero DDS domain) arming needs
+  simulator, a loopback interface on a non-zero DDS domain, or a loopback
+  mavlink SITL under the GitHub CI sim opt-in) arming needs
   ``OHHO_ARM_HARDWARE=1``, an interactive TTY and the typed confirmation
   phrase. CI and non-TTY callers fail closed. Aerial arm and takeoff have one
   GitHub Actions opt-in for a proven simulator (``OHHO_CI_SIM_ARMING=1``). It
@@ -613,11 +614,50 @@ def _ros2_localhost_ci(environ: Mapping[str, str]) -> bool:
     return domain != 0
 
 
+def _mavlink_sitl_ci(transport: object, env: Mapping[str, str]) -> bool:
+    """True only for loopback mavlink SITL under the GitHub CI sim opt-in.
+
+    Same shape as :func:`_ros2_localhost_ci`: any other mavlink link stays a
+    hardware gate. An inspection error is false so the caller fails closed.
+    """
+    try:
+        if not _token_true(env.get("CI", "")):
+            return False
+        if not _token_true(env.get("GITHUB_ACTIONS", "")):
+            return False
+        if env.get(CI_SIM_ARMING_ENV) != "1":
+            return False
+        if env.get(CI_SITL_ENV) != "1":
+            return False
+        if ARM_ENV in env:
+            return False
+        uri = getattr(transport, "uri", None)
+        if not isinstance(uri, str) or not uri:
+            return False
+        parsed = urlparse(uri)
+        if parsed.scheme != "mavlink+udp":
+            return False
+        if not _literal_loopback(parsed.hostname):
+            return False
+        if not _exposes(transport, "simulation_target"):
+            return False
+        return getattr(transport, "simulation_target") is True
+    except Exception:
+        return False
+
+
 def requires_hardware_arming(
     transport: Transport,
     environ: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """False only for simulators, loopback DDS, and explicit CI fake ROS 2."""
+    """False for simulators, loopback DDS, localhost-only ROS 2 CI, and CI SITL.
+
+    Mavlink is non-hardware only when ``CI`` and ``GITHUB_ACTIONS`` are
+    ``true``, both CI sim opt-ins are exactly ``1``, ``OHHO_ARM_HARDWARE`` is
+    absent, and the URI is ``mavlink+udp`` on a literal loopback host whose
+    ``simulation_target`` is true. Any other mavlink link, and any inspection
+    error, stays hardware.
+    """
     env = os.environ if environ is None else environ
     proto = getattr(transport, "protocol", "")
     if proto == "simulated":
@@ -629,6 +669,8 @@ def requires_hardware_arming(
         if _is_loopback(iface) and is_int and domain != 0:
             return False
     if proto == "ros2" and _ros2_localhost_ci(env):
+        return False
+    if proto == "mavlink" and _mavlink_sitl_ci(transport, env):
         return False
     return True
 

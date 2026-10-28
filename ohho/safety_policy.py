@@ -26,6 +26,7 @@ import ast
 import dataclasses
 import logging
 import math
+from urllib.parse import quote, unquote
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence, TypeVar, cast
 
@@ -657,23 +658,38 @@ def arming_uri(transport: Any) -> str:
     """Encode the transport fields :func:`ohho.safety.requires_hardware_arming` reads.
 
     DDS keeps the interface and the domain value, including a non-int domain,
-    so a malformed domain still fails closed.
+    so a malformed domain still fails closed. Mavlink keeps the original URI
+    and ``simulation_target`` so the CI SITL opt-in can still see a loopback
+    ``mavlink+udp`` link.
     """
     protocol = str(getattr(transport, "protocol", "") or "")
     if protocol == "dds":
         iface = str(getattr(transport, "iface", "") or "")
         domain = getattr(transport, "domain_id", 0)
         return f"dds://{iface}?domain={domain!r}"
+    if protocol == "mavlink":
+        flag = getattr(transport, "simulation_target", None)
+        raw = str(getattr(transport, "uri", "") or "")
+        return f"mavlink://{quote(raw, safe='')}?simulation_target={flag!r}"
     return f"{protocol}://"
 
 
 class _UriTransport:
     """Minimal transport view rebuilt from :func:`arming_uri`."""
 
-    def __init__(self, protocol: str, iface: str = "", domain_id: Any = 0) -> None:
+    def __init__(
+        self,
+        protocol: str,
+        iface: str = "",
+        domain_id: Any = 0,
+        uri: str = "",
+        simulation_target: Any = None,
+    ) -> None:
         self.protocol = protocol
         self.iface = iface
         self.domain_id = domain_id
+        self.uri = uri
+        self.simulation_target = simulation_target
 
 
 def _parse_domain(text: str) -> Any:
@@ -692,6 +708,13 @@ def _transport_from_uri(uri: str | None) -> _UriTransport:
         if marker:
             return _UriTransport("dds", iface, _parse_domain(domain))
         return _UriTransport("dds", rest, 0)
+    if uri.startswith("mavlink://"):
+        body = uri[len("mavlink://") :]
+        encoded, sep, flag_text = body.partition("?simulation_target=")
+        flag = _parse_domain(flag_text) if sep else None
+        return _UriTransport(
+            "mavlink", uri=unquote(encoded), simulation_target=flag
+        )
     protocol, sep, _rest = uri.partition("://")
     if not sep:
         return _UriTransport(uri)

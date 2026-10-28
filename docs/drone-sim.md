@@ -13,8 +13,9 @@ their default transport is `sim://`. Ground robots on `sim://` (`omnibot`,
 `px4-x500` is registry data only. `resolve_transport` refuses every URI for
 it, including `sim://`. Nothing in this build connects to an X500.
 `requires_hardware_arming` is true on that spec: a non-loopback `px4+dds://`
-or `mavlink+serial://` URI would need a human present. Those schemes are not
-implemented.
+or `mavlink+serial://` URI needs a human present. `px4+dds://` is not
+implemented. `mavlink+udp://` and `mavlink+serial://` are the MAVLink backend
+(`docs/mavlink.md`); this spec still refuses them.
 
 The link reports `protocol="simulated"`, so `Robot.connect` does not wrap it
 in `SafetyGate`. A drone safety profile is a separate change. Do not point

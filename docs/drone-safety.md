@@ -57,6 +57,9 @@ with no other backend id), or a loopback `px4+dds://` link whose
 `sim_target` is true, or a loopback `mavlink+udp://` link whose
 `simulation_target` is true. Loopback means `127.0.0.0/8`, `::1`, or
 `localhost`. The PX4 and MAVLink cases also need `OHHO_CI_SITL` exactly `1`.
+`requires_hardware_arming` returns false for that loopback `mavlink+udp` SITL
+only when those CI flags hold; every other mavlink link, including local
+loopback outside GitHub Actions, stays hardware.
 Serial, radio, Crazyflie, docker names, non-loopback hosts, and every other
 backend are refused. When the exception is used the gate logs
 `safety: CI sim-only arming exception used` and writes a `ci_sim_arming`
