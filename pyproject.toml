@@ -78,7 +78,7 @@ builtin = "ohho.robots.builtin:plugin"
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "agent_rules/*.md"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
