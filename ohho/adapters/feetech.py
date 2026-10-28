@@ -24,6 +24,7 @@ import threading
 import time
 from typing import Callable, Optional, Sequence
 
+from ..loop_timer import LoopStats, LoopTimer
 from ..registry import RobotSpec
 from ..schema import (
     ConnectionState,
@@ -34,7 +35,15 @@ from ..schema import (
     Velocity,
 )
 from ..transport import BaseTransport
+from ._link_resilience import (
+    DEFAULT_RECONNECT_INTERVAL_S,
+    DEFAULT_TELEMETRY_TIMEOUT_S,
+    LinkResilience,
+    MonotonicFn,
+)
 from .errors import AdapterUnavailable
+
+_READER_HZ = 50.0
 
 TICKS_PER_REV: int = 4096
 HOME_TICKS: int = 2048
@@ -81,13 +90,23 @@ class FeetechTransport(BaseTransport):
         motor_ids: Optional[Sequence[int]] = None,
         joint_min: Optional[Sequence[float]] = None,
         joint_max: Optional[Sequence[float]] = None,
+        telemetry_timeout_s: float = DEFAULT_TELEMETRY_TIMEOUT_S,
+        reconnect_interval_s: float = DEFAULT_RECONNECT_INTERVAL_S,
+        monotonic: MonotonicFn = time.monotonic,
     ) -> None:
         super().__init__()
         self.spec = spec
         self.port = address or DEFAULT_PORT
         self.baud = baud
         self._bus_factory = bus_factory
+        self._monotonic = monotonic
+        self._link = LinkResilience(
+            telemetry_timeout_s=telemetry_timeout_s,
+            reconnect_interval_s=reconnect_interval_s,
+            monotonic=monotonic,
+        )
         self._bus: Optional[object] = None
+        self._disconnecting = False
         self._joint_names = tuple(spec.joint_names)
         self._motor_ids = tuple(
             motor_ids or DEFAULT_MOTOR_IDS[: len(self._joint_names)]
@@ -105,6 +124,7 @@ class FeetechTransport(BaseTransport):
         self._connected_since: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._loop_timer = LoopTimer(1.0 / _READER_HZ)
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def _motors_dict(self) -> dict[str, tuple[int, str]]:
@@ -129,18 +149,23 @@ class FeetechTransport(BaseTransport):
         return FeetechMotorsBus(port=self.port, motors=self._motors_dict())
 
     def connect(self) -> TransportStatus:
+        self._disconnecting = False
+        self._link.reset()
         self._bus = self._open_bus()
         connect = getattr(self._bus, "connect", None)
         if callable(connect):
             connect()
         self._state = ConnectionState.CONNECTED
         self._connected_since = time.time()
+        self._link.on_connected()
+        self._poll_once()
         self._start_reader()
         s = self.status()
         self._emit_status(s)
         return s
 
     def disconnect(self) -> None:
+        self._disconnecting = True
         self._stop_reader()
         if self._bus is not None:
             if self._torque_on:
@@ -151,15 +176,20 @@ class FeetechTransport(BaseTransport):
                     close()
                 except Exception:
                     pass
+        self._link.reset()
         self._state = ConnectionState.DISCONNECTED
         self._emit_status(self.status())
 
     def status(self) -> TransportStatus:
+        err: Optional[str] = None
+        if self._state == ConnectionState.RECONNECTING:
+            err = "Feetech bus lost — reconnecting"
         return TransportStatus(
             protocol=self.protocol,
             state=self._state,
             label=f"Feetech arm · {self.port}",
             connected_since=self._connected_since,
+            error=err,
         )
 
     # ── commands ──────────────────────────────────────────────────────────────
@@ -167,7 +197,12 @@ class FeetechTransport(BaseTransport):
         return  # arm has no base
 
     def send_joint_command(self, name: str, position: float) -> None:
-        if self._estopped or not self._torque_on or self._bus is None:
+        if (
+            self._estopped
+            or not self._torque_on
+            or self._bus is None
+            or self._state != ConnectionState.CONNECTED
+        ):
             return
         if name not in self._positions:
             return
@@ -233,6 +268,7 @@ class FeetechTransport(BaseTransport):
         for name in self._joint_names:
             tick = ticks_dict.get(name, HOME_TICKS)
             out[name] = (tick - HOME_TICKS) / TICKS_PER_RAD
+        self._link.on_rx()
         return out
 
     def read_servo_diagnostics(self) -> list[dict]:
@@ -288,16 +324,85 @@ class FeetechTransport(BaseTransport):
         self._positions = self._read_positions()
         self._emit_telemetry(self._snapshot())
 
-    def _start_reader(self, hz: float = 50.0) -> None:
+    def _close_bus(self) -> None:
+        if self._bus is None:
+            return
+        close = getattr(self._bus, "disconnect", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        self._bus = None
+
+    def _on_link_lost(self) -> None:
+        if self._disconnecting or self._state == ConnectionState.RECONNECTING:
+            return
+        self._disable_torque()
+        self._close_bus()
+        self._link.on_link_lost()
+        self._state = ConnectionState.RECONNECTING
+        self._emit_status(self.status())
+
+    def _try_reconnect(self) -> None:
+        if self._disconnecting:
+            return
+        try:
+            self._bus = self._open_bus()
+            connect = getattr(self._bus, "connect", None)
+            if callable(connect):
+                connect()
+        except Exception:
+            self._link.on_reconnect_failed()
+            return
+        self._state = ConnectionState.CONNECTED
+        self._link.on_connected()
+        self._poll_once()
+        if not self._estopped:
+            self._enable_torque()
+        self._emit_status(self.status())
+
+    def loop_stats(self) -> LoopStats:
+        """Timing of the position reader thread."""
+        return self._loop_timer.stats()
+
+    def _start_reader(self, hz: float = _READER_HZ) -> None:
         if self._thread is not None:
             return
-        self._stop.clear()
         period = 1.0 / hz
+        if self._loop_timer.period_s != period:
+            self._loop_timer = LoopTimer(period)
+        self._stop.clear()
+        timer = self._loop_timer
 
         def loop() -> None:
+            timer.start()
             while not self._stop.is_set():
-                self._poll_once()
-                time.sleep(period)
+                timer.begin()
+                wait_s: Optional[float] = None
+                try:
+                    if self._disconnecting:
+                        return
+                    if self._state == ConnectionState.RECONNECTING:
+                        if self._link.should_reconnect():
+                            self._try_reconnect()
+                        wait_s = 0.01
+                    elif self._link.telemetry_stale():
+                        self._on_link_lost()
+                        wait_s = 0.0
+                    else:
+                        try:
+                            self._poll_once()
+                        except Exception:
+                            self._on_link_lost()
+                            wait_s = 0.0
+                finally:
+                    delay = timer.end()
+                if self._stop.is_set():
+                    return
+                wait = delay if wait_s is None else wait_s
+                if wait > 0.0 and self._stop.wait(wait):
+                    return
 
         self._thread = threading.Thread(
             target=loop, name="ohho-feetech-rx", daemon=True

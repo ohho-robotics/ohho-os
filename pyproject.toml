@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ohho-os"
-version = "1.1.3"
+version = "1.2.0"
 description = "OhhO OS — the open-source, robot-agnostic engine for any robot, with or without ROS."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,14 +38,15 @@ serial = ["pyserial>=3.5"]                   # Yahboom serial adapter (OmniBot b
 arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101, OmniBot arm)
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
+# cyclonedds is a build/runtime dep of unitree_sdk2py (not on PyPI — install from GitHub).
 unitree = ["cyclonedds>=0.10"]               # Unitree DDS adapter (G1, Go2, H1, B2 …)
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 mavlink = ["mavsdk>=4,<5", "pymavlink>=2.4"]  # native MAVSDK 4.x (no mavsdk_server)
-serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0"]  # serve policies over REST or WebSocket
+serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
 ros2 = []                                    # rclpy ships with your ROS 2 distro — source it, then install this extra
-dev = ["pytest>=7", "coverage>=7"]
+dev = ["pytest>=7", "coverage>=7", "httpx>=0.27,<0.28"]
 all = [
   "pyyaml>=6.0",
   "pyserial>=3.5",
@@ -59,20 +60,26 @@ all = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
   "websockets>=11.0",
+  "httpx>=0.27,<0.28",
 ]
 
 [project.urls]
 Homepage = "https://ohho-robotics.com"
-Source = "https://github.com/ohho-robotics/ohho-sdk"
+Documentation = "https://ohho-robotics.com/os"
+Source = "https://github.com/ohho-robotics/ohho-os"
+Issues = "https://github.com/ohho-robotics/ohho-os/issues"
 
 [project.scripts]
 ohho = "ohho.cli:main"
 
+[project.entry-points."ohho.robots"]
+builtin = "ohho.robots.builtin:plugin"
+
 [tool.setuptools.packages.find]
-include = ["ohho*"]
+include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json"]
+ohho = ["robots/*.json", "agent_rules/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
