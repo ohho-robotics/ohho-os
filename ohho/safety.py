@@ -19,8 +19,10 @@ nothing above it changes; it decides what actually reaches the motors:
   cross-step are refused even if a config file lists them. Aerial robots use a
   separate allowlist (``hold``, ``land``, ``rtl``, ``offboard_velocity``,
   ``offboard_position``). They do not reuse the Go2 set. Humanoid action
-  names are not on the built-in lists, so they are refused unless a profile
-  names them, and they are never sport calls. ``move_joints`` stays refused.
+  names are not on the ground or legged lists. A humanoid profile names them
+  and they go to ``send_humanoid``, never to a sport call. ``move_joints``
+  stays refused for every other class. On a humanoid it is allowed only in
+  ``CUSTOM`` on a sim target, with joint limits applied.
 - **Tilt / fault guard.** ``|roll|`` or ``|pitch|`` over 0.6 rad, a non-zero
   ``error_code``, or unreadable orientation values → stop + latch. The 0.6 rad
   tilt latch is quadruped-only. A non-zero ``error_code`` still latches an
@@ -41,9 +43,10 @@ Every refusal also sends a zero-velocity command. Joint *positions* are never
 explicitly is supported (tests, demos) and arms without a TTY prompt.
 
 Class decisions are delegated to a :class:`~ohho.safety_policy.SafetyPolicy`
-chosen from ``spec.robot_class`` (ground, arm, legged; a mobile manipulator
-uses both). A plugin may supply a stricter policy. One that loosens a class
-cap is refused when the policy is loaded. Audit records include ``policy``.
+chosen from ``spec.robot_class`` (ground, arm, legged, humanoid; a mobile
+manipulator uses ground and arm). A plugin may supply a stricter policy. One
+that loosens a class cap is refused when the policy is loaded. Audit records
+include ``policy``.
 
 This is a software guard inside the Python process. Code in the same process
 can reach private attributes; it does not replace a hardware e-stop.
@@ -466,7 +469,15 @@ def profile_for(
     """The safety profile for a robot: built-in, or conservative from its spec,
     with any overrides from ``config`` applied."""
     base = PROFILES.get(robot_id or "")
-    if base is None:
+    if base is None and spec is not None and spec.robot_class == "humanoid":
+        from .humanoid_policy import caps_from_spec, class_profile
+
+        base = class_profile(caps_from_spec(spec))
+        # Same ceiling as every other robot that has no built-in profile.
+        # Sim forward is a HumanoidCaps value, not this symmetric field.
+        lin = min(spec.max_lin, _GENERIC_MAX_LIN)
+        base = dataclasses.replace(base, max_vx=min(base.max_vx, lin))
+    elif base is None:
         if spec is not None and spec.has(caps.AERIAL):
             base = DRONE_PROFILE
         elif spec is None:
@@ -892,6 +903,15 @@ def _as_float(v: Any) -> float:
         return math.nan
 
 
+def _send_move_joints(send: Callable[..., None], applied: Sequence[Any]) -> None:
+    """Forward a clamped joint target using the transport's parameter style."""
+    group, positions, kp, kd = applied
+    try:
+        send("move_joints", group=group, q=positions, kp=kp, kd=kd)
+    except TypeError:
+        send("move_joints", group, positions, kp, kd)
+
+
 def _orientation(t: Telemetry) -> Optional[tuple[float, float]]:
     c = t.custom
     if "roll" in c or "pitch" in c:
@@ -945,6 +965,7 @@ class SafetyGate(BaseTransport):
         )
         self._profile = _apply_ceiling(base, cfg)
         self._policy = chosen.bind(self._profile)
+        self._policy.audit_fn = self._audit
         self._audit_log = audit or AuditLog(
             default_audit_dir(self._env), wall_clock=wall_clock
         )
@@ -1219,6 +1240,7 @@ class SafetyGate(BaseTransport):
     def _on_inner_tele(self, t: Telemetry) -> None:
         with self._lock:
             self._latest = t
+            self._policy.note_state(self._inner, t, latched=self._latched)
             fault = self._fault(t)
             if fault is not None:
                 if not self._latched:
@@ -1436,10 +1458,10 @@ class SafetyGate(BaseTransport):
         ``stop_move`` is always accepted. ``move`` goes through the velocity
         caps; ``euler`` angles are clamped to ``profile.euler_limit_rad``.
         Aerial profiles dispatch flight requests instead of sport actions.
-        Humanoid names are refused unless the profile lists them, and then
-        they go to ``send_humanoid`` rather than ``sport_command``.
-        ``move_joints`` is refused even when listed. Returns True when the
-        action was forwarded.
+        Humanoid names go to ``send_humanoid`` when the profile lists them,
+        never to ``sport_command``. ``move_joints`` is refused for other
+        classes. A humanoid policy may forward it in ``CUSTOM`` on a sim
+        target. Returns True when the action was forwarded.
         """
         cmd = "command"
         with self._lock:
@@ -1869,11 +1891,13 @@ class SafetyGate(BaseTransport):
     def _humanoid_command(self, action: str, args: tuple[Any, ...]) -> bool:
         """Allowlisted humanoid actions only. Never a sport-mode call.
 
-        ``move_joints`` is refused here. CUSTOM mode, a simulated link and the
-        class policy are required before low-level joints can be sent, and
-        that policy is not this gate.
+        ``move_joints`` is decided by the class policy. Other classes refuse
+        it. A humanoid policy allows it only in CUSTOM on a sim target, with
+        joint limits applied.
         """
-        if action == "move_joints" or action not in self._policy.allowlist:
+        if action == "move_joints":
+            return self._low_level_joints(args)
+        if action not in self._policy.allowlist:
             return self._reject("command", "not_allowlisted", action=action)
         if not self._motion_allowed("command", action=action):
             return False
@@ -1881,6 +1905,40 @@ class SafetyGate(BaseTransport):
         if not callable(send):
             return self._reject("command", "unsupported_by_transport", action=action)
         return self._forward(lambda: send(action, *args), f"command:{action}")
+
+    def _low_level_joints(self, args: tuple[Any, ...]) -> bool:
+        """Forward ``move_joints`` only when the class policy accepts it.
+
+        Other classes return ``None`` and the command stays not allowlisted.
+        A humanoid policy may clamp a CUSTOM-mode sim target. MCP does not
+        call this path.
+        """
+        decision = self._policy.low_level_joints(args, self._latest)
+        if decision is None:
+            return self._reject("command", "not_allowlisted", action="move_joints")
+        if decision.reject:
+            return self._reject(
+                "command", decision.reject, action="move_joints", requested=args
+            )
+        if not self._motion_allowed("command", action="move_joints"):
+            return False
+        if decision.reasons and not self._audit(
+            "clamp",
+            command="move_joints",
+            requested=args,
+            applied=decision.applied,
+            reasons=list(decision.reasons),
+        ):
+            return False
+        send = getattr(self._inner, "send_humanoid", None)
+        if not callable(send):
+            return self._reject(
+                "command", "unsupported_by_transport", action="move_joints"
+            )
+        applied = decision.applied
+        return self._forward(
+            lambda: _send_move_joints(send, applied), "command:move_joints"
+        )
 
     def _sport(self, action: str, *args: float) -> bool:
         fn = getattr(self._inner, "sport_command", None)

@@ -35,8 +35,13 @@ jobs:
         shell: bash
         run: |
           python -m pip install "coverage>=7"
-          python -m coverage run --branch --include=ohho/safety.py -m unittest tests.test_safety
+          python -m coverage run --branch --include=ohho/safety.py -m unittest tests.test_safety tests.test_humanoid_policy
           python -m coverage report -m --include=ohho/safety.py --fail-under=95
+      - name: HumanoidPolicy coverage gate (ohho/humanoid_policy.py >= 95% line+branch)
+        shell: bash
+        run: |
+          python -m coverage run --branch --include=ohho/humanoid_policy.py -m unittest tests.test_humanoid_policy
+          python -m coverage report -m --include=ohho/humanoid_policy.py --fail-under=95
       - name: CLI smoke (doctor)
         run: ohho doctor
       - name: CLI smoke (sim)

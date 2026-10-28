@@ -474,7 +474,7 @@ class TestGatedDispatch(unittest.TestCase):
             body = "".join(
                 path.read_text(encoding="utf-8") for path in Path(tmp).glob("*.jsonl")
             )
-            self.assertIn("not_allowlisted", body)
+            self.assertIn("not_armed", body)
             self.assertNotIn("booster", body.lower())
 
     def test_move_joints_stays_refused_when_the_policy_would_allow_it(self):

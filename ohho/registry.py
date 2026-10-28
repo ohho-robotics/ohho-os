@@ -405,7 +405,8 @@ def register(spec: RobotSpec) -> RobotSpec:
 
     Capability names must be in the vocabulary. Parameter objects are checked
     against their schemas. The parameters describe the robot; they do not
-    change safety caps.
+    change safety caps. Plugin specs are loaded first so a later ``register``
+    replaces one id without hiding the others.
     """
     _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
