@@ -5,6 +5,9 @@ with ``--allow-hardware``. That flag is not an environment variable and not
 a tool argument. Hardware links use :class:`~ohho.safety.SafetyGate` via
 :meth:`ohho.robot.Robot.connect` and stay disarmed — this process never arms
 and never releases an e-stop. ``emergency_stop`` is always allowed and latches.
+
+OHH-293 adds the drone tools in :mod:`ohho.mcp_drone`. They share this session
+and the same flag. They do not call :meth:`~ohho.robot.Robot.arm`.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from .capabilities import BASE_HOLONOMIC
 from .mcp_split import ON_ROBOT_MCP_PRODUCTS
 from .registry import UnknownRobot, list_specs
 from .robot import Robot
-from .safety import SafetyGate
+from .safety import DRONE_MCP_DENIED, SafetyGate, drone_mcp_allowed, normalize_action
 from .schema import clamp
 
 ToolHandler = Callable[[Dict[str, Any]], Dict[str, Any]]
@@ -168,22 +171,53 @@ def _tool_name_tokens(name: str) -> set[str]:
     return tokens
 
 
+def _drone_registration_hits(name: str, tokens: set[str], folded: str) -> list[str]:
+    """Denied drone tool names, including fence changes.
+
+    :func:`ohho.safety.drone_mcp_allowed` is the D-04 action check. A tool
+    whose name is one of those denied actions is refused here, at registration,
+    so it is never advertised. ``fence`` is refused as well: no tool may change
+    the geofence.
+    """
+    hits: list[str] = []
+    if "fence" in folded:
+        hits.append("fence")
+    candidates = [normalize_action(name)]
+    candidates.extend(normalize_action(token) for token in sorted(tokens))
+    for cand in candidates:
+        if not cand or cand in hits:
+            continue
+        # ``drone_mcp_allowed`` is false for ordinary words such as "connect".
+        # Only a name that the D-04 denylist owns is refused.
+        if cand in DRONE_MCP_DENIED and not drone_mcp_allowed(cand):
+            hits.append(cand)
+    return hits
+
+
 def assert_mcp_tool_name_allowed(name: str) -> None:
     """Raise if ``name`` would arm, release an e-stop, or change limits.
 
     Called when tools are registered so a future tool with such a name fails
-    before it is advertised.
+    before it is advertised. Drone names ``drone_arm``, ``drone_takeoff``,
+    ``drone_rtl``, and ``release_stop`` fail here, as does any fence-change
+    tool (OHH-293). ``emergency_stop`` stays allowed.
     """
     tokens = _tool_name_tokens(name)
     hit = sorted(_DENIED_TOKENS.intersection(tokens))
     folded = re.sub(r"[^a-z0-9]", "", name.lower())
     folded_hit = [needle for needle in _DENIED_FOLDED if needle in folded]
-    if hit or folded_hit:
-        why = ", ".join(hit + folded_hit)
+    drone_hit = _drone_registration_hits(name, tokens, folded)
+    if hit or folded_hit or drone_hit:
+        why_parts: list[str] = []
+        for item in hit + folded_hit + drone_hit:
+            if item not in why_parts:
+                why_parts.append(item)
+        why = ", ".join(why_parts)
         raise ValueError(
-            f"MCP tool {name!r} is forbidden (OHH-278: {why}). "
-            "Agents cannot arm, release an e-stop, or change safety "
-            "profiles or limits. emergency_stop remains allowed."
+            f"MCP tool {name!r} is forbidden (OHH-278/OHH-293: {why}). "
+            "Agents cannot arm, take off, return-to-launch, release an "
+            "e-stop, or change safety profiles, limits, or the geofence. "
+            "emergency_stop remains allowed."
         )
 
 
@@ -195,7 +229,11 @@ def _is_latched(bot: Robot) -> bool:
     transport = bot.transport
     if isinstance(transport, SafetyGate):
         return bool(transport.latched)
-    return bool(getattr(transport, "_estopped", False))
+    # Ground sims use ``_estopped``. Drone-sim latches ``_estop_latched`` and
+    # has no public flag; reading it is how this process sees that latch.
+    if getattr(transport, "_estopped", False):
+        return True
+    return bool(getattr(transport, "_estop_latched", False))
 
 
 def _not_connected(*, catalog: bool) -> Dict[str, Any]:
@@ -1008,7 +1046,10 @@ def build_tools(session: RobotSession) -> List[McpTool]:
             False,
         ),
     ]
+    # Local import: mcp_drone imports this module's session helpers.
+    from .mcp_drone import build_drone_tools
 
+    tools.extend(build_drone_tools(session))
     return _finalize_tools(tools)
 
 
