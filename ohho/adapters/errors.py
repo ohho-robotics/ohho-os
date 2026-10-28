@@ -6,4 +6,4 @@ from __future__ import annotations
 
 class AdapterUnavailable(RuntimeError):
     """Raised when a transport scheme is unknown, or when an adapter's runtime
-    dependency (pyserial, cyclonedds, the Unitree SDK, …) isn't installed."""
+    dependency (pyserial, cyclonedds, a vendor SDK, …) isn't installed."""

@@ -76,6 +76,8 @@ def _builtin(robot_class: RobotClass) -> RobotSpec:
     pool = list(builtin_specs())
     if robot_class is RobotClass.MOBILE_MANIPULATOR:
         pool.append(get_spec("omnibot"))
+    if robot_class is RobotClass.QUADRUPED:
+        pool.append(get_spec("unitree-go2"))
     matches = [spec for spec in pool if spec.robot_class is robot_class]
     if not matches:
         raise AssertionError(f"no built-in spec for {robot_class.value}")
@@ -320,6 +322,7 @@ class ResolveTest(unittest.TestCase):
     def test_every_builtin_spec_uses_its_class_default(self) -> None:
         specs = list(builtin_specs())
         specs.append(get_spec("omnibot"))
+        specs.append(get_spec("unitree-go2"))
         self.assertGreaterEqual(len(specs), 1)
         seen: set[RobotClass] = set()
         for spec in specs:

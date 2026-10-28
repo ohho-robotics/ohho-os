@@ -14,6 +14,6 @@ from __future__ import annotations
 
 from .reader import DatasetReader
 from .recorder import Episode, Recorder
-from .teleop import record_go2_teleop_episodes
+from .teleop import record_legged_teleop_episodes
 
-__all__ = ["Recorder", "Episode", "DatasetReader", "record_go2_teleop_episodes"]
+__all__ = ["Recorder", "Episode", "DatasetReader", "record_legged_teleop_episodes"]

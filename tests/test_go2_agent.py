@@ -4,7 +4,7 @@ from unittest.mock import patch
 from ohho.adapters.sim import SimTransport
 from ohho.agent import Agent, ScriptedBrain
 from ohho.brains import build_tool_registry, harness_available
-from ohho.evals import load_go2_sim_eval, run_scripted_go2_eval
+from ohho.evals import load_sim_eval, run_scripted_sim_eval
 from ohho.planner import goal_blockers
 from ohho.registry import get_spec
 from ohho.robot import Robot
@@ -63,9 +63,9 @@ class TestLeggedToolGating(unittest.TestCase):
 
 class TestGo2ScriptedEval(unittest.TestCase):
     def test_scripted_passes_goals_1_and_5_without_api_key(self):
-        spec = load_go2_sim_eval()
+        spec = load_sim_eval()
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
-            results = run_scripted_go2_eval(spec, only_scripted_pass=True)
+            results = run_scripted_sim_eval(spec, only_scripted_pass=True)
         self.assertEqual({g.id for g, _, _ in results}, {1, 5})
         for goal, ok, log in results:
             self.assertTrue(ok, f"goal {goal.id} failed: {log}")

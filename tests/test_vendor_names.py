@@ -1,8 +1,9 @@
-"""Mobile-manipulator names stay inside the built-in plugin package.
+"""Vendor names stay inside their built-in plugin packages.
 
-``tests/`` and markdown are not scanned. The ``ohho.robots`` entry-point
-line in ``pyproject.toml`` is the one allowed occurrence outside
-``ohho/robots/omnibot/``.
+``omnibot`` / ``yahboom`` stay in ``ohho/robots/omnibot/``. ``unitree`` /
+``go2`` stay in ``ohho/robots/unitree/``. ``tests/`` and markdown are not
+scanned. ``pyproject.toml`` may name the ``ohho.robots`` entry points, and
+the published ``unitree`` install extra.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ def _scan_core():
 
 
 class VendorNameTest(unittest.TestCase):
-    def test_omnibot_and_yahboom_stay_in_the_plugin(self) -> None:
+    def test_vendor_names_stay_in_their_plugins(self) -> None:
         findings = _scan_core()(_ROOT)
         self.assertEqual(findings, [])
 

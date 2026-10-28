@@ -3,7 +3,7 @@
 Table-driven profiles per robot category:
 - **Mobile manipulator bench:** serial link, wheel spin + encoders, IMU rate,
   STS3215 arm, camera frames.
-- **Legged (Go2):** DDS sport/lowstate rates, 12 leg motors, IMU at rest, BMS
+- **Legged:** DDS sport/lowstate rates, 12 leg motors, IMU at rest, BMS
   SOC, error_code, front camera JPEG, optional stand/lie cycle.
 
 Generates dated JSON test reports and surfaces PASS / FAIL / SKIP statuses.
@@ -94,8 +94,10 @@ MOBILE_MANIPULATOR_BENCH = SelfTestProfile(
     ),
 )
 
-LEGGED_GO2_PROFILE = SelfTestProfile(
-    "legged_go2",
+# Fallback when a legged spec has no plugin profile. The shipped quadruped
+# supplies its own profile through the plugin hook.
+_LEGGED_BENCH = SelfTestProfile(
+    "legged",
     (
         "dds_link",
         "leg_motors",
@@ -108,20 +110,28 @@ LEGGED_GO2_PROFILE = SelfTestProfile(
 )
 
 # DDS topic rate floors (sport / lowstate). Sim uses ideal rates; hardware allows
-# the current Unitree adapter sport poll (~20 Hz) until lowstate subscription lands.
+# the current adapter sport poll (~20 Hz) until lowstate subscription lands.
 _DDS_SPORT_MIN_HZ_SIM = 50.0
 _DDS_LOW_MIN_HZ_SIM = 100.0
 _DDS_SPORT_MIN_HZ_HW = 18.0
 _DDS_LOW_MIN_HZ_HW = 80.0
-_GO2_MOTOR_COUNT = 12
-_GO2_MOTOR_MAX_TEMP_C = 80.0
-_GO2_BMS_MIN_SOC = 0.30
-_GO2_IMU_MAX_ABS_RPY_REST = 0.35
+_LEG_MOTOR_COUNT = 12
+_LEG_MOTOR_MAX_TEMP_C = 80.0
+_BMS_MIN_SOC = 0.30
+_IMU_MAX_ABS_RPY_REST = 0.35
 
 
 def profile_for_robot(spec: RobotSpec) -> SelfTestProfile:
+    from .plugins import plugin_for_spec
+
+    plugin = plugin_for_spec(spec)
+    fn = getattr(plugin, "selftest_profile", None) if plugin is not None else None
+    if callable(fn):
+        found = fn(spec)
+        if found is not None:
+            return found
     if spec.category == "legged":
-        return LEGGED_GO2_PROFILE
+        return _LEGGED_BENCH
     return MOBILE_MANIPULATOR_BENCH
 
 
@@ -134,12 +144,16 @@ def default_hardware_transport_uri(
 ) -> str:
     if transport_uri:
         return transport_uri
+    from .plugins import plugin_for_spec
+
+    plugin = plugin_for_spec(spec)
+    fn = getattr(plugin, "hardware_transport_uri", None) if plugin is not None else None
+    if callable(fn):
+        uri = fn(spec)
+        if isinstance(uri, str) and uri:
+            return uri
     if spec.category == "legged":
-        iface = os.environ.get("OHHO_GO2_IFACE", "eth0")
-        domain = os.environ.get("OHHO_GO2_DOMAIN", "").strip()
-        if domain:
-            return f"dds://{iface}?domain={domain}"
-        return f"dds://{iface}"
+        return "dds://eth0"
     b_port = base_port or "/dev/ttyUSB0"
     a_port = arm_port or "/dev/ttyACM0"
     return f"serial://{b_port},{a_port}"
@@ -752,7 +766,7 @@ def check_camera_frames(
     )
 
 
-# ── Legged (Go2) checks ───────────────────────────────────────────────────────
+# ── Legged checks ─────────────────────────────────────────────────────────────
 
 
 def check_dds_link(
@@ -828,8 +842,8 @@ def check_leg_motors(
     transport: Transport,
     *,
     sim: bool = False,
-    expected_count: int = _GO2_MOTOR_COUNT,
-    max_temp_c: float = _GO2_MOTOR_MAX_TEMP_C,
+    expected_count: int = _LEG_MOTOR_COUNT,
+    max_temp_c: float = _LEG_MOTOR_MAX_TEMP_C,
 ) -> CheckResult:
     start_t = time.monotonic()
     diag = _read_legged_diag(transport)
@@ -880,7 +894,7 @@ def check_imu_rpy_rest(
     transport: Transport,
     *,
     sim: bool = False,
-    max_abs_rad: float = _GO2_IMU_MAX_ABS_RPY_REST,
+    max_abs_rad: float = _IMU_MAX_ABS_RPY_REST,
 ) -> CheckResult:
     start_t = time.monotonic()
     diag = _read_legged_diag(transport)
@@ -917,7 +931,7 @@ def check_bms_soc(
     transport: Transport,
     *,
     sim: bool = False,
-    min_soc: float = _GO2_BMS_MIN_SOC,
+    min_soc: float = _BMS_MIN_SOC,
 ) -> CheckResult:
     start_t = time.monotonic()
     diag = _read_legged_diag(transport)
@@ -1177,7 +1191,9 @@ def run_selftest(
                 tp = resolve_transport(uri, spec)
             except Exception as e:
                 err_msg = f"Failed to initialize hardware transport: {e}"
-                fail_name = "dds_link" if profile.id == "legged_go2" else "serial_link"
+                fail_name = (
+                    "dds_link" if "dds_link" in profile.check_ids else "serial_link"
+                )
                 checks_map = _hardware_init_failure_checks(
                     profile, e, fail_name, err_msg
                 )

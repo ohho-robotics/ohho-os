@@ -354,11 +354,10 @@ class ArmPolicy(SafetyPolicy):
 
 
 class LeggedPolicy(SafetyPolicy):
-    """Quadruped. Unitree Go2 keeps its built-in profile.
+    """Quadruped. The built-in profile keeps the sport allowlist and axis caps.
 
-    The sport allowlist, orientation requirement and axis caps come from that
-    profile. A stale command zeros velocity. E-stop calls the transport stop
-    (StopMove on Go2) and damps only when the body is already down.
+    A stale command zeros velocity. E-stop calls the transport stop and damps
+    only when the body is already down.
     """
 
     name = "legged"

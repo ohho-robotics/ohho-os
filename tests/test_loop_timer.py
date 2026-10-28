@@ -7,7 +7,7 @@ import time
 import unittest
 
 from ohho.adapters.feetech import FeetechTransport
-from ohho.adapters.unitree import UnitreeDdsTransport
+from ohho.robots.unitree.dds import UnitreeDdsTransport
 from ohho.robots.omnibot.yahboom import YahboomTransport
 from ohho.loop_timer import LoopTimer
 from ohho.registry import get_spec

@@ -154,7 +154,7 @@ class SimTransport(BaseTransport):
         self.sport_command(action)
 
     def sport_command(self, name: str, *args: float) -> None:
-        """Simulate allowlisted Go2 sport-mode actions for agent / safety tests."""
+        """Simulate allowlisted quadruped sport-mode actions for agent / safety tests."""
         if caps.LEGGED_POSE not in self.spec.capabilities:
             raise ValueError("sport_command on non-legged sim")
         if name == "stand_up" or name == "balance_stand" or name == "recovery_stand":
@@ -255,7 +255,7 @@ class SimTransport(BaseTransport):
         return 20.0
 
     def read_legged_diagnostics(self) -> dict[str, Any]:
-        """Synthetic Go2-style bench diagnostics for ``ohho selftest --sim``."""
+        """Synthetic legged bench diagnostics for ``ohho selftest --sim``."""
         if self.spec.category != "legged":
             return {}
         motors = [

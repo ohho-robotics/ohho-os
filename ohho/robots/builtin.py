@@ -1,14 +1,14 @@
-"""Built-in robot plugin: sim, Unitree Go2, and the aerial specs.
+"""Built-in robot plugin: the generic sim and the aerial specs.
 
 Registered in ``pyproject.toml`` under the ``ohho.robots`` group, so these
 specs take the same discovery path as an installed plugin. The mobile
-manipulator ships as its own entry point. Spec data stays in
-:mod:`ohho.registry`; this module only exposes it.
+manipulator and the quadruped ship as their own entry points. Spec data stays
+in :mod:`ohho.registry`; this module only exposes it.
 
-Importing this module must not import a vendor SDK (``pyserial``, ``lerobot``,
-``cyclonedds``, ``unitree_sdk2py``, ``rclpy``, ``pymavlink``). Those imports
-stay inside adapter ``connect()``. Transport factories below import the
-adapter module only when called, and they do not connect.
+Importing this module must not import a vendor SDK (``lerobot``, ``rclpy``,
+``pymavlink``). Those imports stay inside adapter ``connect()``. Transport
+factories below import the adapter module only when called, and they do not
+connect.
 """
 
 from __future__ import annotations
@@ -33,13 +33,6 @@ def _feetech_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport
     return FeetechTransport(spec, address)
 
 
-def _dds_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
-    del runtime
-    from ..adapters.unitree import UnitreeDdsTransport
-
-    return UnitreeDdsTransport(spec, address)
-
-
 def _ros2_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     from ..adapters.ros2 import Ros2Transport
 
@@ -59,8 +52,6 @@ class BuiltinPlugin:
             "sim": _sim_transport,
             "simulated": _sim_transport,
             "feetech": _feetech_transport,
-            "dds": _dds_transport,
-            "unitree-dds": _dds_transport,
             "ros2": _ros2_transport,
         }
 

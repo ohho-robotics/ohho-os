@@ -357,7 +357,7 @@ class RefusalTests(unittest.TestCase):
                     side_effect=AssertionError("serial"),
                 ),
                 patch(
-                    "ohho.adapters.unitree.UnitreeDdsTransport",
+                    "ohho.robots.unitree.dds.UnitreeDdsTransport",
                     side_effect=AssertionError("dds"),
                 ),
             ):

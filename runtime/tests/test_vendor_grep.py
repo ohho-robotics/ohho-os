@@ -86,6 +86,27 @@ class CoreVendorGrepTest(unittest.TestCase):
         self.assertIn("planted.py", findings[0])
         self.assertIn(token, findings[0])
 
+    def test_planted_quadruped_name_outside_its_plugin_fails(self) -> None:
+        token = "go" + "2"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            planted = root / "ohho" / "planted.py"
+            planted.parent.mkdir(parents=True)
+            planted.write_text(f"name = {token!r}\n", encoding="utf-8")
+            allowed = root / "ohho" / "robots" / "unitree"
+            allowed.mkdir(parents=True)
+            (allowed / "ok.py").write_text(f"name = {token!r}\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                '[project.entry-points."ohho.robots"]\n'
+                'unitree = "ohho.robots.unitree:plugin"\n'
+                'unitree = ["cyclonedds>=0.10"]\n',
+                encoding="utf-8",
+            )
+            findings = scan_core(root)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("planted.py", findings[0])
+        self.assertIn(token, findings[0])
+
     def test_project_comment_is_not_an_allowance(self) -> None:
         token = "yah" + "boom"
         with tempfile.TemporaryDirectory() as tmp:

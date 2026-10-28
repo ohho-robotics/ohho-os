@@ -1,10 +1,21 @@
-"""Go2 base-velocity policy adapter for ohho.serve."""
+"""Base-velocity policy adapter for the quadruped inference server."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
+
+# Names ``/load_model`` already accepted, including the former module path.
+MODEL_NAMES = frozenset(
+    {
+        "go2",
+        "go2_base",
+        "Go2PolicyModel",
+        "ohho.serve.go2.Go2PolicyModel",
+        "ohho.robots.unitree.policy_model.Go2PolicyModel",
+    }
+)
 
 
 class Go2PolicyModel:
@@ -12,7 +23,7 @@ class Go2PolicyModel:
 
     def __init__(self, device: str = "cpu") -> None:
         self.device = device
-        self.config: Dict[str, Any] = {}
+        self.config: dict[str, Any] = {}
         self._path = ""
         self._mock = False
 
@@ -37,15 +48,16 @@ class Go2PolicyModel:
 
     def predict_action(
         self, image: Any = None, instruction: str = "", **kwargs: Any
-    ) -> Dict[str, Any]:
-        state: List[float] = list(kwargs.get("state") or [0.0, 0.0, 0.0])
+    ) -> dict[str, Any]:
+        del image
+        state: list[float] = list(kwargs.get("state") or [0.0, 0.0, 0.0])
         while len(state) < 3:
             state.append(0.0)
         odom = kwargs.get("odom") or {}
         odom_x = float(odom.get("x", 0.0)) if isinstance(odom, dict) else 0.0
 
         vx, vy, wz = self._select_base_velocity(state, instruction, odom_x)
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "base": {"vx": float(vx), "vy": float(vy), "wz": float(wz)},
         }
         mode = self.config.get("mode")
@@ -56,7 +68,7 @@ class Go2PolicyModel:
         return out
 
     def _select_base_velocity(
-        self, state: List[float], instruction: str, odom_x: float
+        self, state: list[float], instruction: str, odom_x: float
     ) -> tuple[float, float, float]:
         """Return (vx, vy, wz). Mock / missing weights use a simple go-forward heuristic."""
         target_vx = float(self.config.get("default_vx", 0.2))

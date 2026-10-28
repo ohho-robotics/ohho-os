@@ -30,8 +30,8 @@ from typing import Any, List, Optional
 from .recorder import (
     BASE_ACTION_NAMES,
     BASE_STATE_NAMES,
-    GO2_ACTION_NAMES,
-    GO2_STATE_NAMES,
+    LEGGED_ACTION_NAMES,
+    LEGGED_STATE_NAMES,
     MOBILE_MANIPULATOR_ACTION_NAMES,
     MOBILE_MANIPULATOR_STATE_NAMES,
     Episode,
@@ -43,6 +43,31 @@ DEFAULT_VIDEO_PATH = (
     "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 )
 DEFAULT_DATA_PATH = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+
+
+def _quadruped_robot_id() -> str:
+    """Id of the registered quadruped, used when a 31-D episode omits a type."""
+    from ..registry import list_specs
+    from ..robot_spec import RobotClass
+
+    for spec in list_specs():
+        if spec.robot_class is RobotClass.QUADRUPED:
+            return spec.id
+    return "quadruped"
+
+
+def _is_quadruped_dataset(robot_type: str, state_dim: int) -> bool:
+    """31-D episodes, or a type that names a registered quadruped."""
+    if state_dim == 31:
+        return True
+    from ..registry import list_specs
+    from ..robot_spec import RobotClass
+
+    for spec in list_specs():
+        if spec.robot_class is RobotClass.QUADRUPED and spec.id == robot_type:
+            return True
+    return False
+
 
 # Scalar columns LeRobotDatasetMetadata.create always merges into features.
 _SCALAR_FEATURES = {
@@ -74,7 +99,7 @@ def write_dataset(
     action_dim = episodes[0].action_dim if episodes else 0
     if robot_type is None:
         if state_dim == 31 and action_dim == 4:
-            robot_type = "unitree-go2"
+            robot_type = _quadruped_robot_id()
         elif state_dim == 9:
             from ..plugins import preferred_robot_id
 
@@ -153,9 +178,9 @@ def _write_info(
     state_dim = episodes[0].state_dim if episodes else 0
     action_dim = episodes[0].action_dim if episodes else 0
 
-    if robot_type == "unitree-go2" or state_dim == 31:
-        state_names = GO2_STATE_NAMES[:state_dim]
-        action_names = GO2_ACTION_NAMES[:action_dim]
+    if _is_quadruped_dataset(robot_type, state_dim):
+        state_names = LEGGED_STATE_NAMES[:state_dim]
+        action_names = LEGGED_ACTION_NAMES[:action_dim]
     elif state_dim == 9:
         state_names = MOBILE_MANIPULATOR_STATE_NAMES[:state_dim]
         action_names = MOBILE_MANIPULATOR_ACTION_NAMES[:action_dim]

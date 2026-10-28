@@ -1,12 +1,12 @@
 """Scripted run harness and evaluation logger for OHH-134 sim demo.
 
 Executes the 6-shot demo sequence (doctor -> sim/shim start -> typed goal ->
-tool-call log -> SafetyGate clamp/e-stop demo -> end card) for Unitree Go2
+tool-call log -> SafetyGate clamp/e-stop demo -> end card) for the quadruped
 in MuJoCo simulation. Generates an evaluation report conforming to
 evals/schemas/sim_demo_schema.json.
 
 SIMULATION ONLY -- NOT TESTED ON PHYSICAL HARDWARE.
-Real hardware bring-up is Vision until Go2 EDU is available (OHH-135).
+Real hardware bring-up is Vision until a physical robot is available (OHH-135).
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ from .registry import get_spec, list_specs
 from .robot import Robot
 from .runtime import available_runtimes
 from .runtime.native import NativeRuntime
-from .safety import GO2_PROFILE, SafetyGate
+from .plugins import plugin_text
+from .safety import SafetyGate, profile_for
 from .schema import Telemetry
 
 # Shot metadata definitions matching the OHH-134 60-90s shot list
@@ -40,7 +41,7 @@ DEFAULT_SHOTS = [
         "name": "System Readiness & Doctor Check",
         "target_duration_s": 10.0,
         "overlay_text": "[OHHO OS v1.1.3] [SIMULATION ONLY - NOT TESTED ON HARDWARE] Shot 1: System Readiness",
-        "description": "Probe runtimes, adapters, hardware device, and Go2 robot capabilities.",
+        "description": "Probe runtimes, adapters, hardware device, and quadruped capabilities.",
     },
     {
         "shot_index": 2,
@@ -72,7 +73,7 @@ DEFAULT_SHOTS = [
         "name": "SafetyGate Clamp, Rejection & E-Stop",
         "target_duration_s": 18.0,
         "overlay_text": "[SAFETYGATE DEMO: 2.0 m/s CLAMPED TO 0.5 m/s | BACKFLIP DENIED | E-STOP LATCHED] Shot 5: Safety Invariants",
-        "description": "Demonstrate Go2 velocity clamping, prohibited action rejection, and latched e-stop.",
+        "description": "Demonstrate quadruped velocity clamping, prohibited action rejection, and latched e-stop.",
     },
     {
         "shot_index": 6,
@@ -109,7 +110,7 @@ class SimDemoHarness:
 
     def __init__(
         self,
-        robot_id: str = "unitree-go2",
+        robot_id: str = "",
         transport_uri: str = "dds://lo?domain=1",
         sim_mode: bool = False,
         fast: bool = False,
@@ -117,14 +118,14 @@ class SimDemoHarness:
         out_path: Optional[str] = None,
         out_stream: Any = sys.stdout,
     ) -> None:
-        self.robot_id = robot_id
+        self.robot_id = robot_id or plugin_text("sim_demo_robot_id") or "sim"
         self.transport_uri = transport_uri
         self.sim_mode = sim_mode
         self.fast = fast
         self.goal = goal
         self.out_path = out_path
         self.out = out_stream
-        self.spec = get_spec(robot_id)
+        self.spec = get_spec(self.robot_id)
         self.shots_results: List[ShotResult] = []
 
     def _sleep(self, seconds: float) -> None:
@@ -160,7 +161,7 @@ class SimDemoHarness:
         self._log(f"  robots      : {', '.join(robots)}")
         self._log(f"  target robot: {self.spec.name} ({self.spec.category})")
         self._log(f"  capabilities: {', '.join(self.spec.capabilities)}")
-        self._log("  verification: Simulation only (unitree_mujoco domain 1 / sim://)")
+        self._log("  verification: Simulation only (local MuJoCo domain 1 / sim://)")
 
         events.append(
             DemoEvent(
@@ -207,7 +208,7 @@ class SimDemoHarness:
         self._banner(2, "MuJoCo Sim & Sport Shim Connection", overlay)
         events: List[DemoEvent] = []
 
-        self._log("Connecting to Go2 sim backend...")
+        self._log("Connecting to quadruped sim backend...")
         bot: Optional[Robot] = None
         inner: Any = None
         gate: Optional[SafetyGate] = None
@@ -228,14 +229,14 @@ class SimDemoHarness:
                 use_sim = True
 
         if use_sim:
-            # Construct simulated transport with full Go2 telemetry and SafetyGate wrapping
+            # Construct simulated transport with quadruped telemetry and SafetyGate wrapping
             inner = SimTransport(self.spec)
             inner.connect()
             # Wrap in SafetyGate to demonstrate full safety invariants
             gate = SafetyGate(
                 inner,
                 self.spec,
-                profile=GO2_PROFILE,
+                profile=profile_for(self.spec.id, self.spec),
                 auto_tick=False,
             )
             gate.connect()
@@ -454,11 +455,11 @@ class SimDemoHarness:
         # 5a: Excessive speed clamp demo (command 2.0 m/s -> clamped to 0.5 m/s ceiling)
         self._log("Testing SafetyGate invariant 1: Forward velocity clamp")
         self._log(
-            "Commanding excessive velocity: vx = 2.0 m/s (exceeds Go2 0.5 m/s limit)"
+            "Commanding excessive velocity: vx = 2.0 m/s (exceeds the 0.5 m/s limit)"
         )
         if bot.gated:
             bot.drive(vx=2.0)
-            applied_vx = GO2_PROFILE.max_vx
+            applied_vx = profile_for(self.spec.id, self.spec).max_vx
             self._log(
                 f"SafetyGate: CLAMPED requested vx=2.0 m/s -> applied vx={applied_vx:.3f} m/s (PASS)"
             )
@@ -552,7 +553,7 @@ class SimDemoHarness:
             "  All behaviors shown executed in MuJoCo simulation via local DDS      ",
             "  loopback (domain 1, interface lo) with sport shim.                   ",
             "                                                                        ",
-            "  Real robot hardware bring-up is Vision until physical Go2 EDU is     ",
+            "  Real robot hardware bring-up is Vision until a physical robot is     ",
             "  available and an operator is on-site (OHH-135).                      ",
             "                                                                        ",
             "  SafetyGate Invariants Verified:                                      ",
@@ -605,7 +606,7 @@ RECORDING SETUP:
   [ ] Resolution: 1920x1080 @ 60 FPS (OBS Studio / Screen recorder)
   [ ] Screen Layout:
       - Left Half (50%): Terminal (80 columns, font size ~18pt, dark background)
-      - Right Half (50%): MuJoCo Viewer (Go2 model, free camera angle ~45 deg)
+      - Right Half (50%): MuJoCo Viewer (quadruped model, free camera angle ~45 deg)
   [ ] Audio: Optional gentle lo-fi background track or voiceover explaining safety
   [ ] Watermark Overlay (Top Right): "[SIMULATION ONLY - NOT TESTED ON HARDWARE]"
 
@@ -613,13 +614,13 @@ SHOT LIST CHECKLIST:
 
 1. SHOT 1: System Readiness & Doctor Check (0:00 - 0:10, ~10s)
    - Action: Run 'ohho doctor'
-   - Visual: Terminal prints OS version, runtimes, adapters, and unitree-go2 spec
+   - Visual: Terminal prints OS version, runtimes, adapters, and the quadruped spec
    - Overlay: [OHHO OS v1.1.3] [SIMULATION ONLY - NOT TESTED ON HARDWARE]
    - Cue: Lower-third title "Shot 1: System Readiness & Robot Discovery"
 
 2. SHOT 2: MuJoCo Sim & Sport Shim Connection (0:10 - 0:22, ~12s)
    - Action: Launch MuJoCo sim + sport shim on loopback domain 1 (or sim mode)
-   - Visual: MuJoCo window shows Go2 quadruped in rest pose; terminal connects
+   - Visual: MuJoCo window shows the quadruped in rest pose; terminal connects
    - Overlay: [SIMULATION ONLY -- DOMAIN 1 LOOPBACK] [HARDWARE MOTION: DISARMED]
    - Cue: "SafetyGate active: Fail-closed until armed on loopback"
 
@@ -632,10 +633,10 @@ SHOT LIST CHECKLIST:
 4. SHOT 4: Tool-Call Stream & MuJoCo Motion (0:34 - 0:54, ~20s)
    - Action: Stream tool calls and execute quadruped locomotion in MuJoCo
    - Visual: Left terminal displays streaming calls; right MuJoCo shows:
-       a) Go2 stands up smoothly
-       b) Go2 walks forward 0.3m (odometry updates live)
-       c) Go2 stops
-       d) Go2 lowers to lying pose
+       a) The quadruped stands up smoothly
+       b) It walks forward 0.3m (odometry updates live)
+       c) It stops
+       d) It lowers to a lying pose
    - Overlay: [TOOL CALLS & MOTION] stand_up() -> drive(0.2) -> stop() -> lie_down()
    - Cue: Callouts for each tool execution and live odometry
 
@@ -651,7 +652,7 @@ SHOT LIST CHECKLIST:
    - Visual: Clean full-screen graphic or terminal end-card
    - Text:
        SIMULATION ONLY -- NOT TESTED ON PHYSICAL HARDWARE
-       Real hardware bring-up is Vision until Go2 EDU is available (OHH-135).
+       Real hardware bring-up is Vision until a physical robot is available (OHH-135).
        SafetyGate verified: 0.5 m/s clamp, flips denied, e-stop latched.
        GitHub: https://github.com/ohho-robotics/ohho-os
    - Overlay: [SIMULATION ONLY -- NOT TESTED ON PHYSICAL HARDWARE]
@@ -663,7 +664,9 @@ TOTAL DURATION: ~85 seconds (Target: 60-90s)
     def run(self) -> Dict[str, Any]:
         """Execute the full demo harness sequence and produce the eval report."""
         self._log("\n" + "=" * 78)
-        self._log("Starting OHH-134 Sim Demo Harness (Go2 in MuJoCo / sim loopback)")
+        self._log(
+            "Starting OHH-134 Sim Demo Harness (quadruped in MuJoCo / sim loopback)"
+        )
         self._log("SIMULATION ONLY -- NOT TESTED ON PHYSICAL HARDWARE.")
         self._log("=" * 78)
 
@@ -734,7 +737,7 @@ TOTAL DURATION: ~85 seconds (Target: 60-90s)
             "disclaimer": (
                 "SIMULATION ONLY: Tested in MuJoCo simulation via local DDS loopback "
                 "(domain 1, interface lo). Not tested on physical robot hardware. "
-                "Real hardware bring-up is Vision until Go2 EDU is available and "
+                "Real hardware bring-up is Vision until a physical robot is available and "
                 "an operator is present (OHH-135)."
             ),
             "shots": [
@@ -766,12 +769,12 @@ TOTAL DURATION: ~85 seconds (Target: 60-90s)
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run OHH-134 sim demo harness (typed goal -> agent -> Go2 in MuJoCo)"
+        description="Run OHH-134 sim demo harness (typed goal -> agent -> quadruped in MuJoCo)"
     )
     parser.add_argument(
         "--robot",
-        default="unitree-go2",
-        help="robot id to evaluate (default: unitree-go2)",
+        default=None,
+        help="robot id to evaluate (default: the quadruped plugin)",
     )
     parser.add_argument(
         "--transport",

@@ -111,7 +111,7 @@ class TestHilUnitreeGo2(unittest.TestCase):
     """Drive the real Unitree Go2 over DDS."""
 
     def test_drive_and_read(self):
-        from ohho.adapters.unitree import UnitreeDdsTransport
+        from ohho.robots.unitree.dds import UnitreeDdsTransport
         from ohho.registry import get_spec
         from ohho.schema import Velocity
 

@@ -441,6 +441,124 @@ def preferred_robot_id() -> str:
     return "sim"
 
 
+def _usable_plugins() -> list[object]:
+    plugins: list[object] = []
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        plugins.append(info.plugin)
+    return plugins
+
+
+def plugin_for_spec(spec: object) -> object | None:
+    """Loaded plugin that registered ``spec``, or ``None``."""
+    source = getattr(spec, "source", "")
+    if not isinstance(source, str) or not source:
+        return None
+    return plugin_named(source)
+
+
+def plugin_text(method: str) -> str:
+    """First non-empty string returned by ``method`` on a loaded plugin."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, method, None)
+        if not callable(fn):
+            continue
+        value = fn()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def scheme_supports_read_only(scheme: str | None) -> bool:
+    """True when a plugin factory marked ``supports_read_only`` owns ``scheme``."""
+    if not scheme:
+        return False
+    key = scheme.strip().lower()
+    for info in loaded_plugins():
+        if info.error:
+            continue
+        factory = info.transport_factories.get(key)
+        if factory is not None and getattr(factory, "supports_read_only", False):
+            return True
+    return False
+
+
+def probe_adapter_schemes() -> list[str]:
+    """Schemes a plugin reports as importable in this environment."""
+    found: list[str] = []
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "probe_schemes", None)
+        if not callable(fn):
+            continue
+        reported = fn() or ()
+        for name in reported:
+            if isinstance(name, str) and name not in found:
+                found.append(name)
+    return found
+
+
+def plugin_environment_lines() -> list[str]:
+    """Extra ``ohho doctor`` lines contributed by plugins, in load order."""
+    lines: list[str] = []
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "environment_lines", None)
+        if not callable(fn):
+            continue
+        for line in fn() or ():
+            if isinstance(line, str):
+                lines.append(line)
+    return lines
+
+
+def uri_is_hardware(uri: str | None) -> bool:
+    """True when a plugin says ``uri`` is a hardware link that must be armed."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "uri_is_hardware", None)
+        if callable(fn) and fn(uri):
+            return True
+    return False
+
+
+def contributed_model_class(name: str) -> type | None:
+    """Model class a plugin binds to ``name``, or ``None``."""
+    if not name:
+        return None
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "model_class", None)
+        if not callable(fn):
+            continue
+        found = fn(name)
+        if isinstance(found, type):
+            return found
+    return None
+
+
+def model_uses_base_action(name: str) -> bool:
+    """True when a plugin says ``name`` selects the base-velocity schema."""
+    if not name:
+        return False
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "model_uses_base_action", None)
+        if callable(fn) and fn(name):
+            return True
+    return False
+
+
+def is_contributed_model(model: object) -> bool:
+    """True when ``model`` is an instance of a plugin policy class."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "is_model", None)
+        if callable(fn) and fn(model):
+            return True
+    return False
+
+
+def default_base_model_name() -> str:
+    """Model-class key for a base-only robot, or ``\"\"`` when none is registered."""
+    return plugin_text("default_base_model_name")
+
+
 def plugin_named(name: str) -> object | None:
     """The loaded plugin instance for ``name``, or ``None``.
 
@@ -616,15 +734,25 @@ __all__ = [
     "RobotPlugin",
     "SimFactory",
     "TransportFactory",
+    "contributed_model_class",
     "declared_sim_backend",
+    "default_base_model_name",
     "describe_plugin_schemes",
     "describe_plugin_sim_backends",
     "format_plugin_report",
+    "is_contributed_model",
     "loaded_plugins",
+    "model_uses_base_action",
+    "plugin_environment_lines",
+    "plugin_for_spec",
     "plugin_named",
+    "plugin_text",
     "preferred_robot_id",
     "plugin_sim_backend",
     "plugin_transport",
+    "probe_adapter_schemes",
     "register_loaded_specs",
     "reload_plugins",
+    "scheme_supports_read_only",
+    "uri_is_hardware",
 ]

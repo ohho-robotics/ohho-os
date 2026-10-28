@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ohho.adapters.errors import AdapterUnavailable
-from ohho.adapters.unitree import (
+from ohho.robots.unitree.dds import (
     UnitreeDdsTransport,
     dds_uri_is_hardware,
     dds_uri_is_sim_only,
@@ -302,7 +302,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         tp._connected_since = 1.0
         tp._last_msg_mono = 0.0
         tp._state = ConnectionState.CONNECTED
-        with patch("ohho.adapters.unitree.time") as mtime:
+        with patch("ohho.robots.unitree.dds.time") as mtime:
             mtime.monotonic.return_value = 2.0
             mtime.time.return_value = 100.0
             st = tp.status()
@@ -314,7 +314,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         tp._connected_since = 1.0
         tp._connected_mono = 0.0
         tp._state = ConnectionState.CONNECTED
-        with patch("ohho.adapters.unitree.time") as mtime:
+        with patch("ohho.robots.unitree.dds.time") as mtime:
             mtime.monotonic.return_value = 2.0
             st = tp.status()
         self.assertEqual(st.state, ConnectionState.ERROR)
@@ -326,7 +326,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         tp._state = ConnectionState.ERROR
         tp._connected_mono = 0.0
         tp._last_msg_mono = 1.5
-        with patch("ohho.adapters.unitree.time") as mtime:
+        with patch("ohho.robots.unitree.dds.time") as mtime:
             mtime.monotonic.return_value = 2.0
             tp._poll_link_health()
             self.assertEqual(tp._state, ConnectionState.CONNECTED)
@@ -336,13 +336,13 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         tp = UnitreeDdsTransport(get_spec("unitree-go2"))
         tp._state = ConnectionState.CONNECTED
         tp._connected_mono = 0.0
-        with patch("ohho.adapters.unitree.time") as mtime:
+        with patch("ohho.robots.unitree.dds.time") as mtime:
             mtime.monotonic.return_value = 2.0
             tp._poll_link_health()
         self.assertEqual(tp._state, ConnectionState.ERROR)
 
     def test_device_stamp_is_not_telemetry_time(self):
-        with patch("ohho.adapters.unitree.time") as mtime:
+        with patch("ohho.robots.unitree.dds.time") as mtime:
             mtime.time.return_value = 1_700_000_000.0
             t = sportstate_to_telemetry(
                 {
@@ -365,7 +365,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         tp._sport_mono = 0.0
         tp._low_partial = {"joints": [{"name": "FR_hip", "position": 0.2}]}
         tp._low_mono = 10.0
-        with patch("ohho.adapters.unitree.time") as mtime:
+        with patch("ohho.robots.unitree.dds.time") as mtime:
             mtime.monotonic.return_value = 10.0
             mtime.time.return_value = 1_700_000_000.0
             tp._merge_and_emit()
@@ -428,7 +428,7 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
         client = _FakeSportClient()
         client.move_code = 7
         tp._client = client
-        with self.assertLogs("ohho.adapters.unitree", level="WARNING") as logs:
+        with self.assertLogs("ohho.robots.unitree.dds", level="WARNING") as logs:
             with self.assertRaises(RuntimeError):
                 tp.send_velocity(Velocity(0.1))
         self.assertTrue(any("Move" in line and "7" in line for line in logs.output))

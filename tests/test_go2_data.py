@@ -13,10 +13,10 @@ import unittest
 from pathlib import Path
 
 from ohho.adapters.sim import SimTransport
-from ohho.data import DatasetReader, Recorder, record_go2_teleop_episodes
+from ohho.data import DatasetReader, Recorder, record_legged_teleop_episodes
 from ohho.data.recorder import (
-    GO2_ACTION_NAMES,
-    GO2_STATE_NAMES,
+    LEGGED_ACTION_NAMES,
+    LEGGED_STATE_NAMES,
 )
 from ohho.data.teleop import make_sim_camera_frame
 from ohho.registry import get_spec
@@ -125,15 +125,15 @@ class TestGo2Schema(unittest.TestCase):
 
             state_feat = info["features"]["observation.state"]
             self.assertEqual(state_feat["shape"], [31])
-            self.assertEqual(state_feat["names"], GO2_STATE_NAMES)
+            self.assertEqual(state_feat["names"], LEGGED_STATE_NAMES)
 
             action_feat = info["features"]["action"]
             self.assertEqual(action_feat["shape"], [4])
-            self.assertEqual(action_feat["names"], GO2_ACTION_NAMES)
+            self.assertEqual(action_feat["names"], LEGGED_ACTION_NAMES)
 
             raw_feat = info["features"]["action_raw"]
             self.assertEqual(raw_feat["shape"], [4])
-            self.assertEqual(raw_feat["names"], GO2_ACTION_NAMES)
+            self.assertEqual(raw_feat["names"], LEGGED_ACTION_NAMES)
 
     def test_safety_gate_clamped_command_vs_raw_request(self):
         bot = _go2_gated_bot()
@@ -265,7 +265,7 @@ class TestGo2SimTeleop10Episodes(unittest.TestCase):
     )
     def test_record_10_teleop_episodes_and_lerobot_load(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dataset_path, stats = record_go2_teleop_episodes(
+            dataset_path, stats = record_legged_teleop_episodes(
                 output_dir=os.path.join(tmp, "go2_teleop_dataset"),
                 num_episodes=10,
                 steps_per_episode=15,

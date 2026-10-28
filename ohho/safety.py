@@ -91,7 +91,8 @@ STATE_TIMEOUT_S = 0.5
 TILT_LIMIT_RAD = 0.6
 EULER_LIMIT_RAD = 0.3
 
-GO2_ACTIONS = frozenset(
+# Sport-mode names a profile may allowlist. The denylist still wins.
+SPORT_ACTIONS = frozenset(
     {
         "stand_up",
         "stand_down",
@@ -217,7 +218,7 @@ class SafetyProfile:
                 raise ValueError(f"safety profile: {name} must be > 0")
 
         allow = frozenset(normalize_action(str(a)) for a in self.allowlist)
-        allowable = GO2_ACTIONS | HUMANOID_ACTIONS
+        allowable = SPORT_ACTIONS | HUMANOID_ACTIONS
         for a in allow:
             if is_denied(a) or a not in allowable:
                 raise ValueError(f"safety profile: action '{a}' cannot be allowlisted")
@@ -244,18 +245,8 @@ class SafetyProfile:
         object.__setattr__(self, "effort_limits", MappingProxyType(efforts))
 
 
-GO2_PROFILE = SafetyProfile(
-    max_vx=0.5,
-    max_vy=0.3,
-    max_wz=1.0,
-    max_accel_x=1.0,
-    max_accel_y=0.6,
-    max_accel_wz=2.0,
-    require_orientation=True,
-    allowlist=GO2_ACTIONS,
-)
-
-PROFILES: Mapping[str, SafetyProfile] = MappingProxyType({"unitree-go2": GO2_PROFILE})
+# Id-keyed built-in profiles. Plugin robots register a baseline instead.
+PROFILES: Mapping[str, SafetyProfile] = MappingProxyType({})
 
 # Baselines a plugin registers for its own robot id. The first registration
 # wins, and it is the ceiling ``safety_policy`` is compared against. Core does
@@ -368,7 +359,7 @@ def load_safety_config(path: Union[str, Path]) -> SafetyConfig:
     Shape::
 
         {"hard_ceiling": {"max_lin": 2.0, "max_ang": 3.0},
-         "profiles": {"unitree-go2": {"max_vx": 0.8, "allowlist": ["move"]}}}
+         "profiles": {"example-robot": {"max_vx": 0.8, "allowlist": ["move"]}}}
     """
     p = Path(path)
     try:
@@ -1208,8 +1199,8 @@ __all__ = [
     "CI_ENV_VARS",
     "CI_FAKE_ROBOT_ENV",
     "CONFIG_ENV",
-    "GO2_PROFILE",
     "HUMANOID_ACTIONS",
+    "SPORT_ACTIONS",
     "HARD_MAX_ANG",
     "HARD_MAX_LIN",
     "PROFILES",

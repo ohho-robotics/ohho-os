@@ -138,6 +138,7 @@ class TestPluginDiscovery(unittest.TestCase):
         self.assertIn('[project.entry-points."ohho.robots"]', text)
         self.assertIn(f'builtin = "{BUILTIN_ENTRY_VALUE}"', text)
         self.assertIn('omnibot = "ohho.robots.omnibot:plugin"', text)
+        self.assertIn('unitree = "ohho.robots.unitree:plugin"', text)
 
     def test_entry_point_object_loads_builtin_specs(self):
         plugin = _builtin_entry().load()()
@@ -146,7 +147,6 @@ class TestPluginDiscovery(unittest.TestCase):
             {spec.id for spec in plugin.specs()},
             {
                 "sim",
-                "unitree-go2",
                 "px4-sitl",
                 "crazyflie-sim",
                 "px4-x500",
@@ -171,12 +171,14 @@ class TestPluginDiscovery(unittest.TestCase):
                 set(builtin[0].spec_ids),
                 {
                     "sim",
-                    "unitree-go2",
                     "px4-sitl",
                     "crazyflie-sim",
                     "px4-x500",
                 },
             )
+            quadruped = next(info for info in infos if info.name == "unitree")
+            self.assertTrue(quadruped.fallback)
+            self.assertEqual(quadruped.spec_ids, ("unitree-go2",))
             mobile = next(info for info in infos if info.name == "omnibot")
             self.assertTrue(mobile.fallback)
             self.assertEqual(mobile.spec_ids, ("omnibot",))
@@ -187,6 +189,7 @@ class TestPluginDiscovery(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("builtin (source fallback):", text)
             self.assertIn("omnibot (source fallback):", text)
+            self.assertIn("unitree (source fallback):", text)
             self.assertNotIn("error:", text)
             code, listed = _stdout(["list"])
             self.assertEqual(code, 0)
@@ -203,6 +206,11 @@ class TestPluginDiscovery(unittest.TestCase):
                     value="ohho.robots.omnibot:plugin",
                     group=ENTRY_GROUP,
                 ),
+                importlib.metadata.EntryPoint(
+                    name="unitree",
+                    value="ohho.robots.unitree:plugin",
+                    group=ENTRY_GROUP,
+                ),
             ]
 
         with _discovered(reader):
@@ -214,7 +222,6 @@ class TestPluginDiscovery(unittest.TestCase):
                 set(infos[0].spec_ids),
                 {
                     "sim",
-                    "unitree-go2",
                     "px4-sitl",
                     "crazyflie-sim",
                     "px4-x500",
@@ -223,9 +230,15 @@ class TestPluginDiscovery(unittest.TestCase):
             mobile = next(info for info in loaded_plugins() if info.name == "omnibot")
             self.assertFalse(mobile.fallback)
             self.assertEqual(mobile.spec_ids, ("omnibot",))
+            quadruped = next(
+                info for info in loaded_plugins() if info.name == "unitree"
+            )
+            self.assertFalse(quadruped.fallback)
+            self.assertEqual(quadruped.spec_ids, ("unitree-go2",))
             self.assertNotIn("source fallback", format_plugin_report())
             self.assertIn("sim", {spec.id for spec in list_specs()})
             self.assertIn("omnibot", {spec.id for spec in list_specs()})
+            self.assertIn("unitree-go2", {spec.id for spec in list_specs()})
 
     def test_builtin_declares_current_schemes(self):
         def reader():
@@ -239,8 +252,6 @@ class TestPluginDiscovery(unittest.TestCase):
                     "sim",
                     "simulated",
                     "feetech",
-                    "dds",
-                    "unitree-dds",
                     "ros2",
                 },
             )
@@ -435,7 +446,7 @@ class TestPluginDiscovery(unittest.TestCase):
         with _discovered(reader):
             info = next(item for item in loaded_plugins() if item.name == "schemeplug")
             self.assertIn("duplicate transport scheme 'dds'", info.error or "")
-            self.assertIn("'builtin'", info.error or "")
+            self.assertIn("'unitree'", info.error or "")
             self.assertIn("'schemeplug'", info.error or "")
             with self.assertRaises(UnknownRobot):
                 get_spec("scheme-bot")
@@ -617,6 +628,7 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
             )
             assert "ohho.robots.builtin" not in sys.modules, preloaded
             assert "ohho.robots.omnibot" not in sys.modules, preloaded
+            assert "ohho.robots.unitree" not in sys.modules, preloaded
             from ohho.registry import get_spec
 
             spec = get_spec("omnibot")
@@ -626,20 +638,29 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
 
             from ohho.robots.builtin import plugin as builtin_plugin
             from ohho.robots.omnibot import plugin as omnibot_plugin
+            from ohho.robots.unitree import plugin as unitree_plugin
 
             bot = builtin_plugin()
             arm = omnibot_plugin()
+            quad = unitree_plugin()
             specs = {item.id: item for item in bot.specs()}
             assert "omnibot" not in specs
+            assert "unitree-go2" not in specs
             factories = bot.transports()
             assert "serial" not in factories
             assert "yahboom-serial" not in factories
+            assert "dds" not in factories
             backends = bot.sim_backends()
             assert type(factories["sim"](specs["sim"], "", None)).__name__ == "SimTransport"
-            assert (
-                type(factories["dds"](specs["unitree-go2"], "lo", None)).__name__
-                == "UnitreeDdsTransport"
-            )
+            qspecs = {item.id: item for item in quad.specs()}
+            qfactories = quad.transports()
+            made = qfactories["dds"](qspecs["unitree-go2"], "lo", None)
+            assert type(made).__name__ == "UnitreeDdsTransport"
+            assert made.address == "lo"
+            shim = quad.sim_backends()["go2-mujoco"](qspecs["unitree-go2"], "", None)
+            assert type(shim).__name__ == "UnitreeDdsTransport"
+            assert shim.domain_id == 1
+            assert shim._state.name == "IDLE"
             assert (
                 type(factories["feetech"](spec, "", None)).__name__ == "FeetechTransport"
             )

@@ -25,14 +25,14 @@ from ohho.adapters.sim import SimTransport
 from ohho.registry import RobotSpec, get_spec
 from ohho.robot import Robot
 from ohho.robots.omnibot.policy import OMNIBOT_PROFILE
+from ohho.robots.unitree.policy import GO2_PROFILE
 from ohho.runtime import NativeRuntime
 from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
     BASE_ACTIONS,
     CI_FAKE_ROBOT_ENV,
-    GO2_ACTIONS,
-    GO2_PROFILE,
+    SPORT_ACTIONS,
     HUMANOID_ACTIONS,
     RELEASE_PHRASE,
     AuditLog,
@@ -991,7 +991,7 @@ class TestAllowlist(GateCase):
 
     def test_humanoid_actions_are_refused_by_default(self):
         self.assertTrue(HUMANOID_ACTIONS.isdisjoint(BASE_ACTIONS))
-        self.assertTrue(HUMANOID_ACTIONS.isdisjoint(GO2_ACTIONS))
+        self.assertTrue(HUMANOID_ACTIONS.isdisjoint(SPORT_ACTIONS))
         self.assertTrue(HUMANOID_ACTIONS.isdisjoint(GO2_PROFILE.allowlist))
         self.assertTrue(HUMANOID_ACTIONS.isdisjoint(SafetyProfile().allowlist))
         gate, inner = self.make()
