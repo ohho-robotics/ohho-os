@@ -51,9 +51,11 @@ ohho/registry.py	px4	R-03
 ohho/registry.py	unitree	R-02
 ohho/registry.py	yahboom	R-01
 ohho/robot.py	unitree	R-02
+ohho/safety.py	crazyflie	R-03
 ohho/safety.py	feetech	R-01
 ohho/safety.py	go2	R-02
 ohho/safety.py	omnibot	R-01
+ohho/safety.py	px4	R-03
 ohho/safety.py	unitree	R-02
 ohho/safety_policy.py	go2	R-02
 ohho/safety_policy.py	omnibot	R-01
