@@ -570,9 +570,10 @@ class TestDroneMcpHardware(unittest.TestCase):
     def test_allow_hardware_connect_does_not_arm(self) -> None:
         inner = _FlightLink()
 
-        def resolve(uri, spec, runtime):
+        def resolve(uri, spec, runtime, read_only=False):
             self.assertEqual(uri, "px4+dds://192.0.2.10:8888")
             self.assertEqual(spec.id, "px4-sitl")
+            self.assertFalse(read_only)
             return inner
 
         with tempfile.TemporaryDirectory() as tmp:
