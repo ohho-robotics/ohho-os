@@ -409,6 +409,7 @@ def register(spec: RobotSpec) -> RobotSpec:
     """
     _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
+    _ensure_plugins()
     _REGISTRY[spec.id] = spec
     return spec
 
