@@ -470,6 +470,13 @@ class Robot:
     def status(self) -> TransportStatus:
         return self._t.status()
 
+    def get_camera_frame(self) -> Optional[bytes]:
+        """Fetch a single camera frame (JPEG/PNG bytes) from the transport."""
+        fn = getattr(self._t, "get_camera_frame", None)
+        if callable(fn):
+            return fn()
+        return None
+
     def _on_tele(self, t: Telemetry) -> None:
         self._latest = t
 
