@@ -1,0 +1,8 @@
+# OHH-116 unitree_mujoco sim check (dds://lo?domain=1)
+# Date: 2026-10-14
+# Status: NOT RUN — WSL2 environment on this machine has no unitree_sdk2py installed
+#         (python3 -c "import unitree_sdk2py" → ModuleNotFoundError).
+#
+# Human follow-up (domain 1, loopback only):
+#   ohho connect unitree-go2 --transport 'dds://lo?domain=1'
+# Expect non-zero joint positions and IMU lines in stdout.

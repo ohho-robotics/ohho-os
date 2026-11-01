@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ohho": {
+      "command": "/opt/ohho/bin/ohho",
+      "args": [
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

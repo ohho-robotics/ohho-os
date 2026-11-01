@@ -18,7 +18,7 @@ the integrator test). Commands:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-cd /path/to/ohho-sdk
+cd /path/to/ohho-os
 pip install -e .
 python3 examples/fake_ros2_robot_node.py &
 sleep 2

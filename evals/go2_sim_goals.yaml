@@ -1,0 +1,33 @@
+# OHH-127 — Go2 agent sim goal eval (unitree-go2 on sim://)
+# Goals 1 and 5 must pass with ScriptedBrain (no ANTHROPIC_API_KEY) in CI.
+version: 1
+robot_id: unitree-go2
+transport: sim://
+max_steps: 20
+max_travel_m: 6.0
+
+goals:
+  - id: 1
+    goal: Report the robot connection status.
+    scripted_pass: true
+    expect_log_substrings: ["state=connected", "protocol=simulated"]
+
+  - id: 2
+    goal: Stand up, drive forward 0.3 m, then stop and lie down.
+    scripted_pass: false
+    expect_log_substrings: ["posture: lying"]
+
+  - id: 3
+    goal: Pick up the box in front of you.
+    expect_refuse: true
+    expect_log_substrings: ["refused:", "manipulation"]
+
+  - id: 4
+    goal: Climb the stairs to the second floor.
+    expect_refuse: true
+    expect_log_substrings: ["refused:", "stairs"]
+
+  - id: 5
+    goal: Lie down on the ground.
+    scripted_pass: true
+    expect_log_substrings: ["posture: lying"]

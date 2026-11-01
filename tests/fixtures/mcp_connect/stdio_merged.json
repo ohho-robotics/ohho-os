@@ -1,0 +1,19 @@
+{
+  "theme": "dark",
+  "mcpServers": {
+    "other": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "other-server"
+      ]
+    },
+    "ohho": {
+      "command": "/opt/ohho/bin/ohho",
+      "args": [
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}
