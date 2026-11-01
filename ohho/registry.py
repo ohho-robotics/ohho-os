@@ -346,6 +346,31 @@ _BUILTINS: dict[str, RobotSpec] = {
             flight_ready=False,
         ),
     ),
+    # Same Ohho caps as px4-sitl. GPS is always none: a Crazyflie 2.1 has no
+    # fix. crazyflie:// and crazyflie+ros2:// select the Crazyflie backend.
+    # sim:// stays the ground sim; the kinematic aircraft is crazyflie-sim.
+    # The flag records that a radio URI needs a person present. The gate
+    # also keys off protocol != "simulated".
+    "crazyflie-cf21": RobotSpec(
+        id="crazyflie-cf21",
+        name="Crazyflie 2.1",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="crazyflie",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="none",
+            requires_hardware_arming=True,
+            experimental=True,
+            flight_ready=False,
+        ),
+    ),
     "px4-x500": RobotSpec(
         id="px4-x500",
         name="PX4 X500",

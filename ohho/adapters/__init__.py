@@ -5,8 +5,9 @@ This build bundles: ``sim`` (always), ``serial`` (Yahboom / OmniBot base, needs
 the ``[serial]`` extra at connect time), ``feetech`` (SO-101 arm, needs ``[arm]``),
 ``composite`` (base+arm merge for mobile-manipulators), and ``dds`` (Unitree Go2,
 needs ``[unitree]``). ``sim://`` for robot ids ``px4-sitl`` and ``crazyflie-sim``
-selects the kinematic ``drone-sim`` backend. ``px4-x500`` is a registry spec
-only; nothing in this build connects to it.
+selects the kinematic ``drone-sim`` backend. ``crazyflie://`` (cflib) and
+``crazyflie+ros2://`` (Crazyswarm2) select the Crazyflie backend.
+``px4-x500`` is a registry spec only; nothing in this build connects to it.
 
 Policy: **auto (no explicit transport) runs in simulation** so zero-config use and
 tests never touch hardware; pass an explicit transport URI (``serial://…``,
@@ -29,6 +30,7 @@ from .. import capabilities as caps
 from ..registry import RobotSpec
 from ..transport import Transport
 from .composite import CompositeTransport
+from .crazyflie import CrazyflieTransport
 from .drone_sim import DroneSimTransport
 from .errors import AdapterUnavailable
 from .feetech import DEFAULT_PORT as DEFAULT_ARM_PORT
@@ -66,6 +68,9 @@ def available_adapters() -> list[str]:
         out.append("dds")
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
+        out.append("crazyflie+ros2")
+    if importlib.util.find_spec("cflib") is not None:
+        out.append("crazyflie")
     return out
 
 
@@ -137,6 +142,8 @@ def resolve_transport(
       ``dds://lo?domain=1`` for local simulators such as unitree_mujoco).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
+    - ``uri="crazyflie://radio://…"`` → Crazyflie radio via cflib.
+    - ``uri="crazyflie+ros2://<name>"`` → Crazyswarm2 services for that robot.
     - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
     - ``read_only=True`` is only valid for ``dds://`` and ``unitree-dds://``.
@@ -185,13 +192,23 @@ def resolve_transport(
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
 
+    if scheme == "crazyflie":
+        if spec is None:
+            raise AdapterUnavailable("crazyflie:// needs a robot spec")
+        return CrazyflieTransport(spec, address, kind="cflib", runtime=runtime)
+    if scheme == "crazyflie+ros2":
+        if spec is None:
+            raise AdapterUnavailable("crazyflie+ros2:// needs a robot spec")
+        return CrazyflieTransport(spec, address, kind="crazyswarm2", runtime=runtime)
+
     cls = _HARDWARE.get(scheme)
     if cls is None:
         from ..plugins import describe_plugin_schemes
 
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation. "
+            f"dds, ros2, crazyflie, crazyflie+ros2 — or omit the transport to "
+            f"run in simulation. "
             f"{describe_plugin_schemes()}"
         )
     if cls is UnitreeDdsTransport:
@@ -206,6 +223,7 @@ __all__ = [
     "FeetechTransport",
     "UnitreeDdsTransport",
     "Ros2Transport",
+    "CrazyflieTransport",
     "CompositeTransport",
     "AdapterUnavailable",
     "resolve_transport",

@@ -149,6 +149,7 @@ class TestPluginDiscovery(unittest.TestCase):
                 "unitree-go2",
                 "px4-sitl",
                 "crazyflie-sim",
+                "crazyflie-cf21",
                 "px4-x500",
             },
         )
@@ -175,6 +176,7 @@ class TestPluginDiscovery(unittest.TestCase):
                     "unitree-go2",
                     "px4-sitl",
                     "crazyflie-sim",
+                    "crazyflie-cf21",
                     "px4-x500",
                 },
             )
@@ -209,6 +211,7 @@ class TestPluginDiscovery(unittest.TestCase):
                     "unitree-go2",
                     "px4-sitl",
                     "crazyflie-sim",
+                    "crazyflie-cf21",
                     "px4-x500",
                 },
             )
