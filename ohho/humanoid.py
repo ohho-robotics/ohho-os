@@ -13,6 +13,12 @@ and ``UNKNOWN``. A plugin maps its own mode names onto these.
 :func:`parse_mode` turns anything it does not recognise into ``UNKNOWN``.
 :func:`is_standing` is false for ``UNKNOWN``.
 
+Fall state is separate from mode: ``upright``, ``falling``, ``fallen``,
+``recovering`` and ``unknown``. :func:`is_upright` is true only for an
+explicit ``upright`` value. ``unknown`` and a missing fall state are not
+upright. The ``custom["humanoid"]`` block is built in
+:mod:`ohho.humanoid_telemetry`.
+
 Low-level :func:`move_joints` is refused unless the mode is ``CUSTOM``, the
 link is simulated, and :func:`policy_allows_low_level_joints` is true. That
 policy hook is false until the class policy lands. On a gated link the call
@@ -62,7 +68,23 @@ class HumanoidMode(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class FallState(str, Enum):
+    """Whether the humanoid is upright.
+
+    ``UNKNOWN`` is the fallback. It is not upright, and neither is a missing
+    value. Plugins map their own fall reports onto these names.
+    """
+
+    UPRIGHT = "upright"
+    FALLING = "falling"
+    FALLEN = "fallen"
+    RECOVERING = "recovering"
+    UNKNOWN = "unknown"
+
+
 _STANDING = frozenset({HumanoidMode.PREPARE, HumanoidMode.WALK})
+_FALL_BY_NAME = {member.value: member for member in FallState}
+_MISSING = object()
 
 
 class _Commanded(Protocol):
@@ -107,6 +129,74 @@ def is_standing(mode: object) -> bool:
     if not isinstance(mode, HumanoidMode) or mode is HumanoidMode.UNKNOWN:
         return False
     return mode in _STANDING
+
+
+def parse_fall_state(value: object) -> FallState:
+    """Return the fall state named by ``value``.
+
+    Enum members pass through. Names match case-insensitively (``"Upright"``
+    and ``"upright"`` are :attr:`FallState.UPRIGHT`). Anything else, including
+    ``None`` and an unrecognised string, is :attr:`FallState.UNKNOWN`.
+    """
+    if isinstance(value, FallState):
+        return value
+    if isinstance(value, str):
+        found = _FALL_BY_NAME.get(value.strip().lower())
+        if found is not None:
+            return found
+    return FallState.UNKNOWN
+
+
+def fall_state_of(value: object) -> FallState:
+    """Fall state carried by ``value``. Missing or unrecognised is ``UNKNOWN``.
+
+    A :class:`~ohho.schema.Telemetry` is read only at
+    ``custom["humanoid"]["fall_state"]``. A mapping that contains ``humanoid``
+    is unwrapped to that block. A mapping that itself has ``fall_state`` is
+    the block. ``UNKNOWN`` is never upright.
+    """
+    if isinstance(value, FallState):
+        return value
+    if isinstance(value, Telemetry):
+        custom = value.custom
+        block = custom.get("humanoid") if isinstance(custom, Mapping) else None
+        return _fall_state_in_block(block)
+    if isinstance(value, str):
+        return parse_fall_state(value)
+    if isinstance(value, Mapping):
+        if "humanoid" in value:
+            return _fall_state_in_block(value.get("humanoid"))
+        if "fall_state" in value:
+            return parse_fall_state(value.get("fall_state"))
+        return FallState.UNKNOWN
+    state = getattr(value, "fall_state", _MISSING)
+    if state is not _MISSING:
+        if isinstance(state, FallState):
+            return state
+        return parse_fall_state(state)
+    return FallState.UNKNOWN
+
+
+def is_upright(value: object) -> bool:
+    """True only when the fall state is explicitly ``upright``.
+
+    ``unknown``, a missing block, a missing ``fall_state``, and every other
+    state return False.
+    """
+    return fall_state_of(value) is FallState.UPRIGHT
+
+
+def _fall_state_in_block(block: object) -> FallState:
+    if isinstance(block, Mapping):
+        return parse_fall_state(block.get("fall_state"))
+    if isinstance(block, (str, bytes)) or block is None:
+        return FallState.UNKNOWN
+    state = getattr(block, "fall_state", _MISSING)
+    if state is _MISSING:
+        return FallState.UNKNOWN
+    if isinstance(state, FallState):
+        return state
+    return parse_fall_state(state)
 
 
 def mode_of(telemetry: Optional[Telemetry]) -> HumanoidMode:
@@ -347,18 +437,22 @@ def _gripper_cmd(cmd: object) -> float | str:
 
 __all__ = [
     "ACTION_NAMES",
+    "FallState",
     "HumanoidMode",
     "damp",
+    "fall_state_of",
     "get_up",
     "gripper",
     "hand",
     "is_standing",
+    "is_upright",
     "joints_permitted",
     "lie_down",
     "look",
     "mode_of",
     "move_ee",
     "move_joints",
+    "parse_fall_state",
     "parse_mode",
     "policy_allows_low_level_joints",
     "prepare",
