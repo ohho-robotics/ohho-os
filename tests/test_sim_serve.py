@@ -7,6 +7,7 @@ import io
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from typing import Any
@@ -165,17 +166,34 @@ class TestNotBuiltBackends(unittest.TestCase):
         self.assertNotIn("isaacsim", sys.modules)
 
     def test_mujoco_not_built(self):
-        with (
-            redirect_stdout(io.StringIO()) as stdout,
-            redirect_stderr(io.StringIO()) as stderr,
-        ):
-            code = main(["sim-serve", "--backend", "mujoco"])
-            self.assertNotEqual(code, 0)
-            output = stdout.getvalue() + stderr.getvalue()
-            self.assertIn("not built", output)
-            self.assertIn("not-implemented", output)
+        # A fresh interpreter: the humanoid-mujoco tests import MuJoCo in this
+        # process, and that must not hide a sim-serve import. The CLI still
+        # prints not-built / not-implemented and does not load MuJoCo.
+        script = (
+            "import sys\n"
+            "from ohho.cli import main\n"
+            "from ohho.sim_serve import backend_entry\n"
+            "code = main(['sim-serve', '--backend', 'mujoco'])\n"
+            "imported = 'mujoco' in sys.modules\n"
+            "entry = backend_entry('mujoco')\n"
+            "print('IMPORTED', imported)\n"
+            "print('ENTRY', entry)\n"
+            "ok = code != 0 and (not imported) and entry == 'not-implemented'\n"
+            "raise SystemExit(0 if ok else 1)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        output = proc.stdout + proc.stderr
+        self.assertIn("not built", output)
+        self.assertIn("not-implemented", output)
+        self.assertIn("IMPORTED False", output)
+        self.assertIn("ENTRY not-implemented", output)
+        self.assertEqual(proc.returncode, 0)
         self.assertEqual(backend_entry("mujoco"), "not-implemented")
-        self.assertNotIn("mujoco", sys.modules)
 
 
 class TestSimLinkArm(unittest.TestCase):
@@ -797,7 +815,27 @@ class TestTeleopSessionProtocol(unittest.TestCase):
         self.assertIn("not-implemented", str(ctx_mujoco.exception))
         self.assertNotIn("isaac", sys.modules)
         self.assertNotIn("isaacsim", sys.modules)
-        self.assertNotIn("mujoco", sys.modules)
+        # Humanoid-mujoco tests import MuJoCo in this process. Check that
+        # constructing the unimplemented sim-serve backend does not.
+        script = (
+            "import sys\n"
+            "from ohho.sim_serve import SimServe, SimServeUnavailable\n"
+            "try:\n"
+            "    SimServe(backend='mujoco')\n"
+            "except SimServeUnavailable as exc:\n"
+            "    if 'not-implemented' not in str(exc):\n"
+            "        raise SystemExit(2)\n"
+            "else:\n"
+            "    raise SystemExit(2)\n"
+            "raise SystemExit(1 if 'mujoco' in sys.modules else 0)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
 def _live_odom_x(server: SimServe) -> float:
