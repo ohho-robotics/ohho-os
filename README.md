@@ -84,7 +84,8 @@ background ROS 2 runtime thread; the suite still exits 0.
 not open a serial port, a camera, or a GPU. The simulator is in-process.
 
 `tests/hil/` talks to real robots. Every test in that package is
-skipped unless `OHHO_HIL=1`. The ports they use:
+skipped unless `OHHO_HIL=1` and the device variable for that test is set.
+An unset variable skips the test.
 
 | Test | Device | Environment variable | Default |
 |---|---|---|---|
@@ -92,6 +93,24 @@ skipped unless `OHHO_HIL=1`. The ports they use:
 | OmniBot arm | Feetech bus | `OHHO_OMNIBOT_ARM` | `/dev/ttyACM0` |
 | OmniBot base + arm | both of the above | both | both defaults |
 | Unitree Go2 | DDS (**untested on hardware** — use `ohho sim --robot unitree-go2` first; see [Install](#install)) | `OHHO_GO2_IFACE` | `eth0` |
+
+Those defaults are typical device nodes, not implicit HIL values. An unset
+variable still skips `tests/hil/`. CI runs the same four scenarios on fake
+transports (`ohho hil --mock`). On the bench, after
+[`docs/hil-preflight.md`](docs/hil-preflight.md):
+
+```bash
+OHHO_HIL=1 \
+OHHO_OMNIBOT_PORT=/dev/ttyUSB0 \
+OHHO_OMNIBOT_ARM=/dev/ttyACM0 \
+OHHO_GO2_IFACE=eth0 \
+ohho hil --hardware --preflight-ok
+```
+
+Use the device nodes you confirmed. Those example paths are typical on the
+Pi. The 2-minute MCAP steps are in [`docs/hil-bag.md`](docs/hil-bag.md).
+[`docs/hil-results.md`](docs/hil-results.md) stays an empty template until
+that bench run.
 
 Those adapters are not installed by `pip install ohho-os`. The extras are
 `serial` (pyserial), `arm` (lerobot), and `unitree` (cyclonedds — you also
@@ -170,7 +189,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
 #### Client sends (JSON):
 - `velocity`: Target linear and angular velocity, e.g. `{"linear": {"x": 0.2, "y": 0.0}, "angular": {"z": 0.1}}`.
 - `joints`: Mapping of joint name to radians, e.g. `{"arm_shoulder_pan": 0.5}`.
-- `deadman` (`bool`): Deadman switch. If `false` or if no client message arrives for 300 ms, the commanded velocity is zero.
+- `deadman` (`bool`): Deadman switch. Missing or `false` commands zero immediately. No client message for 300 ms, or a dropped socket, also commands zero within 300 ms.
 - `estop` (`bool`): Emergency stop. If `true`, estop latches until a message with `estop: false` arrives.
 - `mode` (optional): `"stand"`, `"lie_down"`, or `"recover"` — forwarded as allowlisted high-level actions on legged robots (via `SafetyGate` when armed).
 
@@ -200,7 +219,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ```bash
    ohho sim-serve --backend ros2 --rosbridge ws://localhost:9090
    ```
-   Forwards velocity commands to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the `[ros2]` extra.
+   Forwards velocity to `/cmd_vel`, joints to `/arm/joint_commands`, and e-stop to `/emergency_stop`. Reads `/odom`, joint state, and `/camera/front/image_raw` (or `no_camera` when none arrives) via rosbridge. Depends on the `[ros2]` extra. Tests cover this with a fake rosbridge and do not launch Gazebo.
    > **Note:** Gazebo itself is launched from the OmniBot repo, not from this package.
 
 4. **Unsupported backends:**
@@ -208,7 +227,7 @@ The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run th
    ohho sim-serve --backend isaac
    ohho sim-serve --backend mujoco
    ```
-   Both exit non-zero and print `not built`.
+   Both exit non-zero, print `not built`, and return `not-implemented`.
 
 ## Simulation Demo (OHH-134)
 

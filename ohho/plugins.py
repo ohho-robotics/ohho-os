@@ -114,9 +114,10 @@ class PluginInfo:
     error: str | None = None
     fallback: bool = False
     distribution: str = ""
-    # The instance, so a later policy load can call ``safety_policy`` without
-    # discovery calling it. Not part of equality or the list report.
-    plugin: Any = field(default=None, compare=False, hash=False)
+    # The instance, so a later policy load can call ``safety_policy`` and a
+    # sim connect can call an optional ``prepare_sim``. Discovery does not
+    # call either. Not part of equality or the list report.
+    plugin: Any = field(default=None, compare=False, hash=False, repr=False)
     transport_factories: Mapping[str, TransportFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
@@ -520,6 +521,15 @@ def uri_is_hardware(uri: str | None) -> bool:
     return False
 
 
+def look_mock_allowed(uri: str | None) -> bool:
+    """True when a plugin allows mock perception detections on ``uri``."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "look_mock_allowed", None)
+        if callable(fn) and fn(uri):
+            return True
+    return False
+
+
 def contributed_model_class(name: str) -> type | None:
     """Model class a plugin binds to ``name``, or ``None``."""
     if not name:
@@ -723,7 +733,23 @@ def plugin_sim_backend(
         )
     if spec is None:
         return None
+    _call_prepare_sim(spec)
     return factory(spec, address, runtime)
+
+
+def _call_prepare_sim(spec: RobotSpec) -> None:
+    """Let the plugin that owns ``spec`` fetch or bind a sim config.
+
+    Optional. A plugin with no ``prepare_sim`` is unchanged. Discovery does
+    not call this; only a sim connect does.
+    """
+    robot_id = spec.id
+    for info in _usable():
+        if robot_id not in info.spec_ids:
+            continue
+        hook = getattr(info.plugin, "prepare_sim", None)
+        if callable(hook):
+            hook(spec)
 
 
 __all__ = [
@@ -742,6 +768,7 @@ __all__ = [
     "format_plugin_report",
     "is_contributed_model",
     "loaded_plugins",
+    "look_mock_allowed",
     "model_uses_base_action",
     "plugin_environment_lines",
     "plugin_for_spec",

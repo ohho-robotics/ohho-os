@@ -86,6 +86,7 @@ class SimTransport(BaseTransport):
             "rear_right": 0.0,
         }
         self._estopped = False
+        self._torque_enabled = True
         self._legged_posture = (
             "lying" if caps.LEGGED_POSE in spec.capabilities else "standing"
         )
@@ -194,15 +195,26 @@ class SimTransport(BaseTransport):
             self._wheel_encoders[name] += int(val * 2.5)
 
     def send_joint_command(self, name: str, position: float) -> None:
+        if self._estopped or not self._torque_enabled:
+            return
         if name in self._joint_targets:
             self._joint_targets[name] = position
 
     def emergency_stop(self) -> None:
+        """Zero velocity and disable joint torque until :meth:`release_stop`."""
         self._estopped = True
+        self._torque_enabled = False
         self._cmd = Velocity()
 
     def release_stop(self) -> None:
+        """Clear the stop and enable joint torque again."""
         self._estopped = False
+        self._torque_enabled = True
+
+    @property
+    def torque_enabled(self) -> bool:
+        """False after e-stop until :meth:`release_stop`."""
+        return self._torque_enabled
 
     # ── world (obstacles / perceivable objects) ──────────────────────────────
     def add_object(
@@ -311,6 +323,7 @@ class SimTransport(BaseTransport):
         custom = {
             "wheel_encoders": dict(self._wheel_encoders),
             "imu_rate": self.get_imu_rate(),
+            "torque_enabled": self._torque_enabled,
             "legged_posture": self._legged_posture,
             "roll": self._body_rpy[0],
             "pitch": self._body_rpy[1],
@@ -362,16 +375,17 @@ class SimTransport(BaseTransport):
                 self._odom.x = ob.x + dx * scale
                 self._odom.y = ob.y + dy * scale
 
-        # joints servo toward targets at a bounded rate
-        max_step = self._joint_rate * dt
-        for name, target in self._joint_targets.items():
-            cur = self._joints[name]
-            delta = target - cur
-            if delta > max_step:
-                delta = max_step
-            elif delta < -max_step:
-                delta = -max_step
-            self._joints[name] = cur + delta
+        # joints servo toward targets at a bounded rate, while torque is on
+        if self._torque_enabled:
+            max_step = self._joint_rate * dt
+            for name, target in self._joint_targets.items():
+                cur = self._joints[name]
+                delta = target - cur
+                if delta > max_step:
+                    delta = max_step
+                elif delta < -max_step:
+                    delta = -max_step
+                self._joints[name] = cur + delta
 
         moving = (abs(vx) + abs(vy) + abs(w)) > 1e-6
         self._battery = max(0.0, self._battery - (0.0005 if moving else 0.0001) * dt)

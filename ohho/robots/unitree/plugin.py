@@ -177,6 +177,22 @@ class UnitreePlugin:
     def default_base_model_name(self) -> str:
         return "go2"
 
+    def hil_bench(self) -> dict[str, Any]:
+        """Bench case and fake-transport check for this robot.
+
+        ``ohho.hil`` calls this when the harness loads. Discovery does not.
+        The hook does not open DDS or command motion.
+        """
+        from .hil_bench import bundle
+
+        return bundle()
+
+    def look_mock_allowed(self, uri: str | None) -> bool:
+        """True when mock perception may store detections for this URI."""
+        from .hil_bench import look_mock_allowed
+
+        return look_mock_allowed(uri)
+
 
 def plugin() -> UnitreePlugin:
     """Entry-point target: ``ohho.robots.unitree:plugin``."""

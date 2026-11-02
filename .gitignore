@@ -17,3 +17,7 @@ htmlcov/
 # Virtual envs
 .venv/
 venv/
+
+# Fetched robot-description archives. The pin and the fetch script are tracked;
+# the meshes are not.
+plugins/ohho-booster/assets/

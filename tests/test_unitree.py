@@ -415,10 +415,26 @@ class TestUnitreeSafetyHooks(unittest.TestCase):
             bms_state=SimpleNamespace(soc=50),
             tick=1_000_000,
         )
+        self.assertFalse(tp.odom_received)
+        tp._on_low_message(low_msg)
+        self.assertFalse(tp.odom_received)
+        self.assertAlmostEqual(tp.read().battery, 0.5)
+        tp._on_sport_message(SimpleNamespace())
+        self.assertFalse(tp.odom_received)
         tp._on_sport_message(sport_msg)
         tp._on_low_message(low_msg)
+        self.assertTrue(tp.odom_received)
         t = tp.read()
         self.assertAlmostEqual(t.odom.x, 1.0)
+        origin = UnitreeDdsTransport(get_spec("unitree-go2"), "lo?domain=1")
+        origin._on_sport_message(
+            SimpleNamespace(
+                position=[0.0, 0.0, 0.0],
+                velocity=[0.0, 0.0, 0.0],
+                yaw_speed=0.0,
+            )
+        )
+        self.assertTrue(origin.odom_received)
         self.assertAlmostEqual(t.custom["roll"], 0.05)
         self.assertAlmostEqual(t.joints[0].position, 0.42)
         self.assertAlmostEqual(t.battery, 0.5)

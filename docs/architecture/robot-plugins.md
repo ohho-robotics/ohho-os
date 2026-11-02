@@ -17,8 +17,12 @@ plugins, extract safety policies, or edit the open drone branches.
    contain `booster`, `t2`, `unitree`, `go2`, `px4`, `crazyflie`, `yahboom` or
    `omnibot` once the M0R refactors land. A CI grep test enforces this for new
    names from day one (`booster`, `t2`) and for the existing names once each
-   has moved. That grep is C-07. It is not added here, and the built-in specs
-   in `ohho/registry.py` keep their current ids until M0R.
+   has moved. That grep is C-07. It lives in
+   `ohho/testing/conformance` and reads
+   `ohho/testing/conformance/vendor_allowlist.txt`. Names still in core are
+   listed there with the issue that moves them (R-01, R-02, R-03). `booster`
+   and `t2` are not allowlisted. Built-in specs in `ohho/registry.py` keep
+   their current ids until M0R.
 
 2. **A robot is a plugin.** A plugin declares specs, capabilities with
    parameters, transports (URI schemes), sim backends, a safety policy (or uses
@@ -207,6 +211,36 @@ leave both a field and a property of the same name:
 
 `requires_hardware_arming` on the spec is this aerial flag only. It is not the
 `SafetyGate` arming check, and it does not arm hardware.
+
+## Conformance kit (C-07 / OHH-315)
+
+`python -m ohho.testing.conformance --robot <id>` runs that robot's class
+scenario on the plugin's sim backend only. The kit calls
+`RobotPlugin.sim_backends()` and refuses a transport whose protocol is not
+`simulated`. It does not open a hardware scheme.
+
+A new plugin runs it like this:
+
+1. Register a sim backend from `sim_backends()` and set `RobotSpec.sim_backend`,
+   or leave it empty to use the class default (`kinematic` for a ground robot,
+   a quadruped, or an arm the built-in backend can run).
+2. Run `python -m ohho.testing.conformance --robot <id>`.
+3. `mobile_base` and `mobile_manipulator` drive a 1 m square, then check that a
+   stale command zeros velocity and that e-stop latches.
+4. An `arm` moves to home, clamps a joint command to the safety profile, and
+   disables torque on e-stop in sim.
+5. `quadruped` runs `quadruped_walk` on the kinematic backend. The sim starts
+   lying; velocity is ignored until stand; sit and lie-down block drive; body
+   euler is clamped to the safety limit (never widened); a stale command zeros
+   velocity and e-stop latches. `aerial` and `humanoid` stay in the kit
+   registry with no sim backend. That report is skipped, with the reason, and
+   is not a pass.
+
+Every run also checks the telemetry schema, that MCP payloads carry `backend`
+and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that
+the plugin imports no vendor SDK at load, and that vendor names outside plugin
+packages are on the allowlist. `booster` and `t2` fail at `file:line`. The
+allowlist also names `feetech` (R-01) and `ardupilot` (R-03).
 
 ## Consequences
 

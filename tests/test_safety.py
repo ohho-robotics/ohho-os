@@ -1639,6 +1639,44 @@ class TestCliSafetyFlags(unittest.TestCase):
             cli._connect(args)
         fake.arm.assert_not_called()
 
+    def test_get_camera_frame_forwarding(self):
+        inner = FakeTransport()
+        gate = SafetyGate(inner, get_spec("omnibot"), auto_tick=False)
+        self.assertIsNone(gate.get_camera_frame())
+        inner.get_camera_frame = lambda: b"fake_frame_bytes"
+        self.assertEqual(gate.get_camera_frame(), b"fake_frame_bytes")
+
+
+def load_tests(loader, standard_tests, pattern):
+    """CI coverage runs ``unittest tests.test_safety`` and nothing else.
+
+    Drone profile coverage lives in ``tests.test_drone_safety``. The sim-only
+    CI arming tests live in ``tests.test_ci_sim_arming``. Load both when this
+    module is named directly (``pattern is None``) and when discovery is
+    narrowed to this file (``pattern == "test_safety.py"``). A directory
+    discovery pattern such as ``test*.py`` loads those modules on its own.
+    Paths are loaded from this directory so a third-party ``tests`` package
+    on ``sys.path`` cannot hide them.
+    """
+    suite = unittest.TestSuite()
+    suite.addTests(standard_tests)
+    if pattern not in (None, "test_safety.py"):
+        return suite
+    import importlib.util
+
+    for filename, module_name in (
+        ("test_drone_safety.py", "ohho_test_drone_safety"),
+        ("test_ci_sim_arming.py", "ohho_test_ci_sim_arming"),
+    ):
+        path = Path(__file__).with_name(filename)
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        suite.addTests(loader.loadTestsFromModule(module))
+    return suite
+
 
 if __name__ == "__main__":
     unittest.main()
