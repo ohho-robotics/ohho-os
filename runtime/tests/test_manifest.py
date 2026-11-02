@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 
 from ohho.plugins import loaded_plugins
-from ohho.registry import RobotSpec, builtin_specs
+from ohho.registry import RobotSpec, builtin_specs, get_spec
 from ohho.robot_spec import AerialLimits, RobotClass
 
 from ohho_runtime import entries
@@ -73,7 +73,10 @@ def _spec(robot_class: RobotClass, spec_id: str = "specimen") -> RobotSpec:
 
 
 def _builtin(robot_class: RobotClass) -> RobotSpec:
-    matches = [spec for spec in builtin_specs() if spec.robot_class is robot_class]
+    pool = list(builtin_specs())
+    if robot_class is RobotClass.MOBILE_MANIPULATOR:
+        pool.append(get_spec("omnibot"))
+    matches = [spec for spec in pool if spec.robot_class is robot_class]
     if not matches:
         raise AssertionError(f"no built-in spec for {robot_class.value}")
     return matches[0]
@@ -315,7 +318,8 @@ class ClassDefaultTest(unittest.TestCase):
 
 class ResolveTest(unittest.TestCase):
     def test_every_builtin_spec_uses_its_class_default(self) -> None:
-        specs = builtin_specs()
+        specs = list(builtin_specs())
+        specs.append(get_spec("omnibot"))
         self.assertGreaterEqual(len(specs), 1)
         seen: set[RobotClass] = set()
         for spec in specs:

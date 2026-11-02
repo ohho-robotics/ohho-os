@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence
 
 ENV_HIL = "OHHO_HIL"
-ENV_BASE = "OHHO_OMNIBOT_PORT"
-ENV_ARM = "OHHO_OMNIBOT_ARM"
+# Device variables for a plugin's bench cases are filled from that plugin.
+ENV_BASE: str = ""
+ENV_ARM: str = ""
 ENV_GO2 = "OHHO_GO2_IFACE"
 ENV_BAG = "OHHO_HIL_BAG"
 ENV_OPERATOR = "OHHO_HIL_OPERATOR"
@@ -65,36 +66,18 @@ class HilCase:
     required_env: tuple[str, ...]
 
 
-CASES: tuple[HilCase, ...] = (
-    HilCase(
-        "omnibot_base",
-        "OmniBot base drive and read",
-        "yahboom",
-        "TestHilOmniBotBase",
-        (ENV_BASE,),
-    ),
-    HilCase(
-        "omnibot_arm",
-        "OmniBot arm move and read",
-        "feetech",
-        "TestHilOmniBotArm",
-        (ENV_ARM,),
-    ),
-    HilCase(
-        "omnibot_composite",
-        "OmniBot composite base and arm",
-        "yahboom + feetech",
-        "TestHilOmniBotComposite",
-        (ENV_BASE, ENV_ARM),
-    ),
-    HilCase(
-        "unitree_go2",
-        "Unitree Go2 drive and read",
-        "unitree DDS",
-        "TestHilUnitreeGo2",
-        (ENV_GO2,),
-    ),
+_UNITREE_CASE = HilCase(
+    "unitree_go2",
+    "Unitree Go2 drive and read",
+    "unitree DDS",
+    "TestHilUnitreeGo2",
+    (ENV_GO2,),
 )
+
+# Plugin benches are appended in :func:`_apply_benches` before the Go2 case.
+CASES: tuple[HilCase, ...] = ()
+_REPORT_FIELDS: tuple[tuple[str, str], ...] = ()
+_MOCKS: dict[str, Callable[[], str]] = {}
 
 
 @dataclass
@@ -272,18 +255,22 @@ def render_report(report: HilReport) -> str:
         f"| Revision | {_cell(report.revision)} |",
         f"| Mode | {_cell(report.mode)} |",
         f"| OHHO_HIL | {_cell(report.hil_env)} |",
-        f"| OmniBot base port | {_cell(report.base_port)} |",
-        f"| OmniBot arm port | {_cell(report.arm_port)} |",
-        f"| Go2 interface | {_cell(report.go2_iface)} |",
-        f"| Bag (2-min MCAP) | {_cell(report.bag)} |",
-        "",
-        "## Pre-flight",
-        "",
-        "Checklist: `docs/hil-preflight.md`. The harness does not measure these.",
-        "",
-        "| Check | Result | Notes |",
-        "|---|---|---|",
     ]
+    for label, attr in _REPORT_FIELDS:
+        lines.append(f"| {label} | {_cell(getattr(report, attr))} |")
+    lines.extend(
+        [
+            f"| Go2 interface | {_cell(report.go2_iface)} |",
+            f"| Bag (2-min MCAP) | {_cell(report.bag)} |",
+            "",
+            "## Pre-flight",
+            "",
+            "Checklist: `docs/hil-preflight.md`. The harness does not measure these.",
+            "",
+            "| Check | Result | Notes |",
+            "|---|---|---|",
+        ]
+    )
     for name, result, note in report.preflight:
         lines.append(f"| {name} | {_cell(result)} | {_cell(note)} |")
     lines.extend(
@@ -375,129 +362,6 @@ def run_mock_suite() -> list[HilCaseResult]:
             HilCaseResult(case.case_id, case.title, case.adapter, "PASS", detail)
         )
     return results
-
-
-def mock_omnibot_base() -> str:
-    """Fake-serial version of ``TestHilOmniBotBase``."""
-    from .adapters import _yahboom_proto as proto
-    from .adapters.yahboom import YahboomTransport
-    from .registry import get_spec
-    from .schema import Velocity
-
-    _assert_base_pulse()
-    serial = _FakeSerial()
-    transport = YahboomTransport(
-        get_spec("omnibot"),
-        "mock:omnibot-base",
-        serial_factory=lambda: serial,
-    )
-    transport.connect()
-    try:
-        serial.written.clear()
-        transport.send_velocity(Velocity(HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W))
-        if bytes(serial.written) != proto.packet_motion(
-            HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W
-        ):
-            raise AssertionError("base command was not the 0.05 m/s pulse")
-        serial.written.clear()
-        transport.send_velocity(Velocity())
-        if bytes(serial.written) != proto.packet_motion(0.0, 0.0, 0.0):
-            raise AssertionError("base stop was not zero velocity")
-        transport._ingest(_rx_velocity(HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W))
-        reading = transport.read()
-        if reading.odom is None:
-            raise AssertionError("odom missing")
-        if abs(reading.odom.vx - HIL_BASE_VX) > 1e-6:
-            raise AssertionError(f"odom.vx={reading.odom.vx}")
-    finally:
-        transport.disconnect()
-    return f"motion {HIL_BASE_VX:.2f} m/s then zero; odom.vx={HIL_BASE_VX:.3f}"
-
-
-def mock_omnibot_arm() -> str:
-    """Fake-bus version of ``TestHilOmniBotArm``."""
-    from .adapters.feetech import HOME_TICKS, FeetechTransport, radians_to_ticks
-    from .registry import get_spec
-    from .schema import Velocity
-
-    _assert_gripper_pulse()
-    spec = get_spec("omnibot")
-    bus = _FakeFeetechBus(spec.joint_names)
-    transport = FeetechTransport(spec, "mock:omnibot-arm", bus_factory=lambda: bus)
-    transport.connect()
-    try:
-        transport.send_velocity(Velocity(HIL_BASE_VX, 0.0, 0.0))
-        if bus.goals:
-            raise AssertionError("arm accepted a base velocity")
-        transport.send_joint_command("arm_gripper", HIL_GRIPPER_OPEN)
-        open_tick = bus.goals.get("arm_gripper")
-        transport.send_joint_command("arm_gripper", HIL_GRIPPER_SHUT)
-        shut_tick = bus.goals.get("arm_gripper")
-        expected_open = radians_to_ticks([HIL_GRIPPER_OPEN])[0]
-        if open_tick != expected_open:
-            raise AssertionError(f"gripper open tick {open_tick} != {expected_open}")
-        if shut_tick != HOME_TICKS:
-            raise AssertionError(f"gripper shut tick {shut_tick} != {HOME_TICKS}")
-        transport._poll_once()
-        reading = transport.read()
-        if len(reading.joints) != 6:
-            raise AssertionError(f"joints={len(reading.joints)}")
-    finally:
-        transport.disconnect()
-    if set(bus.torque.values()) != {0}:
-        raise AssertionError("disconnect left arm torque enabled")
-    return f"gripper {HIL_GRIPPER_OPEN:.3f} then {HIL_GRIPPER_SHUT:.3f}; joints=6"
-
-
-def mock_omnibot_composite() -> str:
-    """Fake base+arm version of ``TestHilOmniBotComposite``."""
-    from .adapters import _yahboom_proto as proto
-    from .adapters.composite import CompositeTransport
-    from .adapters.feetech import FeetechTransport, radians_to_ticks
-    from .adapters.yahboom import YahboomTransport
-    from .registry import get_spec
-    from .schema import Velocity
-
-    _assert_base_pulse()
-    _assert_gripper_pulse()
-    spec = get_spec("omnibot")
-    serial = _FakeSerial()
-    bus = _FakeFeetechBus(spec.joint_names)
-    base = YahboomTransport(spec, "mock:omnibot-base", serial_factory=lambda: serial)
-    arm = FeetechTransport(spec, "mock:omnibot-arm", bus_factory=lambda: bus)
-    composite = CompositeTransport(base, arm)
-    composite.connect()
-    try:
-        serial.written.clear()
-        composite.send_velocity(Velocity(HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W))
-        if bus.goals:
-            raise AssertionError("composite velocity reached the arm")
-        if bytes(serial.written) != proto.packet_motion(
-            HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W
-        ):
-            raise AssertionError("composite base command was not the 0.05 m/s pulse")
-        composite.send_joint_command("arm_gripper", HIL_GRIPPER_OPEN)
-        expected_open = radians_to_ticks([HIL_GRIPPER_OPEN])[0]
-        if bus.goals.get("arm_gripper") != expected_open:
-            raise AssertionError("composite gripper command did not reach the arm")
-        serial.written.clear()
-        composite.send_velocity(Velocity())
-        composite.send_joint_command("arm_gripper", HIL_GRIPPER_SHUT)
-        if bytes(serial.written) != proto.packet_motion(0.0, 0.0, 0.0):
-            raise AssertionError("composite stop was not zero velocity")
-        base._ingest(_rx_velocity(HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W))
-        arm._poll_once()
-        reading = composite.read()
-        if reading.odom is None or abs(reading.odom.vx - HIL_BASE_VX) > 1e-6:
-            raise AssertionError("composite odom was not the fed-back pulse")
-        if len(reading.joints) != 6:
-            raise AssertionError(f"joints={len(reading.joints)}")
-    finally:
-        composite.disconnect()
-    return (
-        f"base motion {HIL_BASE_VX:.2f} m/s and gripper {HIL_GRIPPER_OPEN:.3f}; "
-        f"odom.vx={HIL_BASE_VX:.3f} joints=6"
-    )
 
 
 def mock_unitree_go2() -> str:
@@ -870,18 +734,6 @@ def _failure_detail(text: str, class_name: str) -> str:
     return ""
 
 
-def _rx_velocity(vx: float, vy: float, vz: float) -> bytes:
-    import struct
-
-    from .adapters import _yahboom_proto as proto
-
-    payload = struct.pack("<hhh", int(vx * 1000), int(vy * 1000), int(vz * 1000))
-    length = 3 + len(payload)
-    body = bytes([length, proto.TYPE_VELOCITY]) + payload
-    checksum = sum(body) & 0xFF
-    return bytes([proto.HEAD_TX, proto.HEAD_RX]) + body + bytes([checksum])
-
-
 def _assert_base_pulse() -> None:
     if (HIL_BASE_VX, HIL_BASE_VY, HIL_BASE_W) != (0.05, 0.0, 0.0):
         raise AssertionError("base pulse must stay 0.05 m/s straight")
@@ -957,12 +809,48 @@ class _RecordingSport:
         self.calls.append(("StopMove",))
 
 
-_MOCKS = {
-    "omnibot_base": mock_omnibot_base,
-    "omnibot_arm": mock_omnibot_arm,
-    "omnibot_composite": mock_omnibot_composite,
-    "unitree_go2": mock_unitree_go2,
-}
+def _apply_benches() -> None:
+    """Load bench cases from robot plugins, then append the Go2 case.
+
+    Device-variable names and fake-transport checks stay in the plugin that
+    owns them. Discovery does not call this.
+    """
+    global ENV_BASE, ENV_ARM, CASES, _MOCKS, _REPORT_FIELDS
+    from ohho.plugins import loaded_plugins
+
+    cases: list[HilCase] = []
+    mocks: dict[str, Callable[[], str]] = {}
+    fields: list[tuple[str, str]] = []
+    exports: dict[str, object] = {}
+    for info in loaded_plugins():
+        if info.error is not None or info.plugin is None:
+            continue
+        hook = getattr(info.plugin, "hil_bench", None)
+        if not callable(hook):
+            continue
+        data = hook()
+        cases.extend(data["cases"])
+        mocks.update(data["mocks"])
+        fields.extend(data["report_fields"])
+        exports.update(data["exports"])
+    base = exports.get("ENV_BASE")
+    arm = exports.get("ENV_ARM")
+    if not isinstance(base, str) or not base.strip():
+        raise RuntimeError("bench base device variable is not registered")
+    if not isinstance(arm, str) or not arm.strip():
+        raise RuntimeError("bench arm device variable is not registered")
+    ENV_BASE = base
+    ENV_ARM = arm
+    for name, value in exports.items():
+        if name.startswith("mock_") and callable(value):
+            globals()[name] = value
+    CASES = tuple(cases) + (_UNITREE_CASE,)
+    _MOCKS = dict(mocks)
+    _MOCKS[_UNITREE_CASE.case_id] = mock_unitree_go2
+    _REPORT_FIELDS = tuple(fields)
+
+
+_apply_benches()
 
 
 if __name__ == "__main__":

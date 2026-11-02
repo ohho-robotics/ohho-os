@@ -16,13 +16,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ohho.plugins import loaded_plugins
+from ohho.robots.omnibot.policy import OMNIBOT_PROFILE
 from ohho.registry import RobotSpec, get_spec
 from ohho.robot_spec import RobotClass
 from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
     GO2_PROFILE,
-    OMNIBOT_PROFILE,
     AuditLog,
     SafetyGate,
     SafetyProfile,
@@ -372,7 +372,7 @@ class TestPluginCaps(unittest.TestCase):
         tight = GroundArmPolicy(
             dataclasses.replace(OMNIBOT_PROFILE, joint_limits=joints)
         )
-        with _installed(_Plugin(tight)):
+        with _installed(_Plugin(tight), name="omnibot"):
             gate = SafetyGate(_Transport("serial"), spec, auto_tick=False, environ={})
         self.assertEqual(gate.profile.joint_limits["arm_gripper"], (0.0, 0.4))
         self.assertEqual(

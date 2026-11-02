@@ -24,6 +24,7 @@ from ohho import safety
 from ohho.adapters.sim import SimTransport
 from ohho.registry import RobotSpec, get_spec
 from ohho.robot import Robot
+from ohho.robots.omnibot.policy import OMNIBOT_PROFILE
 from ohho.runtime import NativeRuntime
 from ohho.safety import (
     ARM_ENV,
@@ -33,7 +34,6 @@ from ohho.safety import (
     GO2_ACTIONS,
     GO2_PROFILE,
     HUMANOID_ACTIONS,
-    OMNIBOT_PROFILE,
     RELEASE_PHRASE,
     AuditLog,
     SafetyConfig,

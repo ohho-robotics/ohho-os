@@ -1,18 +1,16 @@
 """Adapter resolution.
 
 Adapters connect the unified Transport interface to a robot's native protocol.
-This build bundles: ``sim`` (always), ``serial`` (Yahboom / OmniBot base, needs
-the ``[serial]`` extra at connect time), ``feetech`` (SO-101 arm, needs ``[arm]``),
-``composite`` (base+arm merge for mobile-manipulators), and ``dds`` (Unitree Go2,
-needs ``[unitree]``). ``sim://`` for robot ids ``px4-sitl`` and ``crazyflie-sim``
-selects the kinematic ``drone-sim`` backend. ``px4-x500`` is a registry spec
-only; nothing in this build connects to it.
+This build bundles: ``sim`` (always), ``feetech`` (SO-101 arm, needs ``[arm]``),
+``composite`` (base+arm merge), and ``dds`` (Unitree Go2, needs ``[unitree]``).
+``serial://`` is provided by the mobile-manipulator plugin: a spec with
+``manipulation`` composes a base link and an arm link. ``sim://`` for robot ids
+``px4-sitl`` and ``crazyflie-sim`` selects the kinematic ``drone-sim`` backend.
+``px4-x500`` is a registry spec only; nothing in this build connects to it.
 
 Policy: **auto (no explicit transport) runs in simulation** so zero-config use and
 tests never touch hardware; pass an explicit transport URI (``serial://…``,
-``dds://…``, ``feetech://…``) to engage a real robot. For a mobile-manipulator
-that has ``manipulation`` capability, ``serial://<base_port>,<arm_port>``
-auto-composes a composite (Yahboom base + Feetech arm).
+``dds://…``, ``feetech://…``) to engage a real robot.
 
 Plugin registries are asked first. A scheme a plugin registered uses that
 factory. ``sim://`` (and auto) uses ``spec.sim_backend`` when it names a plugin
@@ -25,18 +23,14 @@ from __future__ import annotations
 import importlib.util
 from typing import Optional
 
-from .. import capabilities as caps
 from ..registry import RobotSpec
 from ..transport import Transport
-from .composite import CompositeTransport
 from .drone_sim import DroneSimTransport
 from .errors import AdapterUnavailable
-from .feetech import DEFAULT_PORT as DEFAULT_ARM_PORT
 from .feetech import FeetechTransport
 from .ros2 import Ros2Transport
 from .sim import SimTransport
 from .unitree import UnitreeDdsTransport
-from .yahboom import YahboomTransport
 
 # sim:// with these robot ids is the kinematic drone stub, not the ground sim.
 _DRONE_SIM_IDS = frozenset({"px4-sitl", "crazyflie-sim"})
@@ -46,8 +40,6 @@ _SPEC_ONLY_IDS = frozenset({"px4-x500"})
 # transport scheme -> hardware adapter class (sim/composite handled separately)
 _READ_ONLY_SCHEMES = frozenset({"dds", "unitree-dds"})
 _HARDWARE = {
-    "serial": YahboomTransport,
-    "yahboom-serial": YahboomTransport,
     "feetech": FeetechTransport,
     "dds": UnitreeDdsTransport,
     "unitree-dds": UnitreeDdsTransport,
@@ -67,14 +59,6 @@ def available_adapters() -> list[str]:
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
     return out
-
-
-def _split_ports(address: str) -> tuple[str, str]:
-    """Split ``base_port,arm_port`` into parts; arm defaults to the Feetech port."""
-    if "," in address:
-        base, arm = address.split(",", 1)
-        return base.strip(), arm.strip()
-    return address.strip(), DEFAULT_ARM_PORT
 
 
 def _uri_scheme(uri: Optional[str]) -> Optional[str]:
@@ -129,9 +113,8 @@ def resolve_transport(
     - ``uri="sim://"`` → the ground simulator, except those two ids, which
       select ``drone-sim``, or the spec's declared sim backend.
     - ``px4-x500`` → ``AdapterUnavailable`` (spec only; nothing connects).
-    - ``uri="serial://<port>"`` → Yahboom serial adapter. If the robot has
-      ``manipulation`` capability, ``<port>`` may be ``base_port,arm_port`` and
-      a composite (Yahboom base + Feetech arm) is returned.
+    - ``uri="serial://<port>"`` → the plugin that registered ``serial``. A
+      mobile manipulator composes ``base_port,arm_port`` there.
     - ``uri="feetech://<port>"`` → Feetech arm adapter (arm only).
     - ``uri="dds://<iface>?domain=<n>"`` → Unitree DDS adapter (defaults
       ``dds://lo?domain=1`` for local simulators such as unitree_mujoco).
@@ -172,16 +155,6 @@ def resolve_transport(
     if scheme in ("sim", "simulated"):
         return _sim_transport(spec)
 
-    if (
-        scheme in ("serial", "yahboom-serial")
-        and spec is not None
-        and spec.has(caps.MANIPULATION)
-    ):
-        base_port, arm_port = _split_ports(address)
-        base = YahboomTransport(spec, base_port)
-        arm = FeetechTransport(spec, arm_port)
-        return CompositeTransport(base, arm)
-
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
 
@@ -202,11 +175,9 @@ def resolve_transport(
 __all__ = [
     "SimTransport",
     "DroneSimTransport",
-    "YahboomTransport",
     "FeetechTransport",
     "UnitreeDdsTransport",
     "Ros2Transport",
-    "CompositeTransport",
     "AdapterUnavailable",
     "resolve_transport",
     "available_adapters",

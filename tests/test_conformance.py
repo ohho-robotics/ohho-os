@@ -18,7 +18,7 @@ from ohho.adapters.composite import CompositeTransport
 from ohho.adapters.feetech import FeetechTransport
 from ohho.adapters.ros2 import Ros2Transport
 from ohho.adapters.unitree import UnitreeDdsTransport
-from ohho.adapters.yahboom import YahboomTransport
+from ohho.robots.omnibot.yahboom import YahboomTransport
 from ohho.plugins import loaded_plugins
 from ohho.registry import get_spec
 from ohho.robot_spec import AerialLimits, ArmLimits, RobotClass
