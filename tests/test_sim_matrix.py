@@ -204,7 +204,7 @@ class TestCiSimList(unittest.TestCase):
             },
         )
         self.assertEqual(by_id["omnibot"]["robot_class"], "mobile_manipulator")
-        self.assertEqual(by_id["omnibot"]["plugin"], "builtin")
+        self.assertEqual(by_id["omnibot"]["plugin"], "omnibot")
         self.assertEqual(by_id["omnibot"]["scenario"], "drive_square")
         self.assertEqual(by_id["omnibot"]["asset_commit"], "")
         self.assertNotIn("unitree-go2", by_id)

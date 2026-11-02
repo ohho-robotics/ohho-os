@@ -60,8 +60,8 @@ BUILTIN_SOURCE = "builtin"
 
 # Scenario ids for ``CiSim.scenario`` when a robot opts into the sim matrix
 # (``ohho list --json --ci-sim``, OHH-316). ``enabled`` defaults to false.
-# Built-in ``sim`` and the mobile manipulator opt in. The quadruped built-in
-# stays disabled.
+# Built-in ``sim`` opts in. The shipped mobile-manipulator plugin opts in
+# on its own spec. The quadruped built-in stays disabled.
 CI_SCENARIOS: Mapping[RobotClass, str] = MappingProxyType(
     {
         RobotClass.MOBILE_BASE: "drive_square",
