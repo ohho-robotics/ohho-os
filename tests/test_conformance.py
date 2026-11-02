@@ -21,7 +21,7 @@ from ohho.adapters.unitree import UnitreeDdsTransport
 from ohho.adapters.yahboom import YahboomTransport
 from ohho.plugins import loaded_plugins
 from ohho.registry import get_spec
-from ohho.robot_spec import ArmLimits, RobotClass
+from ohho.robot_spec import AerialLimits, ArmLimits, RobotClass
 from ohho.testing.conformance import (
     CLASS_SCENARIOS,
     evaluate_mcp,
@@ -46,7 +46,6 @@ from ohho.testing.conformance.vendors import (
 class TestClassRegistry(unittest.TestCase):
     def test_unregistered_classes_are_not_a_pass(self):
         for robot_class in (
-            RobotClass.QUADRUPED,
             RobotClass.AERIAL,
             RobotClass.HUMANOID,
         ):
@@ -60,6 +59,7 @@ class TestClassRegistry(unittest.TestCase):
             RobotClass.MOBILE_BASE,
             RobotClass.MOBILE_MANIPULATOR,
             RobotClass.ARM,
+            RobotClass.QUADRUPED,
         ):
             scenario = CLASS_SCENARIOS[robot_class]
             self.assertEqual(scenario.sim_backend, "kinematic")
@@ -78,19 +78,46 @@ class TestScenarios(unittest.TestCase):
             self.assertEqual(names["telemetry_schema"], "pass")
             self.assertEqual(names["sim_backend"], "pass")
 
-    def test_quadruped_is_skipped(self):
+    def test_quadruped_walk_covers_legged_behaviour(self):
         result = run_robot("unitree-go2")
-        self.assertEqual(result.status, "skipped", format_result(result))
-        self.assertIn("not registered", result.reason)
-        self.assertNotIn("unitree-go2 (quadruped): pass", format_result(result))
-        scenario = next(check for check in result.checks if check.name == "scenario")
-        self.assertEqual(scenario.status, "skipped")
+        self.assertEqual(result.status, "pass", format_result(result))
+        names = {check.name: check.status for check in result.checks}
+        for name in (
+            "lie_blocks_drive",
+            "sit_blocks_drive",
+            "stand_before_drive",
+            "drive_square",
+            "stop_move",
+            "euler_clamped",
+            "lie_down",
+            "recover",
+            "euler_gate_clamp",
+            "denied_sport",
+            "watchdog_zeroes",
+            "estop_latches",
+            "telemetry_schema",
+            "sim_backend",
+        ):
+            self.assertEqual(names[name], "pass", format_result(result))
 
     def test_declared_backend_does_not_pass_an_unregistered_class(self):
-        spec = replace(get_spec("unitree-go2"), sim_backend="kinematic")
+        spec = replace(
+            get_spec("sim"),
+            id="aerial-sim",
+            name="Aerial Sim",
+            category="aerial",
+            robot_class=RobotClass.AERIAL,
+            limits=AerialLimits(),
+            sim_backend="kinematic",
+        )
         result = run_spec(spec)
         self.assertEqual(result.status, "skipped", format_result(result))
         self.assertIn("not registered", result.reason)
+
+    def test_explicit_kinematic_backend_runs_quadruped(self):
+        spec = replace(get_spec("unitree-go2"), sim_backend="kinematic")
+        result = run_spec(spec)
+        self.assertEqual(result.status, "pass", format_result(result))
 
     def test_arm_scenario_passes_on_the_kinematic_backend(self):
         spec = replace(
@@ -115,7 +142,8 @@ class TestScenarios(unittest.TestCase):
         for robot_class in ("arm", "aerial", "humanoid"):
             self.assertEqual(results[robot_class].status, "skipped", robot_class)
             self.assertNotEqual(results[robot_class].status, "pass")
-        self.assertEqual(results["quadruped"].status, "skipped")
+        self.assertEqual(results["quadruped"].status, "pass")
+        self.assertEqual(results["quadruped"].robot_id, "unitree-go2")
         self.assertEqual(results["mobile_base"].status, "pass")
 
 
@@ -141,9 +169,11 @@ class TestHardwareRefusal(unittest.TestCase):
         ):
             sim = run_robot("sim")
             arm = run_robot("omnibot")
+            go2 = run_robot("unitree-go2")
         self.assertEqual(opened, [], opened)
         self.assertEqual(sim.status, "pass", format_result(sim))
         self.assertEqual(arm.status, "pass", format_result(arm))
+        self.assertEqual(go2.status, "pass", format_result(go2))
 
     def test_non_sim_protocol_is_refused_before_connect(self):
         connected = {"called": False}
@@ -250,9 +280,15 @@ class TestCli(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["--robot", "missing-robot"]), 2)
 
-    def test_skipped_robot_exits_0(self):
-        with contextlib.redirect_stdout(io.StringIO()):
+    def test_quadruped_cli_exits_0(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
             self.assertEqual(main(["--robot", "unitree-go2"]), 0)
+        self.assertIn("unitree-go2 (quadruped): pass", stdout.getvalue())
+
+    def test_unregistered_class_cli_exits_0(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--all"]), 0)
 
     def test_module_entry_point(self):
         root = Path(__file__).resolve().parents[1]

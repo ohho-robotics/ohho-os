@@ -224,11 +224,14 @@ class SafetyPolicy:
                 return "fault", {"error_code": repr(custom["error_code"])}
             if code != 0:
                 return "fault", {"error_code": code}
-        orientation = _safety()._orientation(telemetry)
-        if orientation is not None:
-            limit = self.profile.tilt_limit_rad
-            if not (abs(orientation[0]) <= limit and abs(orientation[1]) <= limit):
-                return "tilt", {"roll": orientation[0], "pitch": orientation[1]}
+        # The drone profile turns this off. Ground profiles leave it on, so
+        # their 0.6 rad latch is unchanged.
+        if getattr(self.profile, "tilt_guard", True):
+            orientation = _safety()._orientation(telemetry)
+            if orientation is not None:
+                limit = self.profile.tilt_limit_rad
+                if not (abs(orientation[0]) <= limit and abs(orientation[1]) <= limit):
+                    return "tilt", {"roll": orientation[0], "pitch": orientation[1]}
         return None
 
     def _clamp_velocity(self, args: Sequence[Any]) -> ClampDecision:
@@ -239,6 +242,11 @@ class SafetyPolicy:
             clamp(requested[1], -profile.max_vy, profile.max_vy),
             clamp(requested[2], -profile.max_wz, profile.max_wz),
         )
+        # Cylinder clip for the aerial profile only. Ground max_horizontal is 0.
+        horizontal = getattr(profile, "max_horizontal", 0.0)
+        if getattr(profile, "aerial", False) and horizontal > 0.0:
+            hx, hy = _safety().clip_horizontal(capped[0], capped[1], horizontal)
+            capped = (hx, hy, capped[2])
         dt = min(max(float(raw_dt), 0.0), profile.cmd_timeout_s)
         accels = (profile.max_accel_x, profile.max_accel_y, profile.max_accel_wz)
         applied = tuple(
@@ -442,9 +450,12 @@ def reference_profile(spec: RobotSpec | None) -> Any:
 def policy_for_class(spec: RobotSpec | None) -> SafetyPolicy:
     """The default policy for ``spec.robot_class``.
 
-    Aerial and humanoid do not have their own policies yet. They use
-    :class:`GroundPolicy` with the conservative profile, which is how the
-    gate treats an unknown robot today.
+    Aerial and humanoid do not have their own policy classes yet. They use
+    :class:`GroundPolicy`. A built-in aerial id still gets
+    :data:`ohho.safety.DRONE_PROFILE` from :func:`ohho.safety.profile_for`
+    (tilt guard off, horizontal clip, flight e-stop). That does not raise
+    ground, arm, or quadruped caps. An aerial or humanoid spec with no
+    built-in profile keeps the conservative profile.
     """
     profile = reference_profile(spec)
     robot_class = RobotClass.MOBILE_BASE if spec is None else spec.robot_class

@@ -1,0 +1,33 @@
+{
+  "$id": "https://ohho-robotics.com/schemas/Telemetry.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "battery": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "custom": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "joints": {
+      "items": {
+        "$ref": "joint_reading.json"
+      },
+      "type": "array"
+    },
+    "odom": {
+      "$ref": "odometry.json"
+    },
+    "scan": {
+      "$ref": "scan.json"
+    },
+    "timestamp": {
+      "type": "number"
+    }
+  },
+  "title": "Telemetry",
+  "type": "object"
+}

@@ -103,9 +103,20 @@ Velocity fields default from the flat clamps (`max_vx` and `max_vy` from
 `None` (not declared). Aerial extras default to the drone drafts' ground-robot
 defaults: climb `0.0`, `gps_fix` `""`, flags false.
 
-`capability_params` is an open mapping until C-04 types the parameters and
-rejects unknown capability names. `CiSim.enabled` defaults to false so existing
-robots do not join a matrix that does not exist yet. Scenario ids, when a
+`capability_params` is a JSON object keyed by capability name. `has()` stays a
+string check. The names that carry parameters are `base.drive`,
+`base.holonomic_drive`, `legged.pose`, `aerial`, `humanoid.locomotion`,
+`humanoid.posture`, `whole_body.joint`, `manipulation`, `manipulation.dual_arm`,
+`end_effector.gripper`, `end_effector.dex_hand` and `head.gaze`. Perception
+capabilities stay strings with no parameter schema. When the field is omitted,
+parameters are filled from the spec's limits and joint groups.
+They describe the robot. They are not safety caps, and `SafetyGate` does not
+read them. `register()` rejects a capability name that is not in the
+vocabulary. `RobotSpec(...)` still accepts an explicit mapping, so a document
+that already stored one round-trips.
+
+`CiSim.enabled` defaults to false so existing robots do not join a matrix that
+does not exist yet. Scenario ids, when a
 plugin opts in, come from `CI_SCENARIOS`:
 
 | Class | Scenario |
@@ -212,15 +223,19 @@ scenario on the plugin's sim backend only. The kit calls
 A new plugin runs it like this:
 
 1. Register a sim backend from `sim_backends()` and set `RobotSpec.sim_backend`,
-   or leave it empty to use the class default (`kinematic` for a ground robot
-   or an arm the built-in backend can run).
+   or leave it empty to use the class default (`kinematic` for a ground robot,
+   a quadruped, or an arm the built-in backend can run).
 2. Run `python -m ohho.testing.conformance --robot <id>`.
 3. `mobile_base` and `mobile_manipulator` drive a 1 m square, then check that a
    stale command zeros velocity and that e-stop latches.
 4. An `arm` moves to home, clamps a joint command to the safety profile, and
    disables torque on e-stop in sim.
-5. `quadruped`, `aerial` and `humanoid` stay in the kit registry with no sim
-   backend. The report is skipped, with the reason, and is not a pass.
+5. `quadruped` runs `quadruped_walk` on the kinematic backend. The sim starts
+   lying; velocity is ignored until stand; sit and lie-down block drive; body
+   euler is clamped to the safety limit (never widened); a stale command zeros
+   velocity and e-stop latches. `aerial` and `humanoid` stay in the kit
+   registry with no sim backend. That report is skipped, with the reason, and
+   is not a pass.
 
 Every run also checks the telemetry schema, that MCP payloads carry `backend`
 and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that
@@ -234,13 +249,15 @@ allowlist also names `feetech` (R-01) and `ardupilot` (R-03).
 - `example.json` still loads. Built-in `max_lin` / `max_ang` are unchanged.
 - Safety caps, watchdogs, arming and the e-stop path are unchanged.
 - Plugin discovery is C-02 (`ohho/plugins.py`, group `ohho.robots`).
+  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
+  gate delegates to Ground, Arm and Legged policies, and a plugin may only
+  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
+  unchanged.
   C-03 (OHH-311) asks those plugins for a transport scheme before the scheme
   dict in `ohho/adapters/__init__.py`. The dict and its entries stay, so a
   scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
   default) selects a plugin sim backend for `sim://` and for auto; an empty
   name keeps today's simulator return. `dds://` stays the Unitree scheme.
-  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
-  gate delegates to Ground, Arm and Legged policies, and a plugin may only
-  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
-  unchanged. The robot-id resolver remains C-06. The CI matrix is
+  The robot-id resolver remains C-06. It should follow this ADR rather than
+  grow more fields on the flat spec. The CI matrix is
   `.github/workflows/sim-matrix.yml` (C-08 / OHH-316).

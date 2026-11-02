@@ -60,7 +60,8 @@ BUILTIN_SOURCE = "builtin"
 
 # Scenario ids for ``CiSim.scenario`` when a robot opts into the sim matrix
 # (``ohho list --json --ci-sim``, OHH-316). ``enabled`` defaults to false.
-# A built-in opts in only when its class scenario has a sim backend.
+# Built-in ``sim`` and the mobile manipulator opt in. The quadruped built-in
+# stays disabled.
 CI_SCENARIOS: Mapping[RobotClass, str] = MappingProxyType(
     {
         RobotClass.MOBILE_BASE: "drive_square",
@@ -590,6 +591,46 @@ def _freeze_json(value: Any) -> Any:
         return value
     raise TypeError(
         f"capability_params values must be JSON-compatible, not {type(value).__name__}"
+    )
+
+
+def resolve_capability_params(
+    capabilities: Sequence[str],
+    explicit: Mapping[str, Any] | None,
+    limits: ClassLimits,
+    joint_groups: Mapping[str, Sequence[str]] | None,
+    *,
+    max_lin: float,
+    max_ang: float,
+) -> dict[str, Any]:
+    """Capability parameters for a spec.
+
+    Velocity numbers come from the class limits when that object has them, and
+    from ``max_lin`` / ``max_ang`` otherwise. Climb comes from ``AerialLimits``.
+    An explicit mapping wins per capability name. Not a safety cap.
+    """
+    # Imported lazily: capability_params imports the capability names only.
+    from .capability_params import merge_capability_params
+
+    if isinstance(limits, MobileManipulatorLimits):
+        max_vx, max_vy, max_wz = (
+            limits.ground.max_vx,
+            limits.ground.max_vy,
+            limits.ground.max_wz,
+        )
+    elif isinstance(limits, (GroundLimits, LeggedLimits, HumanoidLimits)):
+        max_vx, max_vy, max_wz = limits.max_vx, limits.max_vy, limits.max_wz
+    else:
+        max_vx, max_vy, max_wz = max_lin, max_lin, max_ang
+    max_climb = float(limits.max_climb) if isinstance(limits, AerialLimits) else 0.0
+    return merge_capability_params(
+        capabilities,
+        explicit,
+        max_vx=max_vx,
+        max_vy=max_vy,
+        max_wz=max_wz,
+        max_climb=max_climb,
+        joint_groups=joint_groups,
     )
 
 

@@ -1,0 +1,29 @@
+{
+  "$id": "https://ohho-robotics.com/schemas/Scan.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "angle_increment": {
+      "type": "number"
+    },
+    "angle_min": {
+      "type": "number"
+    },
+    "range_max": {
+      "default": 4.0,
+      "type": "number"
+    },
+    "ranges": {
+      "items": {
+        "type": "number"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "angle_min",
+    "angle_increment"
+  ],
+  "title": "Scan",
+  "type": "object"
+}

@@ -143,7 +143,14 @@ class TestPluginDiscovery(unittest.TestCase):
         self.assertEqual(plugin.name, "builtin")
         self.assertEqual(
             {spec.id for spec in plugin.specs()},
-            {"omnibot", "sim", "unitree-go2"},
+            {
+                "omnibot",
+                "sim",
+                "unitree-go2",
+                "px4-sitl",
+                "crazyflie-sim",
+                "px4-x500",
+            },
         )
         for spec in plugin.specs():
             self.assertIsNone(plugin.safety_policy(spec))
@@ -162,7 +169,15 @@ class TestPluginDiscovery(unittest.TestCase):
             self.assertTrue(builtin[0].fallback)
             self.assertIsNone(builtin[0].error)
             self.assertEqual(
-                set(builtin[0].spec_ids), {"omnibot", "sim", "unitree-go2"}
+                set(builtin[0].spec_ids),
+                {
+                    "omnibot",
+                    "sim",
+                    "unitree-go2",
+                    "px4-sitl",
+                    "crazyflie-sim",
+                    "px4-x500",
+                },
             )
             self.assertEqual(get_spec("omnibot").name, "OmniBot")
             self.assertEqual(get_spec("omnibot").source, "builtin")
@@ -187,7 +202,17 @@ class TestPluginDiscovery(unittest.TestCase):
             self.assertEqual(len(infos), 1)
             self.assertFalse(infos[0].fallback)
             self.assertIsNone(infos[0].error)
-            self.assertEqual(set(infos[0].spec_ids), {"omnibot", "sim", "unitree-go2"})
+            self.assertEqual(
+                set(infos[0].spec_ids),
+                {
+                    "omnibot",
+                    "sim",
+                    "unitree-go2",
+                    "px4-sitl",
+                    "crazyflie-sim",
+                    "px4-x500",
+                },
+            )
             self.assertNotIn("source fallback", format_plugin_report())
             self.assertIn("sim", {spec.id for spec in list_specs()})
 
@@ -210,7 +235,7 @@ class TestPluginDiscovery(unittest.TestCase):
                     "ros2",
                 },
             )
-            self.assertEqual(info.sim_backends, ("kinematic",))
+            self.assertEqual(info.sim_backends, ("kinematic", "humanoid-mujoco"))
 
     def test_external_plugin_is_listed_and_core_does_not_import_it(self):
         mod = "ohho_c02_external_plugin"
@@ -611,6 +636,9 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
                 type(backends["kinematic"](specs["sim"], "", None)).__name__
                 == "SimTransport"
             )
+            humanoid = backends["humanoid-mujoco"](specs["sim"], "", None)
+            assert type(humanoid).__name__ == "HumanoidMujocoTransport"
+            assert humanoid.protocol == "simulated"
             assert bot.safety_policy(specs["omnibot"]) is None
             assert bot.descriptor(specs["omnibot"]) is None
             assert bot.doctor(specs["omnibot"], "sim://", True) is None
@@ -622,6 +650,9 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
                 "unitree_sdk2py",
                 "rclpy",
                 "pymavlink",
+                "mujoco",
+                "onnxruntime",
+                "torch",
             }
             leaked = sorted(forbidden & set(sys.modules))
             if leaked:

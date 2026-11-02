@@ -1,13 +1,13 @@
 """Hardware self-test suite and report generator.
 
-Performs bring-up checks across motors, encoders, IMU, servos, and cameras:
-- Serial communication link (base + arm)
-- Four-wheel motor spin with encoder verification (bench safety-gated)
-- IMU publishing rate verification
-- STS3215 6-DOF arm servo telemetry (ID, voltage, temperature, position)
-- Camera frame streaming
+Table-driven profiles per robot category:
+- **OmniBot bench:** serial link, wheel spin + encoders, IMU rate, STS3215 arm,
+  camera frames.
+- **Legged (Go2):** DDS sport/lowstate rates, 12 leg motors, IMU at rest, BMS
+  SOC, error_code, front camera JPEG, optional stand/lie cycle.
 
 Generates dated JSON test reports and surfaces PASS / FAIL / SKIP statuses.
+Hardware mode never falls back to simulation.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from .adapters.composite import CompositeTransport
 from .adapters.sim import SimTransport
-from .registry import get_spec
+from .registry import RobotSpec, get_spec
 from .schema import ConnectionState, Velocity
 from .transport import Transport
 
@@ -73,6 +73,134 @@ def default_report_path(now: Optional[datetime.datetime] = None) -> str:
     """Generate default dated JSON report filename: selftest-YYYYMMDD-HHMMSS.json."""
     t = now or datetime.datetime.now()
     return f"selftest-{t.strftime('%Y%m%d-%H%M%S')}.json"
+
+
+@dataclass(frozen=True)
+class SelfTestProfile:
+    """Table-driven check list selected from robot category / capabilities."""
+
+    id: str
+    check_ids: tuple[str, ...]
+
+
+OMNIBOT_BENCH_PROFILE = SelfTestProfile(
+    "omnibot_bench",
+    (
+        "serial_link",
+        "wheel_spin_encoders",
+        "imu_rate",
+        "sts3215_servos",
+        "camera_frames",
+    ),
+)
+
+LEGGED_GO2_PROFILE = SelfTestProfile(
+    "legged_go2",
+    (
+        "dds_link",
+        "leg_motors",
+        "imu_rpy_rest",
+        "bms_soc",
+        "error_code",
+        "front_camera",
+        "stand_lie_cycle",
+    ),
+)
+
+# DDS topic rate floors (sport / lowstate). Sim uses ideal rates; hardware allows
+# the current Unitree adapter sport poll (~20 Hz) until lowstate subscription lands.
+_DDS_SPORT_MIN_HZ_SIM = 50.0
+_DDS_LOW_MIN_HZ_SIM = 100.0
+_DDS_SPORT_MIN_HZ_HW = 18.0
+_DDS_LOW_MIN_HZ_HW = 80.0
+_GO2_MOTOR_COUNT = 12
+_GO2_MOTOR_MAX_TEMP_C = 80.0
+_GO2_BMS_MIN_SOC = 0.30
+_GO2_IMU_MAX_ABS_RPY_REST = 0.35
+
+
+def profile_for_robot(spec: RobotSpec) -> SelfTestProfile:
+    if spec.category == "legged":
+        return LEGGED_GO2_PROFILE
+    return OMNIBOT_BENCH_PROFILE
+
+
+def default_hardware_transport_uri(
+    spec: RobotSpec,
+    *,
+    transport_uri: str = "",
+    base_port: str = "",
+    arm_port: str = "",
+) -> str:
+    if transport_uri:
+        return transport_uri
+    if spec.category == "legged":
+        iface = os.environ.get("OHHO_GO2_IFACE", "eth0")
+        domain = os.environ.get("OHHO_GO2_DOMAIN", "").strip()
+        if domain:
+            return f"dds://{iface}?domain={domain}"
+        return f"dds://{iface}"
+    b_port = base_port or "/dev/ttyUSB0"
+    a_port = arm_port or "/dev/ttyACM0"
+    return f"serial://{b_port},{a_port}"
+
+
+def _read_legged_diag(transport: Transport) -> dict[str, Any]:
+    fn = getattr(transport, "read_legged_diagnostics", None)
+    if callable(fn):
+        data = fn()
+        if isinstance(data, dict):
+            return data
+    t = transport.read()
+    custom = t.custom or {}
+    rpy = [custom.get("roll", 0.0), custom.get("pitch", 0.0)]
+    if t.odom is not None:
+        rpy.append(float(t.odom.theta))
+    return {
+        "sport_hz": float(custom.get("sport_hz", 0.0)),
+        "lowstate_hz": float(custom.get("lowstate_hz", 0.0)),
+        "motors": custom.get("motors") or [],
+        "imu_rpy": rpy,
+        "battery_soc": t.battery,
+        "error_code": custom.get("error_code", 0),
+        "camera_jpeg_len": custom.get("camera_jpeg_len"),
+    }
+
+
+def _measure_telemetry_rate_hz(transport: Transport, window_s: float) -> float:
+    count = 0
+
+    def _cb(_tel: Any) -> None:
+        nonlocal count
+        count += 1
+
+    unsub = transport.on_telemetry(_cb)
+    try:
+        time.sleep(window_s)
+    finally:
+        unsub()
+    return count / window_s if window_s > 0 else 0.0
+
+
+def _skipped_check(name: str, reason: str) -> CheckResult:
+    return CheckResult(name=name, status="SKIP", reason=reason)
+
+
+def _hardware_init_failure_checks(
+    profile: SelfTestProfile, err: Exception, fail_name: str, fail_reason: str
+) -> dict[str, CheckResult]:
+    checks: dict[str, CheckResult] = {}
+    for cid in profile.check_ids:
+        if cid == fail_name:
+            checks[cid] = CheckResult(
+                name=cid,
+                status="FAIL",
+                reason=fail_reason,
+                measurements={"error": str(err)},
+            )
+        else:
+            checks[cid] = _skipped_check(cid, "Hardware transport failed to initialize")
+    return checks
 
 
 # ── Individual Checks ─────────────────────────────────────────────────────────
@@ -552,12 +680,16 @@ def check_camera_frames(
     # Hardware check via OpenCV
     try:
         import cv2  # type: ignore
-    except ImportError:
+    except Exception as exc:
         dur = time.monotonic() - start_t
         return CheckResult(
             name="camera_frames",
             status="SKIP",
-            reason="OpenCV (cv2) not installed; install 'opencv-python' to capture camera frames",
+            reason=(
+                "OpenCV (cv2) not installed or failed to load "
+                f"({type(exc).__name__}: {exc}); install 'opencv-python' "
+                "to capture camera frames"
+            ),
             measurements={"cv2_available": False, "camera_idx": camera_idx},
             duration_s=dur,
         )
@@ -624,6 +756,385 @@ def check_camera_frames(
     )
 
 
+# ── Legged (Go2) checks ───────────────────────────────────────────────────────
+
+
+def check_dds_link(
+    transport: Transport,
+    *,
+    sim: bool = False,
+    sample_window_s: float = 0.5,
+) -> CheckResult:
+    start_t = time.monotonic()
+    min_sport = _DDS_SPORT_MIN_HZ_SIM if sim else _DDS_SPORT_MIN_HZ_HW
+    min_low = _DDS_LOW_MIN_HZ_SIM if sim else _DDS_LOW_MIN_HZ_HW
+
+    if sim:
+        diag = _read_legged_diag(transport)
+        sport_hz = float(diag.get("sport_hz", _DDS_SPORT_MIN_HZ_SIM))
+        low_hz = float(diag.get("lowstate_hz", _DDS_LOW_MIN_HZ_SIM))
+    else:
+        st = transport.status()
+        if st.state != ConnectionState.CONNECTED:
+            dur = time.monotonic() - start_t
+            return CheckResult(
+                name="dds_link",
+                status="SKIP",
+                reason=f"DDS link check skipped: transport not connected ({st.state.value})",
+                duration_s=dur,
+            )
+        time.sleep(sample_window_s)
+        diag = _read_legged_diag(transport)
+        sport_hz = float(diag.get("sport_hz") or 0.0)
+        low_hz = float(diag.get("lowstate_hz") or 0.0)
+        if sport_hz <= 0.0:
+            sport_hz = _measure_telemetry_rate_hz(transport, sample_window_s)
+
+    dur = time.monotonic() - start_t
+    measurements = {
+        "sport_hz": round(sport_hz, 2),
+        "lowstate_hz": round(low_hz, 2),
+        "min_sport_hz": min_sport,
+        "min_lowstate_hz": min_low,
+        "topics": ["rt/sportmodestate", "rt/lowstate"],
+    }
+    issues: list[str] = []
+    if sport_hz < min_sport:
+        issues.append(f"sportmodestate {sport_hz:.1f} Hz < {min_sport:.1f} Hz")
+    if low_hz < min_low:
+        if not sim and low_hz <= 0.0:
+            issues.append(
+                "lowstate stream not available (adapter lowstate subscription pending)"
+            )
+        else:
+            issues.append(f"lowstate {low_hz:.1f} Hz < {min_low:.1f} Hz")
+    if issues:
+        return CheckResult(
+            name="dds_link",
+            status="FAIL",
+            reason="DDS link check failed: " + "; ".join(issues),
+            measurements=measurements,
+            duration_s=dur,
+        )
+    return CheckResult(
+        name="dds_link",
+        status="PASS",
+        reason=(
+            f"DDS streams healthy (sportmodestate {sport_hz:.1f} Hz, "
+            f"lowstate {low_hz:.1f} Hz)"
+        ),
+        measurements=measurements,
+        duration_s=dur,
+    )
+
+
+def check_leg_motors(
+    transport: Transport,
+    *,
+    sim: bool = False,
+    expected_count: int = _GO2_MOTOR_COUNT,
+    max_temp_c: float = _GO2_MOTOR_MAX_TEMP_C,
+) -> CheckResult:
+    start_t = time.monotonic()
+    diag = _read_legged_diag(transport)
+    motors = diag.get("motors") or []
+    dur = time.monotonic() - start_t
+
+    if not sim and not motors:
+        return CheckResult(
+            name="leg_motors",
+            status="SKIP",
+            reason="Leg motor telemetry not available (need rt/lowstate)",
+            measurements={"motors": [], "count": 0},
+            duration_s=dur,
+        )
+
+    issues: list[str] = []
+    if len(motors) < expected_count:
+        issues.append(f"expected {expected_count} motors, got {len(motors)}")
+    for m in motors:
+        mid = m.get("id", "?")
+        lost = m.get("lost", 0)
+        temp = m.get("temperature")
+        if lost not in (0, 0.0, False, None):
+            issues.append(f"motor {mid} lost={lost}")
+        if temp is None:
+            issues.append(f"motor {mid} missing temperature")
+        elif float(temp) > max_temp_c:
+            issues.append(f"motor {mid} temperature {temp}°C > {max_temp_c}°C")
+
+    if issues:
+        return CheckResult(
+            name="leg_motors",
+            status="FAIL",
+            reason="Leg motor check failed: " + "; ".join(issues),
+            measurements={"motors": motors, "count": len(motors)},
+            duration_s=dur,
+        )
+    return CheckResult(
+        name="leg_motors",
+        status="PASS",
+        reason=f"All {len(motors)} leg motors reporting (lost=0, temperature OK)",
+        measurements={"motors": motors, "count": len(motors), "all_ok": True},
+        duration_s=dur,
+    )
+
+
+def check_imu_rpy_rest(
+    transport: Transport,
+    *,
+    sim: bool = False,
+    max_abs_rad: float = _GO2_IMU_MAX_ABS_RPY_REST,
+) -> CheckResult:
+    start_t = time.monotonic()
+    diag = _read_legged_diag(transport)
+    rpy = diag.get("imu_rpy") or [0.0, 0.0, 0.0]
+    dur = time.monotonic() - start_t
+    roll, pitch = float(rpy[0]), float(rpy[1])
+    issues = []
+    if abs(roll) > max_abs_rad:
+        issues.append(f"|roll|={abs(roll):.3f} rad > {max_abs_rad} rad")
+    if abs(pitch) > max_abs_rad:
+        issues.append(f"|pitch|={abs(pitch):.3f} rad > {max_abs_rad} rad")
+    measurements = {
+        "imu_rpy": [round(roll, 4), round(pitch, 4), round(float(rpy[2]), 4)],
+        "max_abs_roll_pitch_rad": max_abs_rad,
+    }
+    if issues:
+        return CheckResult(
+            name="imu_rpy_rest",
+            status="FAIL",
+            reason="IMU orientation at rest out of range: " + "; ".join(issues),
+            measurements=measurements,
+            duration_s=dur,
+        )
+    return CheckResult(
+        name="imu_rpy_rest",
+        status="PASS",
+        reason="IMU roll/pitch sane at rest",
+        measurements=measurements,
+        duration_s=dur,
+    )
+
+
+def check_bms_soc(
+    transport: Transport,
+    *,
+    sim: bool = False,
+    min_soc: float = _GO2_BMS_MIN_SOC,
+) -> CheckResult:
+    start_t = time.monotonic()
+    diag = _read_legged_diag(transport)
+    soc = diag.get("battery_soc")
+    dur = time.monotonic() - start_t
+    if soc is None:
+        return CheckResult(
+            name="bms_soc",
+            status="FAIL" if sim else "SKIP",
+            reason="BMS state-of-charge not reported",
+            measurements={"battery_soc": None, "min_soc": min_soc},
+            duration_s=dur,
+        )
+    soc_f = float(soc)
+    if soc_f < min_soc:
+        return CheckResult(
+            name="bms_soc",
+            status="FAIL",
+            reason=f"BMS SOC {soc_f:.0%} below minimum {min_soc:.0%}",
+            measurements={"battery_soc": soc_f, "min_soc": min_soc},
+            duration_s=dur,
+        )
+    return CheckResult(
+        name="bms_soc",
+        status="PASS",
+        reason=f"BMS SOC {soc_f:.0%} (>= {min_soc:.0%})",
+        measurements={"battery_soc": soc_f, "min_soc": min_soc},
+        duration_s=dur,
+    )
+
+
+def check_error_code(transport: Transport, *, sim: bool = False) -> CheckResult:
+    start_t = time.monotonic()
+    diag = _read_legged_diag(transport)
+    code = diag.get("error_code", 0)
+    dur = time.monotonic() - start_t
+    try:
+        code_i = int(code)
+    except (TypeError, ValueError):
+        code_i = -1
+    if code_i != 0:
+        return CheckResult(
+            name="error_code",
+            status="FAIL",
+            reason=f"Robot error_code={code_i} (expected 0)",
+            measurements={"error_code": code_i},
+            duration_s=dur,
+        )
+    return CheckResult(
+        name="error_code",
+        status="PASS",
+        reason="error_code == 0",
+        measurements={"error_code": 0},
+        duration_s=dur,
+    )
+
+
+def check_front_camera(
+    transport: Transport,
+    *,
+    sim: bool = False,
+) -> CheckResult:
+    start_t = time.monotonic()
+    if sim:
+        diag = _read_legged_diag(transport)
+        jpeg_len = int(diag.get("camera_jpeg_len") or 4096)
+        dur = time.monotonic() - start_t
+        return CheckResult(
+            name="front_camera",
+            status="PASS",
+            reason=f"Front camera JPEG available (sim render, {jpeg_len} bytes)",
+            measurements={"jpeg_bytes": jpeg_len, "source": "sim"},
+            duration_s=dur,
+        )
+
+    capture = getattr(transport, "capture_front_camera_jpeg", None)
+    if not callable(capture):
+        dur = time.monotonic() - start_t
+        return CheckResult(
+            name="front_camera",
+            status="SKIP",
+            reason="Front camera capture not available on this transport",
+            measurements={},
+            duration_s=dur,
+        )
+    data = capture()
+    dur = time.monotonic() - start_t
+    if not data or len(data) < 100:
+        return CheckResult(
+            name="front_camera",
+            status="FAIL",
+            reason="VideoClient.GetImageSample() returned no JPEG data",
+            measurements={"jpeg_bytes": len(data) if data else 0},
+            duration_s=dur,
+        )
+    return CheckResult(
+        name="front_camera",
+        status="PASS",
+        reason=f"Front camera JPEG received ({len(data)} bytes)",
+        measurements={"jpeg_bytes": len(data), "source": "VideoClient"},
+        duration_s=dur,
+    )
+
+
+def check_stand_lie_cycle(
+    transport: Transport,
+    *,
+    sim: bool = False,
+    allow_stand: bool = False,
+    settle_s: float = 2.0,
+) -> CheckResult:
+    start_t = time.monotonic()
+    if not allow_stand:
+        dur = time.monotonic() - start_t
+        return CheckResult(
+            name="stand_lie_cycle",
+            status="SKIP",
+            reason="Stand/lie cycle skipped (pass --allow-stand to enable)",
+            measurements={"safety_locked": True},
+            duration_s=dur,
+        )
+    if sim:
+        dur = time.monotonic() - start_t
+        return CheckResult(
+            name="stand_lie_cycle",
+            status="PASS",
+            reason="Stand/lie cycle simulated (stand_up → stand_down)",
+            measurements={"simulated": True},
+            duration_s=dur,
+        )
+
+    sport = getattr(transport, "sport_command", None)
+    if not callable(sport):
+        dur = time.monotonic() - start_t
+        return CheckResult(
+            name="stand_lie_cycle",
+            status="SKIP",
+            reason="sport_command not available on transport (TODO: OHH-118 Legged API)",
+            measurements={},
+            duration_s=dur,
+        )
+    try:
+        sport("stand_up")
+        time.sleep(settle_s)
+        sport("stand_down")
+        time.sleep(settle_s)
+    except Exception as e:
+        dur = time.monotonic() - start_t
+        return CheckResult(
+            name="stand_lie_cycle",
+            status="FAIL",
+            reason=f"Stand/lie cycle failed: {e}",
+            measurements={"error": str(e)},
+            duration_s=dur,
+        )
+    dur = time.monotonic() - start_t
+    return CheckResult(
+        name="stand_lie_cycle",
+        status="PASS",
+        reason="Stand/lie cycle completed (stand_up → stand_down)",
+        measurements={"settle_s": settle_s},
+        duration_s=dur,
+    )
+
+
+def _run_profile_checks(
+    profile: SelfTestProfile,
+    transport: Transport,
+    *,
+    sim: bool,
+    allow_spin: bool,
+    allow_stand: bool,
+    base_port: str,
+    arm_port: str,
+    camera_idx: int,
+) -> dict[str, CheckResult]:
+    results: dict[str, CheckResult] = {}
+    for cid in profile.check_ids:
+        if cid == "serial_link":
+            results[cid] = check_serial_link(
+                transport, sim=sim, base_port=base_port, arm_port=arm_port
+            )
+        elif cid == "wheel_spin_encoders":
+            results[cid] = check_wheel_spin_encoders(
+                transport, sim=sim, allow_spin=allow_spin
+            )
+        elif cid == "imu_rate":
+            results[cid] = check_imu_rate(transport, sim=sim)
+        elif cid == "sts3215_servos":
+            results[cid] = check_sts3215_servos(transport, sim=sim)
+        elif cid == "camera_frames":
+            results[cid] = check_camera_frames(sim=sim, camera_idx=camera_idx)
+        elif cid == "dds_link":
+            results[cid] = check_dds_link(transport, sim=sim)
+        elif cid == "leg_motors":
+            results[cid] = check_leg_motors(transport, sim=sim)
+        elif cid == "imu_rpy_rest":
+            results[cid] = check_imu_rpy_rest(transport, sim=sim)
+        elif cid == "bms_soc":
+            results[cid] = check_bms_soc(transport, sim=sim)
+        elif cid == "error_code":
+            results[cid] = check_error_code(transport, sim=sim)
+        elif cid == "front_camera":
+            results[cid] = check_front_camera(transport, sim=sim)
+        elif cid == "stand_lie_cycle":
+            results[cid] = check_stand_lie_cycle(
+                transport, sim=sim, allow_stand=allow_stand
+            )
+        else:
+            results[cid] = _skipped_check(cid, f"Unknown check id '{cid}'")
+    return results
+
+
 # ── Full Self-Test Runner ─────────────────────────────────────────────────────
 
 
@@ -632,83 +1143,65 @@ def run_selftest(
     *,
     sim: bool = False,
     allow_spin: bool = False,
+    allow_stand: bool = False,
     out_path: Optional[str] = None,
     base_port: str = "",
     arm_port: str = "",
     camera_idx: int = 0,
+    transport_uri: str = "",
     transport: Optional[Transport] = None,
 ) -> SelfTestReport:
     """Run all hardware self-test checks and return a complete SelfTestReport."""
     start_time = datetime.datetime.now(datetime.timezone.utc)
     t_start = time.monotonic()
     spec = get_spec(robot)
+    profile = profile_for_robot(spec)
     tp = transport
     owned_transport = False
+    mode_str = "sim" if sim else "hardware"
 
     if tp is None:
         owned_transport = True
         if sim:
             tp = SimTransport(spec)
         else:
-            # Build hardware transport (composite for OmniBot)
             from .adapters import resolve_transport
 
-            b_port = base_port or "/dev/ttyUSB0"
-            a_port = arm_port or "/dev/ttyACM0"
-            uri = f"serial://{b_port},{a_port}"
+            uri = default_hardware_transport_uri(
+                spec,
+                transport_uri=transport_uri,
+                base_port=base_port,
+                arm_port=arm_port,
+            )
             try:
                 tp = resolve_transport(uri, spec)
             except Exception as e:
                 err_msg = f"Failed to initialize hardware transport: {e}"
-                c_fail = CheckResult(
-                    name="serial_link",
-                    status="FAIL",
-                    reason=err_msg,
-                    measurements={"error": str(e)},
+                fail_name = "dds_link" if profile.id == "legged_go2" else "serial_link"
+                checks_map = _hardware_init_failure_checks(
+                    profile, e, fail_name, err_msg
                 )
-                checks_map = {
-                    "serial_link": c_fail,
-                    "wheel_spin_encoders": CheckResult(
-                        name="wheel_spin_encoders",
-                        status="SKIP",
-                        reason="Hardware transport failed to initialize",
-                    ),
-                    "imu_rate": CheckResult(
-                        name="imu_rate",
-                        status="SKIP",
-                        reason="Hardware transport failed to initialize",
-                    ),
-                    "sts3215_servos": CheckResult(
-                        name="sts3215_servos",
-                        status="SKIP",
-                        reason="Hardware transport failed to initialize",
-                    ),
-                    "camera_frames": CheckResult(
-                        name="camera_frames",
-                        status="SKIP",
-                        reason="Hardware transport failed to initialize",
-                    ),
-                }
+                n_fail = sum(1 for c in checks_map.values() if c.status == "FAIL")
+                n_skip = sum(1 for c in checks_map.values() if c.status == "SKIP")
                 report = SelfTestReport(
                     timestamp=start_time.isoformat(),
                     robot=robot,
-                    mode="hardware",
+                    mode=mode_str,
                     overall_status="FAIL",
                     summary={
                         "total": len(checks_map),
                         "passed": 0,
-                        "failed": 1,
-                        "skipped": 4,
+                        "failed": n_fail,
+                        "skipped": n_skip,
                         "duration_s": round(time.monotonic() - t_start, 4),
                         "transport_error": str(e),
+                        "profile": profile.id,
                     },
                     checks=checks_map,
                 )
                 if out_path:
                     save_report_json(report, out_path)
                 raise RuntimeError(err_msg) from e
-
-    mode_str = "sim" if isinstance(tp, SimTransport) else ("sim" if sim else "hardware")
 
     try:
         connect_fn = getattr(tp, "connect", None)
@@ -718,22 +1211,16 @@ def run_selftest(
             except Exception:
                 pass
 
-        # 1. Serial link check
-        c_serial = check_serial_link(
-            tp, sim=sim, base_port=base_port, arm_port=arm_port
+        checks_map = _run_profile_checks(
+            profile,
+            tp,
+            sim=sim,
+            allow_spin=allow_spin,
+            allow_stand=allow_stand,
+            base_port=base_port,
+            arm_port=arm_port,
+            camera_idx=camera_idx,
         )
-
-        # 2. Wheel spin + encoders check
-        c_wheels = check_wheel_spin_encoders(tp, sim=sim, allow_spin=allow_spin)
-
-        # 3. IMU publishing rate check
-        c_imu = check_imu_rate(tp, sim=sim)
-
-        # 4. STS3215 servos check
-        c_servos = check_sts3215_servos(tp, sim=sim)
-
-        # 5. Camera frames check
-        c_cam = check_camera_frames(sim=sim, camera_idx=camera_idx)
 
     finally:
         if owned_transport and tp is not None:
@@ -745,13 +1232,6 @@ def run_selftest(
                     pass
 
     total_duration = time.monotonic() - t_start
-    checks_map = {
-        "serial_link": c_serial,
-        "wheel_spin_encoders": c_wheels,
-        "imu_rate": c_imu,
-        "sts3215_servos": c_servos,
-        "camera_frames": c_cam,
-    }
 
     n_pass = sum(1 for c in checks_map.values() if c.status == "PASS")
     n_fail = sum(1 for c in checks_map.values() if c.status == "FAIL")
@@ -765,6 +1245,7 @@ def run_selftest(
         "failed": n_fail,
         "skipped": n_skip,
         "duration_s": round(total_duration, 4),
+        "profile": profile.id,
     }
     if mode_str == "hardware" and n_pass == 0 and n_fail == 0:
         summary["all_skipped"] = True

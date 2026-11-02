@@ -1,0 +1,13 @@
+{
+  "name": "booster_assets",
+  "upstream": "https://github.com/BoosterRobotics/booster_assets",
+  "commit": "12a97516f57469078707afb587a5f84c1cb110d1",
+  "licence": "BSD-3-Clause",
+  "copyright": "Copyright (c) 2025, BoosterRobotics",
+  "paths": {
+    "urdf": "robots/T2/T2_31dof/T2_31dof.urdf",
+    "mjcf": "robots/T2/T2_31dof/T2_31dof.xml",
+    "meshes": "robots/T2/T2_31dof/meshes",
+    "joint_names_module": "src/booster_assets/motions.py"
+  }
+}

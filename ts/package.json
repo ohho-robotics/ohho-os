@@ -1,8 +1,0 @@
-{
-  "name": "ohho-sdk",
-  "private": true,
-  "workspaces": [
-    "packages/*"
-  ],
-  "scripts": {}
-}

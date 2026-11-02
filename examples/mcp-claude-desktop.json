@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ohho": {
+      "command": "ohho",
+      "args": ["mcp", "serve"],
+      "env": {}
+    }
+  }
+}
