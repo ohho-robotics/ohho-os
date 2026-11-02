@@ -236,39 +236,7 @@ _QUADRUPED_POSES = (
     "damp",
 )
 
-# OmniBot's SO-101 arm joints (kept in sync with the ROS arm driver defaults).
-_OMNIBOT_ARM = (
-    "arm_shoulder_pan",
-    "arm_shoulder_lift",
-    "arm_elbow_flex",
-    "arm_wrist_flex",
-    "arm_wrist_roll",
-    "arm_gripper",
-)
-
 _BUILTINS: dict[str, RobotSpec] = {
-    "omnibot": RobotSpec(
-        id="omnibot",
-        name="OmniBot",
-        category="mobile-manipulator",
-        capabilities=(
-            caps.BASE_DRIVE,
-            caps.BASE_HOLONOMIC,
-            caps.PERCEPTION_RGB,
-            caps.PERCEPTION_DEPTH,
-            caps.PERCEPTION_SCAN,
-            caps.MANIPULATION,
-        ),
-        adapter="yahboom-serial",
-        dof_base=3,
-        dof_arm=6,
-        max_lin=0.2,
-        max_ang=1.0,
-        joint_names=_OMNIBOT_ARM,
-        joint_groups={"arm": _OMNIBOT_ARM},
-        robot_class=RobotClass.MOBILE_MANIPULATOR,
-        source=BUILTIN_SOURCE,
-    ),
     "unitree-go2": RobotSpec(
         id="unitree-go2",
         name="Unitree Go2",

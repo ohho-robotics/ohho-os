@@ -1,6 +1,6 @@
 """Shared serial-link resilience: telemetry timeout, watchdog stop, reconnect.
 
-Used by Yahboom and Feetech adapters. Pure stdlib — no hardware imports.
+Used by the serial base and Feetech adapters. Pure stdlib — no hardware imports.
 """
 
 from __future__ import annotations

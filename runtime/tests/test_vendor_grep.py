@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vendor_grep import scan_runtime
+from vendor_grep import scan_core, scan_runtime
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -56,6 +56,46 @@ class VendorGrepTest(unittest.TestCase):
             tests.mkdir()
             (tests / "planted.py").write_text(token + "\n", encoding="utf-8")
             self.assertEqual(scan_runtime(root), [])
+
+
+class CoreVendorGrepTest(unittest.TestCase):
+    def test_core_tree_keeps_names_inside_the_plugin(self) -> None:
+        self.assertEqual(scan_core(_ROOT), [])
+
+    def test_planted_name_outside_the_plugin_fails(self) -> None:
+        token = "omni" + "bot"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            planted = root / "ohho" / "planted.py"
+            planted.parent.mkdir(parents=True)
+            planted.write_text(f"name = {token!r}\n", encoding="utf-8")
+            (root / "ohho" / "robots" / "omnibot").mkdir(parents=True)
+            (root / "ohho" / "robots" / "omnibot" / "ok.py").write_text(
+                f"name = {token!r}\n", encoding="utf-8"
+            )
+            (root / "tests").mkdir()
+            (root / "tests" / "fixture.py").write_text(token + "\n", encoding="utf-8")
+            (root / "README.md").write_text(token + "\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                '[project.entry-points."ohho.robots"]\n'
+                'omnibot = "ohho.robots.omnibot:plugin"\n',
+                encoding="utf-8",
+            )
+            findings = scan_core(root)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("planted.py", findings[0])
+        self.assertIn(token, findings[0])
+
+    def test_project_comment_is_not_an_allowance(self) -> None:
+        token = "yah" + "boom"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                f"# {token} adapter\n", encoding="utf-8"
+            )
+            findings = scan_core(root)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("pyproject.toml", findings[0])
 
 
 if __name__ == "__main__":
