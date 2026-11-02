@@ -39,7 +39,9 @@ class ReleaseNotesTest(unittest.TestCase):
             "has been tagged",
         ):
             self.assertNotIn(needle, folded)
-        script = (ROOT / "scripts" / "print-release-commands.sh").read_text(encoding="utf-8")
+        script = (ROOT / "scripts" / "print-release-commands.sh").read_text(
+            encoding="utf-8"
+        )
         for line in script.splitlines():
             stripped = line.strip()
             self.assertFalse(stripped.startswith("git tag"))

@@ -18,7 +18,7 @@ nothing above it changes; it decides what actually reaches the motors:
   actions; flips, jumps, pounce, dance, handstand, walk-upright, ``free_*`` and
   cross-step are refused even if a config file lists them. Aerial robots use a
   separate allowlist (``hold``, ``land``, ``rtl``, ``offboard_velocity``,
-  ``offboard_position``). They do not reuse the Go2 set. Humanoid action
+  ``offboard_position``). They do not reuse the legged sport set. Humanoid action
   names are not on the built-in lists, so they are refused unless a profile
   names them, and they are never sport calls. ``move_joints`` stays refused.
 - **Tilt / fault guard.** ``|roll|`` or ``|pitch|`` over 0.6 rad, a non-zero
@@ -104,7 +104,8 @@ STATE_TIMEOUT_S = 0.5
 TILT_LIMIT_RAD = 0.6
 EULER_LIMIT_RAD = 0.3
 
-GO2_ACTIONS = frozenset(
+# Sport-mode names a profile may allowlist. The denylist still wins.
+SPORT_ACTIONS = frozenset(
     {
         "stand_up",
         "stand_down",
@@ -119,7 +120,7 @@ GO2_ACTIONS = frozenset(
 )
 BASE_ACTIONS = frozenset({"move", "stop_move"})
 
-# Aerial allowlist (OHH-288). Deliberately not GO2_ACTIONS: that set has no
+# Aerial allowlist (OHH-288). Deliberately not the legged sport set: that set has no
 # ``land``, and copying it would refuse a landing. ``arm`` / ``takeoff`` are
 # human-at-a-TTY actions and are absent here so a config file cannot turn
 # them into ordinary commands.
@@ -354,7 +355,7 @@ class SafetyProfile:
 
         allow = frozenset(normalize_action(str(a)) for a in self.allowlist)
         allowable = (
-            DRONE_ACTIONS if self.aerial else (GO2_ACTIONS | HUMANOID_ACTIONS)
+            DRONE_ACTIONS if self.aerial else (SPORT_ACTIONS | HUMANOID_ACTIONS)
         )
         for a in allow:
             if is_denied(a) or a not in allowable:
@@ -382,17 +383,6 @@ class SafetyProfile:
         object.__setattr__(self, "effort_limits", MappingProxyType(efforts))
 
 
-GO2_PROFILE = SafetyProfile(
-    max_vx=0.5,
-    max_vy=0.3,
-    max_wz=1.0,
-    max_accel_x=1.0,
-    max_accel_y=0.6,
-    max_accel_wz=2.0,
-    require_orientation=True,
-    allowlist=GO2_ACTIONS,
-)
-
 # M1 sim fence and caps. require_orientation stays off until drone-sim
 # publishes a stable attitude. The 0.6 rad tilt latch stays off: it is the
 # quadruped guard and trips in normal flight attitudes.
@@ -418,7 +408,6 @@ DRONE_PROFILE = SafetyProfile(
 # via register_baseline, so this table stays robot-agnostic.
 PROFILES: Mapping[str, SafetyProfile] = MappingProxyType(
     {
-        "unitree-go2": GO2_PROFILE,
         "px4-sitl": DRONE_PROFILE,
         "crazyflie-cf21": DRONE_PROFILE,
         "px4-x500": DRONE_PROFILE,
@@ -541,7 +530,7 @@ def load_safety_config(path: Union[str, Path]) -> SafetyConfig:
     Shape::
 
         {"hard_ceiling": {"max_lin": 2.0, "max_ang": 3.0},
-         "profiles": {"unitree-go2": {"max_vx": 0.8, "allowlist": ["move"]}}}
+         "profiles": {"example-robot": {"max_vx": 0.8, "allowlist": ["move"]}}}
     """
     p = Path(path)
     try:
@@ -1979,8 +1968,8 @@ __all__ = [
     "DRONE_PROFILE",
     "DRONE_TAKEOFF_ALT_M",
     "DRONE_TTY_ACTIONS",
-    "GO2_PROFILE",
     "HUMANOID_ACTIONS",
+    "SPORT_ACTIONS",
     "HARD_MAX_ANG",
     "HARD_MAX_LIN",
     "PROFILES",

@@ -223,41 +223,7 @@ class RobotSpec:
         return False if limits is None else limits.flight_ready
 
 
-# Poses the built-in quadruped adapter already forwards
-# (``ohho/adapters/unitree.py`` sport methods). ``euler`` and ``stop_move`` are
-# commands, not poses, so they are not listed. This is not a safety allowlist.
-_QUADRUPED_POSES = (
-    "stand_up",
-    "stand_down",
-    "balance_stand",
-    "recovery_stand",
-    "sit",
-    "rise_sit",
-    "damp",
-)
-
 _BUILTINS: dict[str, RobotSpec] = {
-    "unitree-go2": RobotSpec(
-        id="unitree-go2",
-        name="Unitree Go2",
-        category="legged",
-        capabilities=(
-            caps.BASE_DRIVE,
-            caps.BASE_HOLONOMIC,
-            caps.PERCEPTION_RGB,
-            caps.PERCEPTION_DEPTH,
-            caps.PERCEPTION_SCAN,
-            caps.LEGGED_POSE,
-        ),
-        adapter="unitree-dds",
-        dof_base=3,
-        dof_arm=0,
-        max_lin=1.5,
-        max_ang=2.0,
-        robot_class=RobotClass.QUADRUPED,
-        source=BUILTIN_SOURCE,
-        capability_params={caps.LEGGED_POSE: {"poses": list(_QUADRUPED_POSES)}},
-    ),
     "sim": RobotSpec(
         id="sim",
         name="Generic Sim Bot",

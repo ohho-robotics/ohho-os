@@ -3,12 +3,16 @@
 ``scan_runtime`` covers ``runtime/src/**/*.py`` and ``runtime/pyproject.toml``.
 ``runtime/tests/`` is not scanned. Markdown is not scanned.
 
-``scan_core`` covers ``ohho/**/*.py`` for the mobile-manipulator tokens
-``omnibot`` and ``yahboom``. Those names may appear only in
-``ohho/robots/omnibot/``. ``tests/`` and markdown are not scanned: tests name
-the robot and import the moved adapter, and public docs keep the product
-name. ``pyproject.toml`` may contain the ``ohho.robots`` entry-point
-assignment and no other occurrence.
+``scan_core`` covers ``ohho/**/*.py`` for vendor tokens. ``omnibot`` and
+``yahboom`` may appear only in ``ohho/robots/omnibot/``. ``unitree`` and
+``go2`` may appear only in ``ohho/robots/unitree/``. ``tests/`` and markdown
+are not scanned: tests name the robot and import the moved adapter, and
+public docs keep the product name.
+
+``pyproject.toml`` may contain the ``ohho.robots`` entry-point assignments.
+One further allowance: the optional-dependency extra ``unitree``
+(``pip install 'ohho-os[unitree]'``). Renaming that extra would change the
+published install contract. No other occurrence is allowed.
 """
 
 from __future__ import annotations
@@ -24,9 +28,17 @@ VENDOR_RE = re.compile(
 )
 
 # Substring match so identifiers such as a profile constant count.
-CORE_VENDOR_RE = re.compile(r"omnibot|yahboom", re.IGNORECASE)
-_PLUGIN_PARTS = ("ohho", "robots", "omnibot")
-_ENTRY_ALLOW = re.compile(r'^omnibot\s*=\s*"ohho\.robots\.omnibot:plugin"\s*(?:#.*)?$')
+_OMNI_RE = re.compile(r"omnibot|yahboom", re.IGNORECASE)
+_UNITREE_RE = re.compile(r"unitree|go2", re.IGNORECASE)
+_OMNI_PARTS = ("ohho", "robots", "omnibot")
+_UNITREE_PARTS = ("ohho", "robots", "unitree")
+_OMNI_ENTRY = re.compile(r'^omnibot\s*=\s*"ohho\.robots\.omnibot:plugin"\s*(?:#.*)?$')
+_UNITREE_ENTRY = re.compile(
+    r'^unitree\s*=\s*"ohho\.robots\.unitree:plugin"\s*(?:#.*)?$'
+)
+# Published install extra. The key is the allowance; the comment may not add
+# another vendor token beyond that line.
+_UNITREE_EXTRA = re.compile(r'^unitree\s*=\s*\[\s*"cyclonedds>=0\.10"\s*\]\s*(?:#.*)?$')
 
 
 def scan_runtime(root: Path) -> list[str]:
@@ -57,28 +69,28 @@ def _scan_file(path: Path) -> list[str]:
     return findings
 
 
-def _in_plugin(path: Path) -> bool:
+def _in_package(path: Path, package: tuple[str, ...]) -> bool:
     parts = path.parts
-    for index in range(len(parts) - len(_PLUGIN_PARTS) + 1):
-        if parts[index : index + len(_PLUGIN_PARTS)] == _PLUGIN_PARTS:
+    width = len(package)
+    for index in range(len(parts) - width + 1):
+        if parts[index : index + width] == package:
             return True
     return False
 
 
 def scan_core(root: Path) -> list[str]:
-    """Return ``omnibot`` / ``yahboom`` findings outside the plugin package.
+    """Return vendor-name findings outside each plugin package.
 
-    ``root`` is a repository root. ``tests/``, markdown, and
-    ``ohho/robots/omnibot/`` are not findings. The ``ohho.robots`` entry-point
-    line in ``pyproject.toml`` is the one allowed occurrence outside the
-    package.
+    ``root`` is a repository root. ``tests/`` and markdown are not findings.
+    ``omnibot`` / ``yahboom`` may appear in ``ohho/robots/omnibot/``.
+    ``unitree`` / ``go2`` may appear in ``ohho/robots/unitree/``. The
+    ``ohho.robots`` entry-point lines in ``pyproject.toml`` are allowed, as is
+    the ``unitree`` optional-dependency extra.
     """
     findings: list[str] = []
     package = root / "ohho"
     if package.is_dir():
         for path in sorted(package.rglob("*.py")):
-            if _in_plugin(path):
-                continue
             findings.extend(_scan_core_file(path))
     project = root / "pyproject.toml"
     if project.is_file():
@@ -86,13 +98,22 @@ def scan_core(root: Path) -> list[str]:
     return findings
 
 
-def _scan_core_file(path: Path) -> list[str]:
+def _scan_lines(path: Path, text: str, pattern: re.Pattern[str]) -> list[str]:
     findings: list[str] = []
-    text = path.read_text(encoding="utf-8")
     for lineno, line in enumerate(text.splitlines(), start=1):
-        match = CORE_VENDOR_RE.search(line)
+        match = pattern.search(line)
         if match:
             findings.append(f"{path}:{lineno}: vendor name {match.group(0)!r}")
+    return findings
+
+
+def _scan_core_file(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    findings: list[str] = []
+    if not _in_package(path, _OMNI_PARTS):
+        findings.extend(_scan_lines(path, text, _OMNI_RE))
+    if not _in_package(path, _UNITREE_PARTS):
+        findings.extend(_scan_lines(path, text, _UNITREE_RE))
     return findings
 
 
@@ -100,9 +121,14 @@ def _scan_project(path: Path) -> list[str]:
     findings: list[str] = []
     text = path.read_text(encoding="utf-8")
     for lineno, line in enumerate(text.splitlines(), start=1):
-        if _ENTRY_ALLOW.match(line.strip()):
+        stripped = line.strip()
+        if not _OMNI_ENTRY.match(stripped):
+            match = _OMNI_RE.search(line)
+            if match:
+                findings.append(f"{path}:{lineno}: vendor name {match.group(0)!r}")
+        if _UNITREE_ENTRY.match(stripped) or _UNITREE_EXTRA.match(stripped):
             continue
-        match = CORE_VENDOR_RE.search(line)
+        match = _UNITREE_RE.search(line)
         if match:
             findings.append(f"{path}:{lineno}: vendor name {match.group(0)!r}")
     return findings

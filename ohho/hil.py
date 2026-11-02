@@ -25,7 +25,6 @@ ENV_HIL = "OHHO_HIL"
 # Device variables for a plugin's bench cases are filled from that plugin.
 ENV_BASE: str = ""
 ENV_ARM: str = ""
-ENV_GO2 = "OHHO_GO2_IFACE"
 ENV_BAG = "OHHO_HIL_BAG"
 ENV_OPERATOR = "OHHO_HIL_OPERATOR"
 
@@ -35,9 +34,6 @@ HIL_BASE_VY = 0.0
 HIL_BASE_W = 0.0
 HIL_GRIPPER_OPEN = 0.2
 HIL_GRIPPER_SHUT = 0.0
-HIL_GO2_VX = 0.0
-HIL_GO2_VY = 0.0
-HIL_GO2_W = 0.0
 
 PREFLIGHT_CHECKS: tuple[str, ...] = (
     "Batteries",
@@ -66,18 +62,13 @@ class HilCase:
     required_env: tuple[str, ...]
 
 
-_UNITREE_CASE = HilCase(
-    "unitree_go2",
-    "Unitree Go2 drive and read",
-    "unitree DDS",
-    "TestHilUnitreeGo2",
-    (ENV_GO2,),
-)
-
-# Plugin benches are appended in :func:`_apply_benches` before the Go2 case.
+# Plugin benches are installed in :func:`_apply_benches`.
 CASES: tuple[HilCase, ...] = ()
 _REPORT_FIELDS: tuple[tuple[str, str], ...] = ()
 _MOCKS: dict[str, Callable[[], str]] = {}
+_DEVICE_FIELDS: list[tuple[str, str]] = []
+_CLI_ENVS: list[str] = []
+_PULSE_NOTES: list[str] = []
 
 
 @dataclass
@@ -103,7 +94,7 @@ class HilReport:
     hil_env: str
     base_port: str
     arm_port: str
-    go2_iface: str
+    devices: dict[str, str]
     bag: str
     preflight: list[tuple[str, str, str]]
     cases: list[HilCaseResult]
@@ -165,9 +156,12 @@ def hardware_refused_reason(
         case for case in CASES if hardware_skip_reason(case.required_env, env) is None
     ]
     if not ready:
+        names = ", ".join(
+            [ENV_BASE, ENV_ARM, *(env_name for _attr, env_name in _DEVICE_FIELDS)]
+        )
         return (
             "refusing hardware: set at least one explicit device variable "
-            f"({ENV_BASE}, {ENV_ARM}, {ENV_GO2}); there is no default port"
+            f"({names}); there is no default port"
         )
     if not tty:
         return (
@@ -175,6 +169,20 @@ def hardware_refused_reason(
             "is present (ssh -t). The harness did not open a device"
         )
     return None
+
+
+def _pulse_text() -> str:
+    """Bench pulse sentence, including notes contributed by plugins."""
+    pulse = f"{HIL_BASE_VX} m/s on the base, gripper {HIL_GRIPPER_OPEN} rad"
+    if _PULSE_NOTES:
+        pulse = f"{pulse}, {', '.join(_PULSE_NOTES)}"
+    return pulse
+
+
+def _hardware_env_text() -> str:
+    """Device assignments shown in the hardware command example."""
+    parts = [f"{ENV_BASE}=<base>", f"{ENV_ARM}=<arm>", *_CLI_ENVS]
+    return " ".join(parts)
 
 
 def dry_run_text() -> str:
@@ -194,14 +202,13 @@ def dry_run_text() -> str:
         "\n"
         "These tests construct adapters directly. They are not wrapped in\n"
         "SafetyGate. Keep a physical e-stop in hand. The pulse is "
-        f"{HIL_BASE_VX} m/s on the base, gripper {HIL_GRIPPER_OPEN} rad, "
-        "and zero velocity on the Go2.\n"
+        f"{_pulse_text()}.\n"
         "\n"
         "Mock (safe anywhere, including CI):\n"
         "  ohho hil --mock\n"
         "\n"
         "Hardware, from an interactive terminal, after the checklist:\n"
-        f"  {ENV_HIL}=1 {ENV_BASE}=<base> {ENV_ARM}=<arm> {ENV_GO2}=<iface> \\\n"
+        f"  {ENV_HIL}=1 {_hardware_env_text()} \\\n"
         "    ohho hil --hardware --preflight-ok\n"
         "\n"
         "That writes docs/hil-results.md. Omit a variable to skip that device.\n"
@@ -221,7 +228,7 @@ def blank_report() -> HilReport:
         hil_env="",
         base_port="",
         arm_port="",
-        go2_iface="",
+        devices={attr: "" for attr, _env_name in _DEVICE_FIELDS},
         bag="",
         preflight=[(name, "", "") for name in PREFLIGHT_CHECKS],
         cases=[
@@ -257,10 +264,13 @@ def render_report(report: HilReport) -> str:
         f"| OHHO_HIL | {_cell(report.hil_env)} |",
     ]
     for label, attr in _REPORT_FIELDS:
-        lines.append(f"| {label} | {_cell(getattr(report, attr))} |")
+        if attr in report.devices:
+            value = report.devices[attr]
+        else:
+            value = getattr(report, attr, "")
+        lines.append(f"| {label} | {_cell(value)} |")
     lines.extend(
         [
-            f"| Go2 interface | {_cell(report.go2_iface)} |",
             f"| Bag (2-min MCAP) | {_cell(report.bag)} |",
             "",
             "## Pre-flight",
@@ -362,46 +372,6 @@ def run_mock_suite() -> list[HilCaseResult]:
             HilCaseResult(case.case_id, case.title, case.adapter, "PASS", detail)
         )
     return results
-
-
-def mock_unitree_go2() -> str:
-    """Fake DDS version of ``TestHilUnitreeGo2``. Sends zero velocity only."""
-    from .adapters.unitree import UnitreeDdsTransport
-    from .registry import get_spec
-    from .schema import Velocity
-
-    _assert_go2_pulse()
-    state = {
-        "position": [1.25, 0.0, 0.0],
-        "velocity": [0.0, 0.0, 0.0],
-        "yaw_speed": 0.0,
-        "imu_rpy": [0.0, 0.0, 0.3],
-        "battery": 0.8,
-        "error_code": 0,
-    }
-    client = _RecordingSport()
-    transport = UnitreeDdsTransport(
-        get_spec("unitree-go2"),
-        "mock0",
-        state_factory=lambda: lambda: state,
-    )
-    if transport._state_factory is None:
-        raise AssertionError("Go2 mock must inject state_factory")
-    transport.connect()
-    try:
-        transport._on_state(state)
-        reading = transport.read()
-        if reading.odom is None or abs(reading.odom.x - 1.25) > 1e-6:
-            raise AssertionError("Go2 odom did not come from the fake state")
-        transport._client = client
-        transport.send_velocity(Velocity(HIL_GO2_VX, HIL_GO2_VY, HIL_GO2_W))
-        if client.calls != [("Move", 0.0, 0.0, 0.0)]:
-            raise AssertionError(f"Go2 command was not zero velocity: {client.calls}")
-    finally:
-        transport.disconnect()
-    if ("StopMove",) not in client.calls:
-        raise AssertionError("Go2 disconnect did not call StopMove")
-    return "odom.x=1.250; Move(0, 0, 0); StopMove on disconnect"
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -577,7 +547,7 @@ def _filled_report(
             (name, "not run", "mock transports; checklist not performed")
             for name in PREFLIGHT_CHECKS
         ]
-        base_port = arm_port = go2_iface = "not used"
+        base_port = arm_port = "not used"
         hil_env = "ignored"
         bag = "not recorded"
     else:
@@ -591,9 +561,16 @@ def _filled_report(
         ]
         base_port = env.get(ENV_BASE, "").strip()
         arm_port = env.get(ENV_ARM, "").strip()
-        go2_iface = env.get(ENV_GO2, "").strip()
         hil_env = "1" if env.get(ENV_HIL, "") == "1" else "unset"
         bag = env.get(ENV_BAG, "").strip()
+    devices = {
+        attr: (
+            "not used"
+            if mode == "mock"
+            else env.get(env_name, "").strip()
+        )
+        for attr, env_name in _DEVICE_FIELDS
+    }
     notes = (getattr(args, "notes", "") or "").strip()
     if not notes:
         if mode == "mock":
@@ -615,7 +592,7 @@ def _filled_report(
         hil_env=hil_env,
         base_port=base_port,
         arm_port=arm_port,
-        go2_iface=go2_iface,
+        devices=devices,
         bag=bag,
         preflight=preflight,
         cases=results,
@@ -744,11 +721,6 @@ def _assert_gripper_pulse() -> None:
         raise AssertionError("gripper pulse must stay 0.2 rad then 0")
 
 
-def _assert_go2_pulse() -> None:
-    if (HIL_GO2_VX, HIL_GO2_VY, HIL_GO2_W) != (0.0, 0.0, 0.0):
-        raise AssertionError("Go2 HIL command must stay zero velocity")
-
-
 class _FakeSerial:
     """In-memory serial port. ``read`` returns nothing so the RX thread idles."""
 
@@ -796,31 +768,22 @@ class _FakeFeetechBus:
             self.torque.update(values)
 
 
-class _RecordingSport:
-    """Records SportClient calls. Implements only Move and StopMove."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple] = []
-
-    def Move(self, vx: float, vy: float, vyaw: float) -> None:
-        self.calls.append(("Move", vx, vy, vyaw))
-
-    def StopMove(self) -> None:
-        self.calls.append(("StopMove",))
-
-
 def _apply_benches() -> None:
-    """Load bench cases from robot plugins, then append the Go2 case.
+    """Load bench cases from robot plugins.
 
     Device-variable names and fake-transport checks stay in the plugin that
     owns them. Discovery does not call this.
     """
     global ENV_BASE, ENV_ARM, CASES, _MOCKS, _REPORT_FIELDS
+    global _DEVICE_FIELDS, _CLI_ENVS, _PULSE_NOTES
     from ohho.plugins import loaded_plugins
 
     cases: list[HilCase] = []
     mocks: dict[str, Callable[[], str]] = {}
     fields: list[tuple[str, str]] = []
+    devices: list[tuple[str, str]] = []
+    cli_envs: list[str] = []
+    notes: list[str] = []
     exports: dict[str, object] = {}
     for info in loaded_plugins():
         if info.error is not None or info.plugin is None:
@@ -832,6 +795,14 @@ def _apply_benches() -> None:
         cases.extend(data["cases"])
         mocks.update(data["mocks"])
         fields.extend(data["report_fields"])
+        for attr, env_name in data.get("device_fields") or ():
+            devices.append((str(attr), str(env_name)))
+        cli_env = data.get("cli_env")
+        if isinstance(cli_env, str) and cli_env.strip():
+            cli_envs.append(cli_env.strip())
+        note = data.get("pulse_note")
+        if isinstance(note, str) and note.strip():
+            notes.append(note.strip())
         exports.update(data["exports"])
     base = exports.get("ENV_BASE")
     arm = exports.get("ENV_ARM")
@@ -842,12 +813,15 @@ def _apply_benches() -> None:
     ENV_BASE = base
     ENV_ARM = arm
     for name, value in exports.items():
-        if name.startswith("mock_") and callable(value):
-            globals()[name] = value
-    CASES = tuple(cases) + (_UNITREE_CASE,)
+        if name in {"ENV_BASE", "ENV_ARM"}:
+            continue
+        globals()[name] = value
+    CASES = tuple(cases)
     _MOCKS = dict(mocks)
-    _MOCKS[_UNITREE_CASE.case_id] = mock_unitree_go2
     _REPORT_FIELDS = tuple(fields)
+    _DEVICE_FIELDS = devices
+    _CLI_ENVS = cli_envs
+    _PULSE_NOTES = notes
 
 
 _apply_benches()

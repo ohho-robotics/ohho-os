@@ -7,3 +7,4 @@ token	booster
 token	t2
 sdk	booster_robotics_sdk
 sdk	booster_robotics_sdk_python
+sdk	unitree_sdk2py

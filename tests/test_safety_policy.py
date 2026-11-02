@@ -17,12 +17,12 @@ from pathlib import Path
 
 from ohho.plugins import loaded_plugins
 from ohho.robots.omnibot.policy import OMNIBOT_PROFILE
+from ohho.robots.unitree.policy import GO2_PROFILE
 from ohho.registry import RobotSpec, get_spec
 from ohho.robot_spec import RobotClass
 from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
-    GO2_PROFILE,
     AuditLog,
     SafetyGate,
     SafetyProfile,
@@ -295,7 +295,7 @@ class TestPluginCaps(unittest.TestCase):
         spec = get_spec("unitree-go2")
         loose = LeggedPolicy(dataclasses.replace(GO2_PROFILE, max_vx=0.9))
         inner = _Transport()
-        with _installed(_Plugin(loose)):
+        with _installed(_Plugin(loose), name="unitree"):
             with self.assertRaises(SafetyPolicyError):
                 SafetyGate(inner, spec, auto_tick=False, environ={})
         self.assertEqual(inner.calls, [])
@@ -304,7 +304,7 @@ class TestPluginCaps(unittest.TestCase):
         spec = get_spec("unitree-go2")
         tight = LeggedPolicy(dataclasses.replace(GO2_PROFILE, max_vx=0.25))
         tight.name = "legged-tight"
-        with _installed(_Plugin(tight)):
+        with _installed(_Plugin(tight), name="unitree"):
             gate = SafetyGate(_Transport(), spec, auto_tick=False, environ={})
         self.assertEqual(gate.profile.max_vx, 0.25)
         self.assertEqual(gate.profile.max_vy, GO2_PROFILE.max_vy)
@@ -319,7 +319,7 @@ class TestPluginCaps(unittest.TestCase):
     def test_explicit_profile_is_not_replaced_by_a_tighter_plugin(self) -> None:
         spec = get_spec("unitree-go2")
         tight = LeggedPolicy(dataclasses.replace(GO2_PROFILE, max_vx=0.25))
-        with _installed(_Plugin(tight)):
+        with _installed(_Plugin(tight), name="unitree"):
             gate = SafetyGate(
                 _Transport(),
                 spec,
@@ -341,7 +341,7 @@ class TestPluginCaps(unittest.TestCase):
         from ohho.safety import load_safety_config
 
         cfg = load_safety_config(cfg_path)
-        with _installed(_Plugin(same)):
+        with _installed(_Plugin(same), name="unitree"):
             gate = SafetyGate(
                 _Transport(), spec, config=cfg, auto_tick=False, environ={}
             )
@@ -359,7 +359,7 @@ class TestPluginCaps(unittest.TestCase):
         from ohho.safety import load_safety_config
 
         cfg = load_safety_config(cfg_path)
-        with _installed(_Plugin(tight)):
+        with _installed(_Plugin(tight), name="unitree"):
             gate = SafetyGate(
                 _Transport(), spec, config=cfg, auto_tick=False, environ={}
             )

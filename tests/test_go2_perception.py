@@ -20,7 +20,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from ohho.adapters.unitree import UnitreeDdsTransport
+from ohho.robots.unitree.dds import UnitreeDdsTransport
 from ohho.cli import main
 from ohho.memory import SpatialMemory, default_memory_path
 from ohho.perception import (

@@ -872,7 +872,7 @@ def serve_sim(
     Parameters:
         backend: ``sim``, ``ros2``, or ``robot``. ``isaac`` and ``mujoco`` raise
             ``SimServeUnavailable`` with the text ``not-implemented``.
-        robot: robot spec id from ``ohho list`` (e.g. ``unitree-go2``, ``legged-base``).
+        robot: robot spec id from ``ohho list`` (e.g. ``legged-base``).
         transport: transport URI for the ``robot`` backend (e.g. ``dds://lo?domain=1``).
         host: WebSocket server host.
         port: WebSocket server port. Defaults to 8790 so it does not clash
