@@ -114,7 +114,7 @@ class TestRobotSpecV2(unittest.TestCase):
         self.assertEqual(spec.category, "legged")
         self.assertEqual(spec.robot_class, RobotClass.QUADRUPED)
         self.assertEqual(robot_class_for_category(spec.category), spec.robot_class)
-        self.assertEqual(spec.source, "builtin")
+        self.assertEqual(spec.source, "unitree")
         self.assertEqual(spec.ci_sim, CiSim(enabled=False, scenario=""))
         self.assertEqual((spec.max_lin, spec.max_ang), (1.5, 2.0))
         self.assertEqual(spec.joint_groups, {})

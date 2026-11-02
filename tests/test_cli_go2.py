@@ -11,7 +11,7 @@ from unittest import mock
 from ohho import cli
 from ohho.adapters import resolve_transport
 from ohho.adapters.errors import AdapterUnavailable
-from ohho.adapters.unitree import (
+from ohho.robots.unitree.dds import (
     UnitreeDdsTransport,
     dds_uri_is_hardware,
     dds_uri_is_sim_only,

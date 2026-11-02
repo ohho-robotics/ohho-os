@@ -17,7 +17,7 @@ from ohho import capabilities as caps
 from ohho.adapters.composite import CompositeTransport
 from ohho.adapters.feetech import FeetechTransport
 from ohho.adapters.ros2 import Ros2Transport
-from ohho.adapters.unitree import UnitreeDdsTransport
+from ohho.robots.unitree.dds import UnitreeDdsTransport
 from ohho.robots.omnibot.yahboom import YahboomTransport
 from ohho.plugins import loaded_plugins
 from ohho.registry import get_spec

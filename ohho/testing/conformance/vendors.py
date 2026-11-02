@@ -110,7 +110,6 @@ VENDOR_SDK_ROOTS = frozenset(
         "serial",
         "lerobot",
         "cyclonedds",
-        "unitree_sdk2py",
         "rclpy",
         "pymavlink",
     }

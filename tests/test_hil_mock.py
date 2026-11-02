@@ -164,7 +164,7 @@ class TestHilOptIn(unittest.TestCase):
             with (
                 patch("ohho.robots.omnibot.yahboom.YahboomTransport.__init__", boom),
                 patch("ohho.adapters.feetech.FeetechTransport.__init__", boom),
-                patch("ohho.adapters.unitree.UnitreeDdsTransport.__init__", boom),
+                patch("ohho.robots.unitree.dds.UnitreeDdsTransport.__init__", boom),
             ):
                 suite = unittest.defaultTestLoader.loadTestsFromModule(hw)
                 result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
@@ -201,7 +201,7 @@ class TestHilMockScenarios(unittest.TestCase):
 
     def test_suite_ignores_device_env(self):
         from ohho.adapters.feetech import FeetechTransport
-        from ohho.adapters.unitree import UnitreeDdsTransport
+        from ohho.robots.unitree.dds import UnitreeDdsTransport
         from ohho.robots.omnibot.yahboom import YahboomTransport
 
         opened: list[tuple[str, str]] = []

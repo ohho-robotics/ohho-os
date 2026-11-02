@@ -49,11 +49,11 @@
 | Robot Abstraction Layer (`Robot`) | ✅ working |
 | Capability model + registry | ✅ working (OmniBot, Unitree Go2, generic sim) |
 | RobotSpec v2 | ✅ **OHH-309** — additive `robot_class`, joint groups, per-class limits, assets, `ci_sim`, `source`, `capability_params`. Safety caps unchanged. ADR `docs/architecture/robot-plugins.md` is proposed, awaiting Varun's review. |
-| Robot plugins (`ohho.robots`) | ✅ **OHH-310** — `RobotPlugin` in `ohho/plugins.py`. Built-ins (sim, unitree-go2, aerial) and the mobile manipulator (`ohho.robots.omnibot`, **OHH-318**) load through the `ohho.robots` entry point. A source checkout without a reinstall falls back to every shipped entry in `pyproject.toml`. `ohho list --plugins` shows each plugin, its specs and any load error. **OHH-313** reads `safety_policy(spec)` when the gate loads (discovery still does not call it). |
+| Robot plugins (`ohho.robots`) | ✅ **OHH-310** — `RobotPlugin` in `ohho/plugins.py`. Built-ins (sim, aerial), the mobile manipulator (`ohho.robots.omnibot`, **OHH-318**), and the quadruped (`ohho.robots.unitree`, **OHH-319**) load through the `ohho.robots` entry point. A source checkout without a reinstall falls back to every shipped entry in `pyproject.toml`. `ohho list --plugins` shows each plugin, its specs and any load error. **OHH-313** reads `safety_policy(spec)` when the gate loads (discovery still does not call it). |
 | Humanoid plugin package | ✅ **OHH-330 / OHH-331** — `plugins/ohho-booster` is a separate distribution. Installing it registers `booster-t2` (`robot_class: humanoid`, 31 joints, `sim_backend=humanoid-mujoco`). No vendor SDK import at load. The description archive and `t2_walk.pt` are fetched at pinned commits with sha256 and are not vendored. `ohho sim --robot booster-t2` is headless MuJoCo. The checkpoint's training command range is not an Ohho cap. No `booster://` transport in this package. |
 | Transport + sim registries | ✅ **OHH-311** — `resolve_transport` asks `RobotPlugin.transports()` first, then the existing scheme dict (entries unchanged). `sim://` and auto use `RobotSpec.sim_backend` when set (`kinematic` and `humanoid-mujoco` are the built-in backends); an empty name keeps today's simulator. Unknown schemes list each plugin's schemes. `dds://` stays Unitree. |
 | Conformance kit | ✅ **OHH-315** — `python -m ohho.testing.conformance --robot <id>` runs the class scenario on the plugin sim backend only. Quadruped runs `quadruped_walk` on the kinematic backend (stand before drive, lie/sit block motion, euler clamped to the safety limit). Aerial and humanoid skip with a reason until a sim backend is registered. Scenarios that open `SafetyGate` exercise the per-class `SafetyPolicy` (watchdog, e-stop, joint clamp). Vendor-name allowlist: `ohho/testing/conformance/vendor_allowlist.txt`. |
-| Sim CI matrix | ✅ **OHH-316** — `ohho list --json --ci-sim` emits one row per spec with `ci_sim.enabled` (robot id, class, plugin, scenario). `.github/workflows/sim-matrix.yml` runs the class conformance scenario once per row on CPU, sim backends only, and writes that row's runtime to the job summary. Optional plugin `asset_source()` pins `owner/name` plus a commit; the workflow caches it with `actions/cache` and does not vendor meshes. `sim` (builtin) and the mobile manipulator (`ohho.robots.omnibot`) opt in. The quadruped built-in stays out of the matrix. |
+| Sim CI matrix | ✅ **OHH-316** — `ohho list --json --ci-sim` emits one row per spec with `ci_sim.enabled` (robot id, class, plugin, scenario). `.github/workflows/sim-matrix.yml` runs the class conformance scenario once per row on CPU, sim backends only, and writes that row's runtime to the job summary. Optional plugin `asset_source()` pins `owner/name` plus a commit; the workflow caches it with `actions/cache` and does not vendor meshes. `sim` (builtin) and the mobile manipulator (`ohho.robots.omnibot`) opt in. The quadruped plugin (`ohho.robots.unitree`) stays out of the matrix. |
 | Runtime port + **native** backend | ✅ working (threaded scheduler, pub/sub, timers, params) |
 | **ROS 2** runtime backend | ✅ **M4 complete** — `Ros2Runtime` (rclpy node: timers, pub/sub via topics, params via node params) + `Ros2Transport` (bridges /cmd_vel, /odom, /arm/joint_states). `get_runtime("auto")` prefers ros2 when rclpy present. `ros2://` scheme registered. Fully testable with `FakeRos2Node` (no ROS 2 needed). |
 | Simulator adapter | ✅ working (holonomic physics + joint servoing) |
@@ -177,7 +177,6 @@ sdk/
 │   │   ├── feetech.py         # FeetechTransport — feetech:// (SO-101 arm); lerobot lazy; rad↔tick; torque; reader thread
 │   │   ├── composite.py       # CompositeTransport — merges base + arm into one Transport (mobile-manipulators)
 │   │   ├── ros2.py            # Ros2Transport — ros2:// (bridges /cmd_vel, /odom, /joint_states); msg_factory injectable
-│   │   ├── unitree.py         # UnitreeDdsTransport — dds:// (Go2); SDK lazy; state polling thread; state_factory injectable
 │   │   └── humanoid_mujoco.py # HumanoidMujocoTransport — any plugin MJCF, policy, then PD; mujoco imported on connect
 │   ├── humanoid.py       # generic humanoid modes and Robot methods (posture, gaze, hands, joints)
 │   ├── humanoid_telemetry.py  # custom["humanoid"] block (ohho.telemetry.v1): validator, JSON, odom shadow
@@ -220,9 +219,10 @@ sdk/
 │   ├── cli.py            # argparse: doctor/verify/list(--plugins, --json --ci-sim)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/selftest/hil/mcp/rules; main()
 │   ├── robots/
 │   │   ├── __init__.py   # package for the built-in plugin and example manifests
-│   │   ├── builtin.py    # built-in plugin (sim, unitree-go2, aerial); vendor SDKs stay lazy
+│   │   ├── builtin.py    # built-in plugin (sim, aerial); vendor SDKs stay lazy
 │   │   ├── example.json  # example manifest (nested dof/limits) for load_manifest()
-│   │   └── omnibot/      # OHH-318: spec, serial:// composite, ground+arm policy, descriptor, doctor
+│   │   ├── omnibot/      # OHH-318: spec, serial:// composite, ground+arm policy, descriptor, doctor
+│   │   └── unitree/      # OHH-319: quadruped spec, dds://, MuJoCo backend, legged policy, descriptor, doctor
 │   └── testing/
 │       ├── __init__.py
 │       └── conformance/  # class scenarios + vendor-name grep (OHH-315); SafetyGate checks use the per-class SafetyPolicy
@@ -292,7 +292,7 @@ max_ang, joint_names(tuple)`, `.has(cap)`, plus `robot_class`, `joint_groups`,
 `limits`, `assets`, `ci_sim`, `source`, `capability_params`, `sim_backend`
 (empty keeps today's `sim://`). `category` still
 loads; it maps onto `robot_class`. Shipped specs: `omnibot` (mobile manipulator
-plugin, 6-DOF arm, max_lin 0.2), `unitree-go2` (quadruped, max_lin 1.5), `sim`
+plugin, 6-DOF arm, max_lin 0.2), `unitree-go2` (quadruped plugin, max_lin 1.5, `dds://`), `sim`
 (mobile base, generic holonomic). Safety caps are unchanged. ADR:
 `docs/architecture/robot-plugins.md`.
 
@@ -414,7 +414,7 @@ robot-agnosticism. Pair: **OmniBot** (wheeled, USB serial) + **Unitree Go2**
   link + arm link into one `Transport`: `send_velocity`→base,
   `send_joint_command`→arm, `read`→merged telemetry, estop→both. This is what
   lets a single `Robot` drive the full OmniBot mobile-manipulator.
-- `ohho/adapters/unitree.py` — `UnitreeDdsTransport(BaseTransport)` over
+- `ohho/robots/unitree/dds.py` — `UnitreeDdsTransport(BaseTransport)` over
   `unitree_sdk2py`, `dds://` scheme. **DDS state subscription wired**: polling
   reader thread calls `SportClient.GetState(SportModeState)` → `_on_state` →
   `Telemetry` at 20 Hz. `state_factory` injectable for mock tests. Maps
