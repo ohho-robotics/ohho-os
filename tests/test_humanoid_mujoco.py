@@ -22,11 +22,14 @@ from ohho.humanoid_sim import (
     HumanoidSimConfig,
     ObservationTerm,
     PolicyLayout,
+    append_observation_frame,
     bind_sim_config,
     build_observation,
     clear_sim_config,
+    clip_vector,
     default_observation_terms,
     fall_state_from_tilt,
+    flatten_history,
     observation_size,
     policy_stride,
     projected_gravity,
@@ -207,6 +210,20 @@ class TestObservationAndTilt(unittest.TestCase):
         self.assertIs(fall_state_from_tilt(0.0, 1.0), FallState.FALLEN)
         self.assertIs(fall_state_from_tilt(-1.2, 0.2), FallState.FALLEN)
 
+    def test_history_stack_and_clip(self):
+        repeated = append_observation_frame(None, (1.0, -2.0), length=3, init="repeat")
+        self.assertEqual(repeated, ((1.0, -2.0), (1.0, -2.0), (1.0, -2.0)))
+        zeros = append_observation_frame(None, (1.0, -2.0), length=3, init="zeros")
+        self.assertEqual(zeros, ((0.0, 0.0), (0.0, 0.0), (1.0, -2.0)))
+        pushed = append_observation_frame(zeros, (3.0, 4.0), length=3, init="zeros")
+        self.assertEqual(pushed, ((0.0, 0.0), (1.0, -2.0), (3.0, 4.0)))
+        self.assertEqual(flatten_history(pushed), (0.0, 0.0, 1.0, -2.0, 3.0, 4.0))
+        self.assertEqual(clip_vector((12.0, -0.2, 4.0), 5.0), (5.0, -0.2, 4.0))
+        with self.assertRaises(ValueError):
+            PolicyLayout(joint_names=("a",), history_length=0)
+        with self.assertRaises(ValueError):
+            PolicyLayout(joint_names=(), action_scale=(1.0,))
+
     def test_gravity_and_quaternion_round_trip(self):
         self.assertEqual(
             projected_gravity([1, 0, 0, 0, 1, 0, 0, 0, 1]), (0.0, 0.0, -1.0)
@@ -288,6 +305,28 @@ class TestPdModesAndTelemetry(unittest.TestCase):
         self.assertAlmostEqual(hinge.timestep, 0.001)
         self.assertAlmostEqual(dummy.timestep, 0.002)
         self.assertNotEqual(hinge.timestep, dummy.timestep)
+
+    def test_timestep_and_base_pose_override(self):
+        spec = _spec(DUMMY, DUMMY_JOINTS, DUMMY_GROUPS, robot_id="spawn")
+        config = HumanoidSimConfig(
+            mjcf=str(DUMMY),
+            joint_names=DUMMY_JOINTS,
+            kp=10.0,
+            kd=0.0,
+            default_q=0.2,
+            timestep=0.004,
+            base_pos=(0.1, -0.2, 1.4),
+        )
+        transport = HumanoidMujocoTransport(spec, config=config)
+        transport.connect()
+        self.assertAlmostEqual(transport.timestep, 0.004)
+        x, y, z = transport.base_position
+        self.assertAlmostEqual(x, 0.1, places=5)
+        self.assertAlmostEqual(y, -0.2, places=5)
+        self.assertAlmostEqual(z, 1.4, places=5)
+        positions = {joint.name: joint.position for joint in transport.read().joints}
+        for name in DUMMY_JOINTS:
+            self.assertAlmostEqual(positions[name], 0.2, places=5)
 
     def test_pd_matches_the_formula_and_runs_every_model_step(self):
         transport = _transport(
@@ -559,6 +598,85 @@ class _PolicyCases:
         self.assertEqual(dummy.policy_calls, calls)
         self.assertAlmostEqual(dummy.q_target[0], 0.1, places=5)
         self.assertAlmostEqual(dummy.q_target[1], -0.2, places=5)
+
+    def test_history_scale_and_clip(self):
+        path = Path(self.id().replace(".", "_") + "_hist.pt")
+        if self.kind == "onnx":
+            path = path.with_suffix(".onnx")
+        self.addCleanup(path.unlink, missing_ok=True)
+        frame = observation_size(1, _scaled_terms())
+        self.write_policy(path, frame * 2, 1, 1.0)
+        transport = _transport(
+            HINGE,
+            ("hinge",),
+            {"link": ("hinge",)},
+            kp=10.0,
+            kd=0.0,
+            default_q=0.0,
+            policy=PolicyLayout(
+                joint_names=("hinge",),
+                terms=_scaled_terms(),
+                checkpoint=str(path),
+                rate_hz=50,
+                action_scale=(2.0,),
+                history_length=2,
+                history_init="repeat",
+                clip_action=0.1,
+            ),
+            robot_id="scaled",
+        )
+        transport.connect()
+        transport.send_humanoid("walk_mode")
+        transport.send_velocity(Velocity(0.2, 0.0, 0.0))
+        for _ in range(20):
+            transport.step()
+        self.assertEqual(transport.policy_calls, 1)
+        self.assertAlmostEqual(transport.last_action[0], 0.1, places=4)
+        self.assertAlmostEqual(transport.q_target[0], 0.2, places=4)
+
+    def test_extra_values_are_part_of_the_frame(self):
+        path = Path(self.id().replace(".", "_") + "_extra.pt")
+        if self.kind == "onnx":
+            path = path.with_suffix(".onnx")
+        self.addCleanup(path.unlink, missing_ok=True)
+        frame = observation_size(1, _scaled_terms()) + 1
+        self.write_policy(path, frame, 1, 1.0)
+        seen: list[object] = []
+
+        class _Flag:
+            def reset(self) -> None:
+                return None
+
+            def extend(
+                self, *, yaw: float, command: tuple[float, float, float], dt: float
+            ):
+                seen.append((yaw, command, dt))
+                return (1.0,)
+
+        transport = _transport(
+            HINGE,
+            ("hinge",),
+            {"link": ("hinge",)},
+            kp=10.0,
+            kd=0.0,
+            policy=PolicyLayout(
+                joint_names=("hinge",),
+                terms=_scaled_terms(),
+                checkpoint=str(path),
+                rate_hz=50,
+                extra_factory=_Flag,
+            ),
+            robot_id="extra",
+        )
+        transport.connect()
+        transport.send_humanoid("walk_mode")
+        transport.send_velocity(Velocity(0.2, 0.0, 0.0))
+        for _ in range(20):
+            transport.step()
+        self.assertEqual(transport.policy_calls, 1)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][1], (0.2, 0.0, 0.0))
+        self.assertAlmostEqual(seen[0][2], 0.02)
 
 
 def _scaled_terms() -> tuple[ObservationTerm, ...]:

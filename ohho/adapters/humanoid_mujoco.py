@@ -29,11 +29,15 @@ from ..humanoid import HumanoidMode
 from ..humanoid_sim import (
     DEFAULT_POLICY_RATE_HZ,
     HumanoidSimConfig,
+    ObservationExtra,
     ObservationTerm,
     PolicyLayout,
+    append_observation_frame,
     build_observation,
+    clip_vector,
     default_observation_terms,
     fall_state_from_tilt,
+    flatten_history,
     policy_stride,
     projected_gravity,
     quat_wxyz_to_rpy,
@@ -51,6 +55,14 @@ from ..schema import (
     Velocity,
 )
 from ..transport import BaseTransport
+
+
+def _policy_scales(value: object, n: int) -> tuple[float, ...]:
+    if isinstance(value, tuple) and len(value) == n:
+        return tuple(float(item) for item in value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return tuple(float(value) for _ in range(n))
+    raise ValueError("action_scale does not match the policy joints")
 
 
 def _as_gain_tuple(value: object, n: int, label: str) -> tuple[float, ...]:
@@ -108,9 +120,15 @@ class HumanoidMujocoTransport(BaseTransport):
         self._policy: LocomotionPolicy | None = None
         self._policy_joints: tuple[str, ...] = ()
         self._terms: tuple[ObservationTerm, ...] = ()
-        self._action_scale = 1.0
+        self._action_scale: tuple[float, ...] = ()
         self._q_relative = False
         self._rate_hz = DEFAULT_POLICY_RATE_HZ
+        self._history_length = 1
+        self._history_init = "zeros"
+        self._clip_observation: float | None = None
+        self._clip_action: float | None = None
+        self._extra: ObservationExtra | None = None
+        self._history: tuple[tuple[float, ...], ...] | None = None
         self._walk_steps = 0
         self._last_action: tuple[float, ...] = ()
         self._base_body = 0
@@ -160,6 +178,13 @@ class HumanoidMujocoTransport(BaseTransport):
         """Configured policy rate. 50 Hz when no policy is loaded."""
         return self._rate_hz
 
+    @property
+    def base_position(self) -> tuple[float, float, float]:
+        """World position of the floating base, ``(x, y, z)`` in metres."""
+        self._require_model()
+        pos = self._data.xpos[self._base_body]
+        return (float(pos[0]), float(pos[1]), float(pos[2]))
+
     def policy_stride_steps(self) -> int:
         """Model steps between policy evaluations at the current rate."""
         return policy_stride(self.timestep, self._rate_hz)
@@ -196,8 +221,11 @@ class HumanoidMujocoTransport(BaseTransport):
                 f"could not load MJCF {config.mjcf!r}: {exc}"
             ) from exc
         self._data = mj.MjData(self._model)
+        if config.timestep is not None:
+            self._model.opt.timestep = config.timestep
         requested = self._mode
         self._bind(config)
+        self._spawn(config)
         self._restore_mode(requested)
         mj.mj_forward(self._model, self._data)
         self._state = ConnectionState.CONNECTED
@@ -240,9 +268,7 @@ class HumanoidMujocoTransport(BaseTransport):
         if name == "prepare":
             self._enter_prepare()
         elif name == "walk_mode":
-            self._mode = HumanoidMode.WALK
-            self._kp_enabled = True
-            self._walk_steps = 0
+            self._enter_walk()
         elif name == "damp":
             self._mode = HumanoidMode.DAMPING
             self._kp_enabled = False
@@ -362,8 +388,7 @@ class HumanoidMujocoTransport(BaseTransport):
         if requested is HumanoidMode.PREPARE:
             self._enter_prepare()
         elif requested is HumanoidMode.WALK:
-            self._mode = HumanoidMode.WALK
-            self._kp_enabled = True
+            self._enter_walk()
         elif requested is HumanoidMode.DAMPING:
             self._mode = HumanoidMode.DAMPING
             self._kp_enabled = False
@@ -376,6 +401,50 @@ class HumanoidMujocoTransport(BaseTransport):
         self._kp_enabled = True
         if self._default_q:
             self._q_target = list(self._default_q)
+
+    def _enter_walk(self) -> None:
+        self._mode = HumanoidMode.WALK
+        self._kp_enabled = True
+        self._reset_policy_memory()
+
+    def _reset_policy_memory(self) -> None:
+        self._walk_steps = 0
+        self._history = None
+        if self._extra is not None:
+            self._extra.reset()
+        self._seed_last_action()
+
+    def _seed_last_action(self) -> None:
+        count = len(self._policy_joints)
+        if count == 0 or not self._q_relative or self._model is None:
+            self._last_action = tuple(0.0 for _ in range(count))
+            return
+        positions, _velocities = self._joint_state()
+        by_name = dict(zip(self._joint_names, positions))
+        default_by_name = dict(zip(self._joint_names, self._default_q))
+        seeded: list[float] = []
+        for index, name in enumerate(self._policy_joints):
+            scale = self._action_scale[index]
+            if scale == 0.0:
+                seeded.append(0.0)
+                continue
+            seeded.append((by_name[name] - default_by_name[name]) / scale)
+        self._last_action = tuple(seeded)
+
+    def _spawn(self, config: HumanoidSimConfig) -> None:
+        if config.base_pos is None:
+            return
+        if self._free_qadr is None:
+            raise ValueError("base_pos needs a free joint")
+        x, y, z = config.base_pos
+        adr = self._free_qadr
+        self._data.qpos[adr] = x
+        self._data.qpos[adr + 1] = y
+        self._data.qpos[adr + 2] = z
+        for index, qadr in enumerate(self._qadr):
+            self._data.qpos[qadr] = self._default_q[index]
+        self._data.qvel[:] = 0.0
+        self._q_target = list(self._default_q)
 
     def _move_joints(
         self, args: tuple[object, ...], fields: Mapping[str, object]
@@ -442,9 +511,15 @@ class HumanoidMujocoTransport(BaseTransport):
         self._policy = None
         self._policy_joints = joints
         self._terms = default_observation_terms()
-        self._action_scale = 1.0
+        self._action_scale = tuple(1.0 for _ in joints)
         self._q_relative = False
         self._rate_hz = DEFAULT_POLICY_RATE_HZ
+        self._history_length = 1
+        self._history_init = "zeros"
+        self._clip_observation = None
+        self._clip_action = None
+        self._extra = None
+        self._history = None
         self._last_action = tuple(0.0 for _ in joints)
         if policy is None or not policy.checkpoint:
             return
@@ -454,9 +529,14 @@ class HumanoidMujocoTransport(BaseTransport):
             raise ValueError(f"policy joints are not in the model: {missing}")
         self._policy_joints = order
         self._terms = policy.terms
-        self._action_scale = policy.action_scale
+        self._action_scale = _policy_scales(policy.action_scale, len(order))
         self._q_relative = policy.q_relative
         self._rate_hz = policy.rate_hz
+        self._history_length = policy.history_length
+        self._history_init = policy.history_init
+        self._clip_observation = policy.clip_observation
+        self._clip_action = policy.clip_action
+        self._extra = None if policy.extra_factory is None else policy.extra_factory()
         self._last_action = tuple(0.0 for _ in order)
         self._policy = LocomotionPolicy(policy.checkpoint, rate_hz=policy.rate_hz)
 
@@ -575,26 +655,41 @@ class HumanoidMujocoTransport(BaseTransport):
                 position -= default_by_name[name]
             ordered_q.append(position)
             ordered_dq.append(dq_by_name[name])
-        roll, pitch, _yaw, ang, grav = self._base_signals()
-        del roll, pitch
-        obs = build_observation(
+        _roll, _pitch, yaw, ang, grav = self._base_signals()
+        command = (self._cmd.linear_x, self._cmd.linear_y, self._cmd.angular_z)
+        frame = build_observation(
             base_ang_vel=ang,
             projected_gravity=grav,
-            command=(self._cmd.linear_x, self._cmd.linear_y, self._cmd.angular_z),
+            command=command,
             q=ordered_q,
             dq=ordered_dq,
             last_action=self._last_action,
             terms=self._terms,
         )
-        action = self._policy.act(obs)
+        if self._extra is not None:
+            frame = frame + tuple(
+                self._extra.extend(yaw=yaw, command=command, dt=1.0 / self._rate_hz)
+            )
+        frame = clip_vector(frame, self._clip_observation)
+        self._history = append_observation_frame(
+            self._history,
+            frame,
+            length=self._history_length,
+            init=self._history_init,
+        )
+        action = clip_vector(
+            self._policy.act(flatten_history(self._history)), self._clip_action
+        )
         if len(action) != len(self._policy_joints):
             raise ValueError(
                 f"policy returned {len(action)} actions for {len(self._policy_joints)} joints"
             )
         self._last_action = action
-        for name, value in zip(self._policy_joints, action):
+        for index, (name, value) in enumerate(zip(self._policy_joints, action)):
             slot = self._index[name]
-            self._q_target[slot] = self._default_q[slot] + value * self._action_scale
+            self._q_target[slot] = (
+                self._default_q[slot] + value * self._action_scale[index]
+            )
 
     def _pd(self, q: Sequence[float], dq: Sequence[float]) -> list[float]:
         if self._mode is HumanoidMode.OFF:

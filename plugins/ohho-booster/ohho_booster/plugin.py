@@ -38,6 +38,18 @@ class BoosterPlugin:
         del spec
         return None
 
+    def prepare_sim(self, spec: RobotSpec) -> None:
+        """Bind the walk config for this spec. Fetches pinned files if needed.
+
+        Discovery does not call this. A sim connect does. Other robot ids
+        are ignored.
+        """
+        if spec.id != "booster-t2":
+            return
+        from .sim import bind_walk_config
+
+        bind_walk_config()
+
     def doctor(
         self,
         spec: RobotSpec,
