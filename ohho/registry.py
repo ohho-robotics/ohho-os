@@ -30,6 +30,7 @@ from . import capabilities as caps
 from .capability_params import reject_unknown_capabilities
 from .robot_spec import (
     BUILTIN_SOURCE,
+    CI_SCENARIOS,
     GENERIC_CAPABILITIES,
     AerialLimits,
     CiSim,
@@ -236,6 +237,10 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_ang=2.0,
         robot_class=RobotClass.MOBILE_BASE,
         source=BUILTIN_SOURCE,
+        ci_sim=CiSim(
+            enabled=True,
+            scenario=CI_SCENARIOS[RobotClass.MOBILE_BASE],
+        ),
     ),
     # Ohho caps, not PX4 MPC_XY_VEL_MAX. Default transport is sim:// (drone-sim).
     # px4-x500 is spec only: nothing connects. Its arming flag is for a

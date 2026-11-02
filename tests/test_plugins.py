@@ -156,6 +156,7 @@ class TestPluginDiscovery(unittest.TestCase):
             self.assertIsNone(plugin.safety_policy(spec))
             self.assertIsNone(plugin.descriptor(spec))
             self.assertIsNone(plugin.doctor(spec, "sim://", read_only=True))
+            self.assertIsNone(plugin.asset_source())
 
     def test_source_checkout_falls_back_when_group_is_empty(self):
         def reader():
@@ -677,6 +678,7 @@ class TestBuiltinPluginDoesNotImportVendorSdks(unittest.TestCase):
             assert bot.safety_policy(spec) is None
             assert bot.descriptor(spec) is None
             assert bot.doctor(spec, "sim://", True) is None
+            assert bot.asset_source() is None
             serial = arm.transports()
             made = serial["serial"](spec, "/dev/ttyUSB0,/dev/ttyACM0", None)
             assert type(made).__name__ == "CompositeTransport"

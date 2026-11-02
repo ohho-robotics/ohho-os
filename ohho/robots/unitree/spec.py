@@ -27,7 +27,8 @@ def unitree_spec() -> RobotSpec:
     ``source`` is this plugin's name so discovery does not rewrite it.
     ``sim_backend`` stays empty so ``sim://`` and auto keep the in-process
     simulator. The MuJoCo backend is registered separately and used only when
-    a spec names it.
+    a spec names it. ``ci_sim`` stays at the default, so this quadruped does
+    not opt into the sim matrix.
     """
     return RobotSpec(
         id=ROBOT_ID,

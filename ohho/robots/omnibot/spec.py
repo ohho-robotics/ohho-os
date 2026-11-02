@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ohho import capabilities as caps
 from ohho.registry import RobotSpec
-from ohho.robot_spec import RobotClass
+from ohho.robot_spec import CI_SCENARIOS, CiSim, RobotClass
 
 ROBOT_ID = "omnibot"
 
@@ -45,4 +45,8 @@ def omnibot_spec() -> RobotSpec:
         joint_groups={"arm": ARM_JOINTS},
         robot_class=RobotClass.MOBILE_MANIPULATOR,
         source="omnibot",
+        ci_sim=CiSim(
+            enabled=True,
+            scenario=CI_SCENARIOS[RobotClass.MOBILE_MANIPULATOR],
+        ),
     )
