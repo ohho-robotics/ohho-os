@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 from . import __version__
+from . import capabilities as caps
 from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .adapters.errors import AdapterUnavailable
@@ -226,6 +227,9 @@ def _cmd_sim(args) -> int:
         _go2_pose(bot, "stand_up", "stand up")
         time.sleep(0.3)
     try:
+        if bot.has(caps.HUMANOID_POSTURE):
+            bot.prepare()
+            bot.walk_mode()
         i = 0
         end = time.monotonic() + args.seconds
         while time.monotonic() < end:

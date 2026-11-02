@@ -1,6 +1,6 @@
-"""Download booster_assets at the pinned commit.
+"""Download the pinned description archive and locomotion checkpoint.
 
-Meshes land in the cache directory (default ``~/.ohho/assets/booster``).
+Files land in the cache directory (default ``~/.ohho/assets/booster``).
 They are not committed to this repository.
 
     python plugins/ohho-booster/scripts/fetch_assets.py
