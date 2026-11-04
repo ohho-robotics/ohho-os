@@ -447,6 +447,8 @@ class SimServe:
         port: int = DEFAULT_PORT,
         rosbridge: str = "ws://localhost:9090",
         rate_hz: float = 20.0,
+        ssl_cert: Optional[str] = None,
+        ssl_key: Optional[str] = None,
     ) -> None:
         if backend == "robot" and not transport:
             raise ValueError("backend 'robot' requires a transport URI (--transport)")
@@ -464,6 +466,8 @@ class SimServe:
         self.port = port
         self.rosbridge_url = rosbridge
         self.rate_hz = rate_hz
+        self.ssl_cert = ssl_cert
+        self.ssl_key = ssl_key
 
         # Session safety state
         self._deadman: bool = False
@@ -525,7 +529,13 @@ class SimServe:
                 )
             self._rosbridge_task = asyncio.create_task(self._rosbridge_loop())
 
-        self._server = await websockets.serve(self._handle_client, self.host, self.port)
+        ssl_ctx = None
+        if self.ssl_cert and self.ssl_key:
+            import ssl
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_ctx.load_cert_chain(certfile=self.ssl_cert, keyfile=self.ssl_key)
+
+        self._server = await websockets.serve(self._handle_client, self.host, self.port, ssl=ssl_ctx)
         if self._server.sockets:
             self.port = self._server.sockets[0].getsockname()[1]
 
@@ -866,6 +876,8 @@ def serve_sim(
     rosbridge: str = "ws://localhost:9090",
     rate_hz: float = 20.0,
     stop_event: Optional[threading.Event] = None,
+    ssl_cert: Optional[str] = None,
+    ssl_key: Optional[str] = None,
 ) -> None:
     """Serve a robot simulation, live robot, or rosbridge gateway over WebSocket.
 
@@ -880,6 +892,8 @@ def serve_sim(
         rosbridge: rosbridge WebSocket URL (for "ros2" backend).
         rate_hz: telemetry broadcast rate in Hz (default 20.0).
         stop_event: optional threading.Event to request server shutdown.
+        ssl_cert: optional SSL certificate PEM file.
+        ssl_key: optional SSL private key PEM file.
     """
     if backend == "robot" and not transport:
         raise ValueError("backend 'robot' requires a transport URI (--transport)")
@@ -893,5 +907,7 @@ def serve_sim(
         port=port,
         rosbridge=rosbridge,
         rate_hz=rate_hz,
+        ssl_cert=ssl_cert,
+        ssl_key=ssl_key,
     )
     server.run(stop_event=stop_event)

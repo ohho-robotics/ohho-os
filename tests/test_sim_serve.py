@@ -1329,5 +1329,18 @@ class TestDefaultPort(unittest.TestCase):
         self.assertIn("Foxglove", help_text)
 
 
+class TestSimServeSslOptions(unittest.TestCase):
+    """Verify that SSL arguments are accepted and stored on the server instance."""
+
+    def test_ssl_arguments(self):
+        server = SimServe(
+            backend="sim",
+            ssl_cert="cert.pem",
+            ssl_key="key.pem",
+        )
+        self.assertEqual(server.ssl_cert, "cert.pem")
+        self.assertEqual(server.ssl_key, "key.pem")
+
+
 if __name__ == "__main__":
     unittest.main()

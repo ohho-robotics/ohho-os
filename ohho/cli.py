@@ -398,6 +398,8 @@ def _cmd_sim_serve(args) -> int:
             port=args.port,
             rosbridge=args.rosbridge,
             rate_hz=args.rate,
+            ssl_cert=args.ssl_cert,
+            ssl_key=args.ssl_key,
         )
     except SimServeUnavailable as e:
         print(f"error: {e}", file=sys.stderr)
@@ -1176,6 +1178,8 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument(
         "--rate", type=float, default=20.0, help="telemetry broadcast rate in Hz"
     )
+    ss.add_argument("--ssl-cert", default=None, help="SSL certificate PEM for wss://")
+    ss.add_argument("--ssl-key", default=None, help="SSL private key PEM for wss://")
     ss.set_defaults(func=_cmd_sim_serve)
 
     sl = sub.add_parser(
