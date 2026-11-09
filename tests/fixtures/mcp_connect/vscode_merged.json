@@ -1,0 +1,21 @@
+{
+  "theme": "dark",
+  "servers": {
+    "other": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "other-server"
+      ]
+    },
+    "ohho": {
+      "type": "stdio",
+      "command": "/opt/ohho/bin/ohho",
+      "args": [
+        "mcp",
+        "serve"
+      ]
+    }
+  }
+}

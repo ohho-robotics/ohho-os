@@ -110,12 +110,14 @@ def dance(robot, speed=0.2):
     return "dance complete"
 ```
 
-Users discover and run it via:
+Users discover and run it via the **local skill registry** (no network):
 
 ```bash
-ohho market list
-ohho market run omnibot dance
+ohho skills list
+ohho skills run omnibot dance --transport sim://
 ```
+
+`ohho market` remains an alias for `ohho skills`.
 
 ---
 

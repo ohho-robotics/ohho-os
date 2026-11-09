@@ -58,8 +58,10 @@ GENERIC_CAPABILITIES: tuple[str, ...] = (
 
 BUILTIN_SOURCE = "builtin"
 
-# Scenario ids for ``CiSim.scenario`` when a robot opts into the sim matrix.
-# ``enabled`` stays false until that matrix exists (C-08).
+# Scenario ids for ``CiSim.scenario`` when a robot opts into the sim matrix
+# (``ohho list --json --ci-sim``, OHH-316). ``enabled`` defaults to false.
+# Built-in ``sim`` opts in. The shipped mobile-manipulator plugin opts in
+# on its own spec. The quadruped plugin stays disabled.
 CI_SCENARIOS: Mapping[RobotClass, str] = MappingProxyType(
     {
         RobotClass.MOBILE_BASE: "drive_square",

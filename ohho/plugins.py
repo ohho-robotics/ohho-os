@@ -7,14 +7,21 @@ Discovery does not call it, so listing plugins cannot command a robot.
 ``descriptor`` returns ``None`` until C-04 / OHH-214. ``doctor`` is the
 read-only hook R-06 will dispatch. Discovery does not call those two either.
 
+``asset_source`` is optional. When a plugin defines it, discovery stores the
+pinned repository and commit and does not download meshes. The sim matrix
+caches that pin (OHH-316). A plugin with no method, or one that returns
+``None``, has nothing to fetch.
+
 Built-ins use this path. ``pyproject.toml`` registers
 ``ohho.robots.builtin:plugin``. A source checkout that has not been reinstalled
 has no entry point; discovery then loads that same module directly.
 
 One plugin failing to import is recorded and skipped. A duplicate robot id,
 transport scheme or sim backend is a load error naming both plugins; the
-earlier plugin keeps its robots and factories. The built-in plugin is applied
-first so a third-party collision does not drop sim, OmniBot or Go2.
+earlier plugin keeps its robots and factories. Shipped entry points from ``pyproject.toml`` are applied first, in file
+order, so a third-party collision does not drop a robot that ships with
+ohho-os. A missing shipped entry point (source checkout, or an install from
+before that entry existed) is loaded from the same table.
 
 ``resolve_transport`` reads the factories stored here. A scheme or backend a
 plugin did not register is absent from these maps, so the adapter scheme dict
@@ -25,8 +32,10 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.metadata
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -52,7 +61,10 @@ _PLUGIN_METHODS = (
 
 
 class RobotPlugin(Protocol):
-    """What an ``ohho.robots`` entry point returns."""
+    """What an ``ohho.robots`` entry point returns.
+
+    ``asset_source`` is not required. See :class:`AssetSource`.
+    """
 
     name: str
 
@@ -84,6 +96,42 @@ class RobotPlugin(Protocol):
         """Read-only doctor hook. ``None`` means the plugin has nothing to add."""
 
 
+_ASSET_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_ASSET_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True)
+class AssetSource:
+    """Pinned git commit for meshes. CI fetches it; this repo does not vendor it.
+
+    ``repository`` is ``owner/name`` for ``actions/checkout``. ``commit`` is a
+    full 40-character hex sha, so the cache key does not follow a branch.
+    """
+
+    repository: str
+    commit: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, str) or not isinstance(self.commit, str):
+            raise TypeError("asset repository and commit must be strings")
+        repository = self.repository.strip()
+        commit = self.commit.strip().lower()
+        owner, _slash, name = repository.partition("/")
+        if (
+            _ASSET_REPOSITORY.fullmatch(repository) is None
+            or owner in {".", ".."}
+            or name in {".", ".."}
+        ):
+            raise ValueError(
+                "asset repository must be owner/name "
+                "(a pinned git repo, not a vendored mesh path)"
+            )
+        if _ASSET_COMMIT.fullmatch(commit) is None:
+            raise ValueError("asset commit must be a 40-character hex sha")
+        object.__setattr__(self, "repository", repository)
+        object.__setattr__(self, "commit", commit)
+
+
 @dataclass(frozen=True)
 class DoctorReport:
     """Result of a plugin doctor hook. It must not command the robot.
@@ -110,16 +158,19 @@ class PluginInfo:
     error: str | None = None
     fallback: bool = False
     distribution: str = ""
+    # Empty when the plugin has no ``asset_source`` pin. CI skips the fetch.
+    asset_repository: str = ""
+    asset_commit: str = ""
+    # The instance, so a later policy load can call ``safety_policy`` and a
+    # sim connect can call an optional ``prepare_sim``. Discovery does not
+    # call either. Not part of equality or the list report.
+    plugin: Any = field(default=None, compare=False, hash=False, repr=False)
     transport_factories: Mapping[str, TransportFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
     sim_factories: Mapping[str, SimFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
-    # The instance, so a sim connect can call ``prepare_sim`` and a later
-    # policy load can call ``safety_policy``. Discovery does not call either.
-    # Not part of equality or the list report.
-    plugin: Any = field(default=None, compare=False, hash=False, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -143,16 +194,51 @@ def _read_entry_points() -> list[Any]:
     return list(found)
 
 
-def _points_at_builtin(entry: Any) -> bool:
-    return getattr(entry, "value", None) == BUILTIN_ENTRY_VALUE
+_ENTRY_LINE = re.compile(
+    r"""(?m)^(?P<name>[A-Za-z0-9_.-]+)\s*=\s*["'](?P<value>[^"']+)["']\s*$"""
+)
 
 
-def _fallback_entry() -> Any:
-    return importlib.metadata.EntryPoint(
-        name="builtin",
-        value=BUILTIN_ENTRY_VALUE,
-        group=ENTRY_GROUP,
-    )
+def _pyproject_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def _parse_robot_entries(text: str) -> list[tuple[str, str]]:
+    """``name = "module:attr"`` rows under the ``ohho.robots`` table."""
+    marker = '[project.entry-points."ohho.robots"]'
+    start = text.find(marker)
+    if start < 0:
+        return []
+    rows: list[tuple[str, str]] = []
+    for line in text[start + len(marker) :].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        match = _ENTRY_LINE.match(line.strip())
+        if match:
+            rows.append((match.group("name"), match.group("value")))
+    return rows
+
+
+def _declared_robot_entries() -> list[tuple[str, str]]:
+    """Shipped ``ohho.robots`` entry points, in ``pyproject.toml`` order.
+
+    A checkout that has not been reinstalled still has the file. An installed
+    copy relies on importlib and only needs this when an entry point is absent.
+    """
+    path = _pyproject_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return [("builtin", BUILTIN_ENTRY_VALUE)]
+    found = _parse_robot_entries(text)
+    if found:
+        return found
+    return [("builtin", BUILTIN_ENTRY_VALUE)]
+
+
+def _entry_point(name: str, value: str) -> Any:
+    return importlib.metadata.EntryPoint(name=name, value=value, group=ENTRY_GROUP)
 
 
 def _distribution_name(entry: Any) -> str:
@@ -173,28 +259,30 @@ def _distribution_name(entry: Any) -> str:
 def _discover_entries() -> list[tuple[Any, bool]]:
     """Entry points in load order, as ``(entry, fallback)``.
 
-    The built-in plugin is first. A missing built-in entry point (source
-    checkout, or an install from before this group existed) appends one
-    fallback that imports the same module.
+    Shipped plugins come first, in ``pyproject.toml`` order. A shipped entry
+    point that importlib did not return is appended as a source fallback that
+    imports the same target. Other entry points follow, sorted by name.
     """
     found = _read_entry_points()
-    pairs = [(entry, False) for entry in found]
-    if not any(_points_at_builtin(entry) for entry in found):
-        pairs.append((_fallback_entry(), True))
+    declared = _declared_robot_entries()
+    declared_values = [value for _name, value in declared]
+    present = {getattr(entry, "value", None) for entry in found}
+    pairs: list[tuple[Any, bool]] = [(entry, False) for entry in found]
+    for name, value in declared:
+        if value in present:
+            continue
+        pairs.append((_entry_point(name, value), True))
+        present.add(value)
 
-    builtins: list[tuple[Any, bool]] = []
-    rest: list[tuple[Any, bool]] = []
-    seen_builtin = False
-    for entry, fallback in pairs:
-        if _points_at_builtin(entry):
-            if seen_builtin:
-                continue
-            seen_builtin = True
-            builtins.append((entry, fallback))
-        else:
-            rest.append((entry, fallback))
-    rest.sort(key=lambda item: str(getattr(item[0], "name", "")))
-    return builtins + rest
+    def sort_key(item: tuple[Any, bool]) -> tuple[int, int | str]:
+        entry, _fallback = item
+        value = getattr(entry, "value", None)
+        if value in declared_values:
+            return (0, declared_values.index(value))
+        return (1, str(getattr(entry, "name", "")))
+
+    pairs.sort(key=sort_key)
+    return pairs
 
 
 def _missing_methods(obj: object) -> list[str]:
@@ -274,17 +362,45 @@ def _coerce_mapping(raw: object, what: str) -> dict[str, Any]:
     return out
 
 
+def _read_asset_source(plugin: object, name: str) -> AssetSource | None:
+    """Return a pin, or ``None`` when the plugin does not fetch meshes.
+
+    A missing method is ``None``. A bad return is a load error. This does not
+    download anything.
+    """
+    method = getattr(plugin, "asset_source", None)
+    if method is None:
+        return None
+    if not callable(method):
+        raise TypeError(f"plugin {name!r} asset_source is not callable")
+    raw = method()
+    if raw is None:
+        return None
+    if not isinstance(raw, AssetSource):
+        raise TypeError(
+            f"plugin {name!r} asset_source() must return AssetSource or None, "
+            f"not {type(raw).__name__}"
+        )
+    return raw
+
+
 def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
     entry_name = str(getattr(entry, "name", "") or "")
     name = entry_name or "<unknown>"
     specs: tuple[RobotSpec, ...] = ()
     plugin: object | None = None
+    asset_repository = ""
+    asset_commit = ""
     try:
         plugin = _materialize(entry.load())
         name = _plugin_name(plugin)
         specs = _coerce_specs(plugin, name)
         schemes = _coerce_mapping(plugin.transports(), "transports")  # type: ignore[attr-defined]
         backends = _coerce_mapping(plugin.sim_backends(), "sim_backends")  # type: ignore[attr-defined]
+        asset = _read_asset_source(plugin, name)
+        if asset is not None:
+            asset_repository = asset.repository
+            asset_commit = asset.commit
     except Exception as exc:
         return PluginInfo(
             name=name,
@@ -296,6 +412,8 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
             error=f"{type(exc).__name__}: {exc}",
             fallback=fallback,
             distribution=_distribution_name(entry),
+            asset_repository=asset_repository,
+            asset_commit=asset_commit,
             plugin=plugin,
         )
     return PluginInfo(
@@ -308,9 +426,11 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         error=None,
         fallback=fallback,
         distribution=_distribution_name(entry),
+        asset_repository=asset_repository,
+        asset_commit=asset_commit,
+        plugin=plugin,
         transport_factories=MappingProxyType(schemes),
         sim_factories=MappingProxyType(backends),
-        plugin=plugin,
     )
 
 
@@ -383,6 +503,151 @@ def _load_all() -> tuple[PluginInfo, ...]:
     return _reject_collisions(loaded)
 
 
+def preferred_robot_id() -> str:
+    """Robot id a loaded plugin offers as the default, else ``sim``.
+
+    The first shipped plugin that implements ``preferred_robot_id`` wins.
+    Callers use this so core source does not name a robot.
+    """
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        fn = getattr(info.plugin, "preferred_robot_id", None)
+        if not callable(fn):
+            continue
+        value = fn()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "sim"
+
+
+def _usable_plugins() -> list[object]:
+    plugins: list[object] = []
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        plugins.append(info.plugin)
+    return plugins
+
+
+def plugin_for_spec(spec: object) -> object | None:
+    """Loaded plugin that registered ``spec``, or ``None``."""
+    source = getattr(spec, "source", "")
+    if not isinstance(source, str) or not source:
+        return None
+    return plugin_named(source)
+
+
+def plugin_text(method: str) -> str:
+    """First non-empty string returned by ``method`` on a loaded plugin."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, method, None)
+        if not callable(fn):
+            continue
+        value = fn()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def scheme_supports_read_only(scheme: str | None) -> bool:
+    """True when a plugin factory marked ``supports_read_only`` owns ``scheme``."""
+    if not scheme:
+        return False
+    key = scheme.strip().lower()
+    for info in loaded_plugins():
+        if info.error:
+            continue
+        factory = info.transport_factories.get(key)
+        if factory is not None and getattr(factory, "supports_read_only", False):
+            return True
+    return False
+
+
+def probe_adapter_schemes() -> list[str]:
+    """Schemes a plugin reports as importable in this environment."""
+    found: list[str] = []
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "probe_schemes", None)
+        if not callable(fn):
+            continue
+        reported = fn() or ()
+        for name in reported:
+            if isinstance(name, str) and name not in found:
+                found.append(name)
+    return found
+
+
+def plugin_environment_lines() -> list[str]:
+    """Extra ``ohho doctor`` lines contributed by plugins, in load order."""
+    lines: list[str] = []
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "environment_lines", None)
+        if not callable(fn):
+            continue
+        for line in fn() or ():
+            if isinstance(line, str):
+                lines.append(line)
+    return lines
+
+
+def uri_is_hardware(uri: str | None) -> bool:
+    """True when a plugin says ``uri`` is a hardware link that must be armed."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "uri_is_hardware", None)
+        if callable(fn) and fn(uri):
+            return True
+    return False
+
+
+def look_mock_allowed(uri: str | None) -> bool:
+    """True when a plugin allows mock perception detections on ``uri``."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "look_mock_allowed", None)
+        if callable(fn) and fn(uri):
+            return True
+    return False
+
+
+def contributed_model_class(name: str) -> type | None:
+    """Model class a plugin binds to ``name``, or ``None``."""
+    if not name:
+        return None
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "model_class", None)
+        if not callable(fn):
+            continue
+        found = fn(name)
+        if isinstance(found, type):
+            return found
+    return None
+
+
+def model_uses_base_action(name: str) -> bool:
+    """True when a plugin says ``name`` selects the base-velocity schema."""
+    if not name:
+        return False
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "model_uses_base_action", None)
+        if callable(fn) and fn(name):
+            return True
+    return False
+
+
+def is_contributed_model(model: object) -> bool:
+    """True when ``model`` is an instance of a plugin policy class."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "is_model", None)
+        if callable(fn) and fn(model):
+            return True
+    return False
+
+
+def default_base_model_name() -> str:
+    """Model-class key for a base-only robot, or ``\"\"`` when none is registered."""
+    return plugin_text("default_base_model_name")
+
+
 def plugin_named(name: str) -> object | None:
     """The loaded plugin instance for ``name``, or ``None``.
 
@@ -445,6 +710,76 @@ def reload_plugins() -> tuple[PluginInfo, ...]:
     registry_mod._plugins_loading = False
     registry_mod._ensure_plugins()
     return loaded_plugins()
+
+
+def _cell(value: str) -> str:
+    return value.replace("|", "/").replace("\n", " ").replace("\r", " ")
+
+
+def ci_sim_matrix_rows() -> list[dict[str, str]]:
+    """One sim-matrix row per registered spec with ``ci_sim.enabled``.
+
+    Keys are what ``.github/workflows/sim-matrix.yml`` reads: ``robot``,
+    ``robot_class``, ``plugin``, ``scenario``, ``asset_repository`` and
+    ``asset_commit``. A spec whose scenario string is empty uses the class
+    default from :data:`ohho.robot_spec.CI_SCENARIOS`. Asset fields are empty
+    when the plugin has no pin, and the workflow then skips the fetch.
+    Rows follow :func:`ohho.registry.list_specs` (sorted by robot id).
+    """
+    from .registry import list_specs
+    from .robot_spec import CI_SCENARIOS, RobotClass
+
+    specs = list_specs()
+    owners: dict[str, PluginInfo] = {}
+    for info in loaded_plugins():
+        if info.error is not None:
+            continue
+        for spec_id in info.spec_ids:
+            owners.setdefault(spec_id, info)
+
+    rows: list[dict[str, str]] = []
+    for spec in specs:
+        ci_sim = spec.ci_sim
+        if ci_sim is None or not ci_sim.enabled:
+            continue
+        owner = owners.get(spec.id)
+        robot_class = spec.robot_class
+        if not isinstance(robot_class, RobotClass):
+            robot_class = RobotClass(str(robot_class))
+        scenario = ci_sim.scenario or CI_SCENARIOS[robot_class]
+        rows.append(
+            {
+                "robot": spec.id,
+                "robot_class": robot_class.value,
+                "plugin": owner.name if owner is not None else spec.source,
+                "scenario": scenario,
+                "asset_repository": owner.asset_repository if owner is not None else "",
+                "asset_commit": owner.asset_commit if owner is not None else "",
+            }
+        )
+    return rows
+
+
+def format_matrix_runtime(row: Mapping[str, str], runtime_s: int) -> str:
+    """Markdown for one matrix row, appended to ``GITHUB_STEP_SUMMARY``.
+
+    ``runtime_s`` is the whole conformance run for that row, in whole seconds.
+    """
+    if isinstance(runtime_s, bool) or not isinstance(runtime_s, int):
+        raise TypeError("runtime_s must be an int")
+    if runtime_s < 0:
+        raise ValueError("runtime_s must be >= 0")
+    robot = _cell(str(row.get("robot", "")))
+    robot_class = _cell(str(row.get("robot_class", "")))
+    plugin = _cell(str(row.get("plugin", "")))
+    scenario = _cell(str(row.get("scenario", "")))
+    return (
+        f"### {robot}\n"
+        "\n"
+        "| robot | class | plugin | scenario | runtime_s |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        f"| {robot} | {robot_class} | {plugin} | {scenario} | {runtime_s} |\n"
+    )
 
 
 def format_plugin_report(infos: Sequence[PluginInfo] | None = None) -> str:
@@ -569,19 +904,34 @@ def _call_prepare_sim(spec: RobotSpec) -> None:
 __all__ = [
     "BUILTIN_ENTRY_VALUE",
     "ENTRY_GROUP",
+    "AssetSource",
     "DoctorReport",
     "PluginInfo",
     "RobotPlugin",
     "SimFactory",
     "TransportFactory",
+    "ci_sim_matrix_rows",
+    "contributed_model_class",
     "declared_sim_backend",
+    "default_base_model_name",
     "describe_plugin_schemes",
     "describe_plugin_sim_backends",
+    "format_matrix_runtime",
     "format_plugin_report",
+    "is_contributed_model",
     "loaded_plugins",
+    "look_mock_allowed",
+    "model_uses_base_action",
+    "plugin_environment_lines",
+    "plugin_for_spec",
     "plugin_named",
+    "plugin_text",
+    "preferred_robot_id",
     "plugin_sim_backend",
     "plugin_transport",
+    "probe_adapter_schemes",
     "register_loaded_specs",
     "reload_plugins",
+    "scheme_supports_read_only",
+    "uri_is_hardware",
 ]

@@ -225,11 +225,14 @@ class SafetyPolicy:
                 return "fault", {"error_code": repr(custom["error_code"])}
             if code != 0:
                 return "fault", {"error_code": code}
-        orientation = _safety()._orientation(telemetry)
-        if orientation is not None:
-            limit = self.profile.tilt_limit_rad
-            if not (abs(orientation[0]) <= limit and abs(orientation[1]) <= limit):
-                return "tilt", {"roll": orientation[0], "pitch": orientation[1]}
+        # The drone profile turns this off. Ground profiles leave it on, so
+        # their 0.6 rad latch is unchanged.
+        if getattr(self.profile, "tilt_guard", True):
+            orientation = _safety()._orientation(telemetry)
+            if orientation is not None:
+                limit = self.profile.tilt_limit_rad
+                if not (abs(orientation[0]) <= limit and abs(orientation[1]) <= limit):
+                    return "tilt", {"roll": orientation[0], "pitch": orientation[1]}
         return None
 
     def _clamp_velocity(self, args: Sequence[Any]) -> ClampDecision:
@@ -240,6 +243,11 @@ class SafetyPolicy:
             clamp(requested[1], -profile.max_vy, profile.max_vy),
             clamp(requested[2], -profile.max_wz, profile.max_wz),
         )
+        # Cylinder clip for the aerial profile only. Ground max_horizontal is 0.
+        horizontal = getattr(profile, "max_horizontal", 0.0)
+        if getattr(profile, "aerial", False) and horizontal > 0.0:
+            hx, hy = _safety().clip_horizontal(capped[0], capped[1], horizontal)
+            capped = (hx, hy, capped[2])
         dt = min(max(float(raw_dt), 0.0), profile.cmd_timeout_s)
         accels = (profile.max_accel_x, profile.max_accel_y, profile.max_accel_wz)
         applied = tuple(
@@ -324,8 +332,8 @@ class GroundPolicy(SafetyPolicy):
 
     A stale command zeros velocity. E-stop stops the base and damps only when
     the robot is already lying down (or the profile sets ``estop_damp``).
-    OmniBot's numbers come from its safety profile; ``sim`` keeps the
-    conservative profile used for any robot that has no built-in profile.
+    A mobile manipulator's numbers come from its plugin profile; ``sim`` keeps
+    the conservative profile used for any robot that has no built-in profile.
     """
 
     name = "ground"
@@ -383,11 +391,10 @@ class ArmPolicy(SafetyPolicy):
 
 
 class LeggedPolicy(SafetyPolicy):
-    """Quadruped. Unitree Go2 keeps its built-in profile.
+    """Quadruped. The built-in profile keeps the sport allowlist and axis caps.
 
-    The sport allowlist, orientation requirement and axis caps come from that
-    profile. A stale command zeros velocity. E-stop calls the transport stop
-    (StopMove on Go2) and damps only when the body is already down.
+    A stale command zeros velocity. E-stop calls the transport stop and damps
+    only when the body is already down.
     """
 
     name = "legged"
@@ -416,8 +423,8 @@ class LeggedPolicy(SafetyPolicy):
 class GroundArmPolicy(SafetyPolicy):
     """Mobile manipulator: ground rules for the base, arm rules for joints.
 
-    Both halves share one profile, so OmniBot's velocity caps and joint limits
-    stay a single safety profile. The policy name is ``ground+arm``.
+    Both halves share one profile, so velocity caps and joint limits stay a
+    single safety profile. The policy name is ``ground+arm``.
     """
 
     name = "ground+arm"
@@ -471,9 +478,12 @@ def reference_profile(spec: RobotSpec | None) -> Any:
 def policy_for_class(spec: RobotSpec | None) -> SafetyPolicy:
     """The default policy for ``spec.robot_class``.
 
-    Aerial does not have its own policy yet. It uses :class:`GroundPolicy`
-    with the conservative profile, which is how the gate treats an unknown
-    robot today. Humanoid uses :class:`~ohho.humanoid_policy.HumanoidPolicy`.
+    Aerial does not have its own policy class. It uses :class:`GroundPolicy`.
+    A built-in aerial id still gets :data:`ohho.safety.DRONE_PROFILE` from
+    :func:`ohho.safety.profile_for` (tilt guard off, horizontal clip, flight
+    e-stop). That does not raise ground, arm, or quadruped caps. An aerial
+    spec with no built-in profile keeps the conservative profile. Humanoid
+    uses :class:`~ohho.humanoid_policy.HumanoidPolicy`.
     """
     robot_class = RobotClass.MOBILE_BASE if spec is None else spec.robot_class
     if not isinstance(robot_class, RobotClass):

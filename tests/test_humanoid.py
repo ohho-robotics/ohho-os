@@ -249,7 +249,7 @@ class TestModes(unittest.TestCase):
 
 class TestNoCapability(unittest.TestCase):
     def test_builtin_robots_noop_and_return_themselves(self):
-        for robot_id in ("omnibot", "unitree-go2", "sim"):
+        for robot_id in ("omnibot", "sim"):
             with self.subTest(robot_id=robot_id):
                 spec = get_spec(robot_id)
                 transport = SimTransport(spec)
@@ -266,6 +266,26 @@ class TestNoCapability(unittest.TestCase):
                 assert odom is not None
                 self.assertAlmostEqual(odom.x, 0.0)
                 self.assertAlmostEqual(odom.y, 0.0)
+
+    def test_go2_humanoid_methods_noop_and_lie_down_is_quadruped(self):
+        spec = get_spec("unitree-go2")
+        transport = SimTransport(spec)
+        transport.connect()
+        bot = Robot(spec, transport, NativeRuntime())
+        self.assertIs(bot.prepare().walk_mode().damp().get_up(), bot)
+        self.assertEqual(bot.legged_posture(), "lying")
+        self.assertTrue(bot.lie_down())
+        self.assertEqual(bot.legged_posture(), "lying")
+        self.assertIs(bot.look("bad", "nope"), bot)  # type: ignore[arg-type]
+        self.assertIs(bot.move_ee("middle", "pose", -1), bot)  # type: ignore[arg-type]
+        self.assertIs(bot.gripper(1, None), bot)  # type: ignore[arg-type]
+        self.assertIs(bot.hand("left", "fingers"), bot)  # type: ignore[arg-type]
+        self.assertIs(bot.move_joints("left_arm", "not-numbers"), bot)  # type: ignore[arg-type]
+        transport.step(1.0)
+        odom = transport.read().odom
+        assert odom is not None
+        self.assertAlmostEqual(odom.x, 0.0)
+        self.assertAlmostEqual(odom.y, 0.0)
 
     def test_empty_spec_records_nothing(self):
         transport = RecordingTransport()

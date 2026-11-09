@@ -28,6 +28,8 @@ class TestToolRegistry(unittest.TestCase):
         reg = build_tool_registry(_bot("omnibot"))
         self.assertIn("drive", reg)
         self.assertIn("move_joints", reg)
+        for tool in ("stand", "lie_down", "sit", "recover", "set_body_pose"):
+            self.assertNotIn(tool, reg)
         self.assertIn("stop", reg)
         self.assertIn("emergency_stop", reg)
         self.assertIn("get_telemetry", reg)
@@ -39,6 +41,8 @@ class TestToolRegistry(unittest.TestCase):
         reg = build_tool_registry(_bot("unitree-go2"))
         self.assertIn("drive", reg)
         self.assertNotIn("move_joints", reg)
+        for tool in ("stand", "lie_down", "sit", "recover", "set_body_pose"):
+            self.assertIn(tool, reg)
 
     def test_sim_bot_has_drive_but_no_arm(self):
         from ohho.brains import build_tool_registry

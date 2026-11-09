@@ -1,13 +1,14 @@
-"""Built-in robot plugin: sim, OmniBot and Unitree Go2.
+"""Built-in robot plugin: the generic sim and the aerial specs.
 
-Registered in ``pyproject.toml`` under the ``ohho.robots`` group, so the
-built-ins take the same discovery path as an installed plugin. Spec data stays
+Registered in ``pyproject.toml`` under the ``ohho.robots`` group, so these
+specs take the same discovery path as an installed plugin. The mobile
+manipulator and the quadruped ship as their own entry points. Spec data stays
 in :mod:`ohho.registry`; this module only exposes it.
 
-Importing this module must not import a vendor SDK (``pyserial``, ``lerobot``,
-``cyclonedds``, ``unitree_sdk2py``, ``rclpy``, ``pymavlink``). Those imports
-stay inside adapter ``connect()``. Transport factories below import the
-adapter module only when called, and they do not connect.
+Importing this module must not import a vendor SDK (``lerobot``, ``rclpy``,
+``pymavlink``). Those imports stay inside adapter ``connect()``. Transport
+factories below import the adapter module only when called, and they do not
+connect.
 """
 
 from __future__ import annotations
@@ -25,45 +26,11 @@ def _sim_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     return SimTransport(spec)
 
 
-def _serial_transport(spec: RobotSpec | None, address: str, runtime: Any) -> Transport:
-    """Yahboom base, or a base+arm composite when the spec can manipulate.
-
-    Same split as the scheme-dict branch in ``resolve_transport``. That branch
-    remains the fallback when this plugin did not load.
-    """
-    del runtime
-    from .. import capabilities as caps
-    from ..adapters.composite import CompositeTransport
-    from ..adapters.feetech import DEFAULT_PORT as default_arm_port
-    from ..adapters.feetech import FeetechTransport
-    from ..adapters.yahboom import YahboomTransport
-
-    if spec is not None and spec.has(caps.MANIPULATION):
-        if "," in address:
-            base_port, arm_port = address.split(",", 1)
-            base_port, arm_port = base_port.strip(), arm_port.strip()
-        else:
-            base_port, arm_port = address.strip(), default_arm_port
-        return CompositeTransport(
-            YahboomTransport(spec, base_port),
-            FeetechTransport(spec, arm_port),
-        )
-    # Callers may pass spec=None; the class stores it the same way the scheme dict does.
-    return YahboomTransport(spec, address)  # type: ignore[arg-type]
-
-
 def _feetech_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
     del runtime
     from ..adapters.feetech import FeetechTransport
 
     return FeetechTransport(spec, address)
-
-
-def _dds_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
-    del runtime
-    from ..adapters.unitree import UnitreeDdsTransport
-
-    return UnitreeDdsTransport(spec, address)
 
 
 def _ros2_transport(spec: RobotSpec, address: str, runtime: Any) -> Transport:
@@ -94,11 +61,7 @@ class BuiltinPlugin:
         return {
             "sim": _sim_transport,
             "simulated": _sim_transport,
-            "serial": _serial_transport,
-            "yahboom-serial": _serial_transport,
             "feetech": _feetech_transport,
-            "dds": _dds_transport,
-            "unitree-dds": _dds_transport,
             "ros2": _ros2_transport,
         }
 
@@ -131,6 +94,10 @@ class BuiltinPlugin:
     ) -> None:
         """Doctor dispatch is R-06. This hook is not called while listing."""
         del spec, uri, read_only
+        return None
+
+    def asset_source(self) -> None:
+        """No pinned meshes. The sim matrix skips the asset fetch."""
         return None
 
 
