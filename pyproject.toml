@@ -94,6 +94,7 @@ ohho = [
   "robots/*.json",
   "testing/conformance/*.txt",
   "agent_rules/*.md",
+  "datasets/*.json",
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",

@@ -15,6 +15,7 @@ from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .adapters.errors import AdapterUnavailable
 from .agent import Agent
+from .datasets.cli import add_dataset_parser
 from .hardware import resolve_device
 from .plugins import plugin_environment_lines, plugin_text, uri_is_hardware
 from .registry import UnknownRobot, list_specs
@@ -1660,6 +1661,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the new trials as JSON",
     )
     resume.set_defaults(func=_cmd_sweep)
+
+    add_dataset_parser(sub)
 
     return p
 

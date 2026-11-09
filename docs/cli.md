@@ -78,6 +78,25 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 | `ohho sim-demo --sim --fast` | Scripted Go2 sim demo and eval log (simulation only; see [`sim-demo.md`](sim-demo.md)) |
 | `ohho selftest --sim` | Bench diagnostics against simulated hardware (CI-safe) |
 
+## Dataset versions
+
+`ohho dataset` builds an immutable, content-hashed LeRobot dataset from local
+episodes. The version record (query, filters, split, seed, augmentation,
+content hash, stats, licence) is stored under the version directory. Pin
+freezes that directory; a later edit allocates a new version id. Stats printed
+by `ohho dataset stats` are the block stored on the version.
+
+| Command | Description |
+|---------|-------------|
+| `ohho dataset build --source PATH [--source PATH] [--store DIR]` | Materialise a version from local episodes |
+| `ohho dataset pin VERSION [--store DIR]` | Freeze that version |
+| `ohho dataset stats VERSION [--store DIR]` | Print stored episode, frame, and range stats |
+
+`--json` prints the same result as JSON. Paths and the cloud-table mapping are
+in [`dataset-versions.md`](dataset-versions.md). Training code still takes a
+dataset path; `ohho.datasets.resolve_dataset_version` turns a version id into
+that path.
+
 ## Smoke tests
 
 CI runs `python -m unittest discover -s tests/cli_smoke` after installing
