@@ -21,8 +21,9 @@ upright. The ``custom["humanoid"]`` block is built in
 
 Low-level :func:`move_joints` is refused unless the mode is ``CUSTOM``, the
 link is simulated, and :func:`policy_allows_low_level_joints` is true. That
-policy hook is false until the class policy lands. On a gated link the call
-still enters the gate, and the gate refuses ``move_joints``.
+hook stays false on an ungated link. A gated link asks
+:class:`ohho.humanoid_policy.HumanoidPolicy`, which allows the command only
+in ``CUSTOM`` on a sim target and applies joint limits.
 """
 
 from __future__ import annotations
@@ -215,8 +216,9 @@ def mode_of(telemetry: Optional[Telemetry]) -> HumanoidMode:
 def policy_allows_low_level_joints() -> bool:
     """Whether the class policy allows low-level joint targets.
 
-    Always false here. The humanoid policy that can return true is a later
-    change. Callers still have to be in ``CUSTOM`` on a simulated link.
+    Always false. An ungated link therefore refuses low-level joints. The
+    gate's humanoid policy is what allows them, and only in ``CUSTOM`` on a
+    sim target. Callers still have to be in ``CUSTOM`` on a simulated link.
     """
     return False
 
