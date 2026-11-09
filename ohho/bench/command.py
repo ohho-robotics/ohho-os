@@ -17,6 +17,7 @@ import time
 from typing import Any
 
 from ohho.bench.errors import BenchHarnessError
+from ohho.bench.generate import GenerateConfig, execute_generate
 from ohho.bench.harness import BenchConfig, execute
 from ohho.bench.report import (
     dump_result,
@@ -46,6 +47,8 @@ def register_bench(subparsers: Any) -> None:
             "  ohho bench --artifact model.onnx --target x86-cpu --baseline prev.json "
             "--slo p95<=200ms --max-regression p95=10%% --markdown summary.md\n"
             "  ohho bench validate out.json\n"
+            "  ohho bench --mode generate --target x86-cpu --workload llm "
+            "--slo ttft_p95<=50ms,tpot_p95<=20ms --json out.json\n"
             "  ohho bench launch --backend vllm --model org/model --dry-run\n"
             "  ohho bench llm --endpoint http://127.0.0.1:8000/v1 "
             "--model org/model --output result.json\n"
@@ -127,6 +130,57 @@ def register_bench(subparsers: Any) -> None:
         default="inference",
         help="workload class stored in run.target (default inference)",
     )
+    bench.add_argument(
+        "--mode",
+        choices=("inference", "generate"),
+        default="inference",
+        help="inference times an artifact; generate measures TTFT and TPOT",
+    )
+    bench.add_argument(
+        "--backend",
+        default=None,
+        help="generate backend: stand-in, transformers, vllm, sglang, tensorrt-llm",
+    )
+    bench.add_argument(
+        "--model",
+        default=None,
+        help="model id for generate mode (default stand-in)",
+    )
+    bench.add_argument(
+        "--precision",
+        default=None,
+        help="comma-separated generate precisions (default fp16,bnb-int4)",
+    )
+    bench.add_argument(
+        "--concurrency",
+        default=None,
+        help="comma-separated generate concurrencies (default 1,4,16)",
+    )
+    bench.add_argument(
+        "--prompt-tokens",
+        dest="prompt_tokens",
+        default=None,
+        help="comma-separated prompt lengths (default 16,64)",
+    )
+    bench.add_argument(
+        "--image-sizes",
+        dest="image_sizes",
+        default=None,
+        help="comma-separated square image sides; llm stays at 0",
+    )
+    bench.add_argument(
+        "--max-tokens",
+        dest="max_tokens",
+        type=int,
+        default=None,
+        help="output tokens per generate request (default 8)",
+    )
+    bench.add_argument(
+        "--requests",
+        type=int,
+        default=None,
+        help="generate requests per cell; raised to the concurrency when lower",
+    )
     commands = bench.add_subparsers(dest="bench_command", required=False)
     validate = commands.add_parser(
         "validate",
@@ -158,8 +212,11 @@ def run_bench_command(
     """Run the harness from parsed CLI arguments.
 
     Tests pass ``runner`` and ``clock`` to avoid a real session. The argparse
-    path leaves both unset and loads the ONNX artifact.
+    path leaves both unset and loads the ONNX artifact. ``--mode generate``
+    measures an autoregressive model instead of an ONNX artifact.
     """
+    if getattr(args, "mode", "inference") == "generate":
+        return _run_generate(args)
     try:
         config = _config(args)
         document = execute(
@@ -167,7 +224,7 @@ def run_bench_command(
             runner=runner,
             clock=clock,
             baseline_path=getattr(args, "baseline", None),
-            slos=tuple(args.slo or ()),
+            slos=_expand_slos(tuple(args.slo or ())),
             max_regressions=tuple(args.max_regression or ()),
             parity_path=getattr(args, "parity", None),
         )
@@ -190,6 +247,119 @@ def run_bench_command(
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 1 if failed else 0
+
+
+def _run_generate(args: argparse.Namespace) -> int:
+    """``ohho bench --mode generate``."""
+    try:
+        if getattr(args, "artifact", None):
+            raise BenchHarnessError("--mode generate does not take --artifact")
+        if getattr(args, "batch", "1") not in (None, "1"):
+            raise BenchHarnessError("generate mode sweeps --concurrency, not --batch")
+        if getattr(args, "inputs", "random") != "random":
+            raise BenchHarnessError(
+                "generate mode does not read a dataset; set --prompt-tokens"
+            )
+        if getattr(args, "baseline", None) or getattr(args, "max_regression", None):
+            raise BenchHarnessError(
+                "generate mode does not take --baseline or --max-regression"
+            )
+        if getattr(args, "parity", None):
+            raise BenchHarnessError(
+                "generate mode scores top-1 action-token agreement and does not "
+                "take --parity"
+            )
+        config = _generate_config(args)
+        document = execute_generate(config, slos=_expand_slos(tuple(args.slo or ())))
+        _emit(document, args)
+    except BenchHarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    gates = document.get("gates")
+    failed = isinstance(gates, dict) and not gates.get("passed", True)
+    if failed:
+        for check in gates.get("checks", []):
+            if not check.get("passed", True):
+                print(
+                    f"gate failed: {check.get('expr', '')}: {check.get('detail', '')}",
+                    file=sys.stderr,
+                )
+    try:
+        _exporters(args, document)
+    except BenchHarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 1 if failed else 0
+
+
+def _generate_config(args: argparse.Namespace) -> GenerateConfig:
+    workload = args.workload
+    if workload == "inference":
+        workload = "llm"
+    return GenerateConfig(
+        target=args.target or "",
+        workload=workload,
+        backend=args.backend or "stand-in",
+        model=args.model or "stand-in",
+        precisions=_precisions(args.precision),
+        concurrencies=_int_list(
+            args.concurrency, "--concurrency", (1, 4, 16), minimum=1
+        ),
+        prompt_tokens=_int_list(
+            args.prompt_tokens, "--prompt-tokens", (16, 64), minimum=1
+        ),
+        image_sizes=_int_list(args.image_sizes, "--image-sizes", (), minimum=0)
+        if args.image_sizes
+        else (),
+        max_tokens=8 if args.max_tokens is None else args.max_tokens,
+        requests=4 if args.requests is None else args.requests,
+        warmup=args.warmup,
+    )
+
+
+def _precisions(text: str | None) -> tuple[str, ...]:
+    if text is None or not str(text).strip():
+        return ("fp16", "bnb-int4")
+    parts = tuple(part.strip() for part in str(text).split(",") if part.strip())
+    if not parts:
+        raise BenchHarnessError("--precision needs at least one value")
+    return parts
+
+
+def _int_list(
+    text: str | None,
+    flag: str,
+    default: tuple[int, ...],
+    *,
+    minimum: int,
+) -> tuple[int, ...]:
+    if text is None or (isinstance(text, str) and not text.strip()):
+        return default
+    if not isinstance(text, str):
+        raise BenchHarnessError(f"{flag} needs a comma-separated list of integers")
+    values: list[int] = []
+    for part in text.split(","):
+        piece = part.strip()
+        if not piece.isdigit():
+            raise BenchHarnessError(
+                f"{flag} values must be integers >= {minimum} (got {text!r})"
+            )
+        value = int(piece)
+        if value < minimum:
+            raise BenchHarnessError(
+                f"{flag} values must be integers >= {minimum} (got {text!r})"
+            )
+        values.append(value)
+    if not values:
+        raise BenchHarnessError(f"{flag} needs at least one integer")
+    return tuple(values)
+
+
+def _expand_slos(values: tuple[str, ...]) -> tuple[str, ...]:
+    expanded: list[str] = []
+    for value in values:
+        expanded.extend(part.strip() for part in value.split(",") if part.strip())
+    return tuple(expanded)
 
 
 def _config(args: argparse.Namespace) -> BenchConfig:

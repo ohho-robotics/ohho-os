@@ -30,6 +30,8 @@ __all__ = [
     "GateCheck",
     "Gates",
     "BatchResult",
+    "LlmPoint",
+    "LlmPrecision",
     "LlmBench",
     "BenchResult",
 ]
@@ -299,6 +301,57 @@ class BatchResult(TypedDict):
     throughput: Throughput
 
 
+class _LlmPointRequired(TypedDict):
+    concurrency: int
+    prompt_tokens: int
+    image_tokens: int
+    precision: str
+    ttft: LatencyStats
+    tpot: LatencyStats
+    e2e: LatencyStats
+    tokens_per_s: float
+    tokens_per_request_s: float
+
+
+class LlmPoint(_LlmPointRequired, total=False):
+    """One generate-mode cell: latency, throughput, and optional memory and
+    agreement.
+
+    Additional properties are allowed.
+    """
+
+    image_size: int
+    requests_per_s: float
+    requests: int
+    output_tokens: int
+    peak_vram_mb: float
+    vram_source: str
+    agreement: Metric
+
+
+class _LlmPrecisionRequired(TypedDict):
+    precision: str
+    ttft: LatencyStats
+    tpot: LatencyStats
+    e2e: LatencyStats
+    tokens_per_s: float
+    tokens_per_request_s: float
+
+
+class LlmPrecision(_LlmPrecisionRequired, total=False):
+    """One precision compared at the primary prompt, image size, and concurrency.
+
+    Additional properties are allowed.
+    """
+
+    peak_vram_mb: float
+    vram_source: str
+    agreement: Metric
+    concurrency: int
+    prompt_tokens: int
+    image_tokens: int
+
+
 class _LlmBenchRequired(TypedDict):
     schema: Literal["ohho.bench.llm/v1"]
     backend: str
@@ -311,8 +364,10 @@ class _LlmBenchRequired(TypedDict):
 
 class LlmBench(_LlmBenchRequired, total=False):
     """LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
-    ohho.bench/v1 result. Records time to first token, inter-token latency,
-    token throughput, and request throughput at one concurrency.
+    ohho.bench/v1 result. Required fields are the primary point: time to first
+    token, inter-token latency, token throughput, and request throughput at one
+    concurrency. Optional tpot, points, and precisions record a generate-mode
+    sweep.
 
     Additional properties are allowed.
     """
@@ -325,6 +380,17 @@ class LlmBench(_LlmBenchRequired, total=False):
     output_tokens: int
     requests: int
     requests_ok: int
+    workload: str
+    tpot: LatencyStats
+    e2e: LatencyStats
+    tokens_per_request_s: float
+    prompt_tokens: int
+    image_tokens: int
+    peak_vram_mb: float
+    vram_source: str
+    agreement: Metric
+    points: list[LlmPoint]
+    precisions: list[LlmPrecision]
 
 
 class _BenchResultRequired(TypedDict):

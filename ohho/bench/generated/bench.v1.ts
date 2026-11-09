@@ -219,9 +219,54 @@ export interface BatchResult {
 }
 
 /**
+ * One generate-mode cell: latency, throughput, and optional memory and
+ * agreement.
+ * Additional properties are allowed.
+ */
+export interface LlmPoint {
+  concurrency: number;
+  prompt_tokens: number;
+  image_tokens: number;
+  image_size?: number;
+  precision: string;
+  ttft: LatencyStats;
+  tpot: LatencyStats;
+  e2e: LatencyStats;
+  tokens_per_s: number;
+  tokens_per_request_s: number;
+  requests_per_s?: number;
+  requests?: number;
+  output_tokens?: number;
+  peak_vram_mb?: number;
+  vram_source?: string;
+  agreement?: Metric;
+}
+
+/**
+ * One precision compared at the primary prompt, image size, and concurrency.
+ * Additional properties are allowed.
+ */
+export interface LlmPrecision {
+  precision: string;
+  ttft: LatencyStats;
+  tpot: LatencyStats;
+  e2e: LatencyStats;
+  tokens_per_s: number;
+  tokens_per_request_s: number;
+  peak_vram_mb?: number;
+  vram_source?: string;
+  agreement?: Metric;
+  concurrency?: number;
+  prompt_tokens?: number;
+  image_tokens?: number;
+}
+
+/**
  * LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
- * ohho.bench/v1 result. Records time to first token, inter-token latency,
- * token throughput, and request throughput at one concurrency.
+ * ohho.bench/v1 result. Required fields are the primary point: time to first
+ * token, inter-token latency, token throughput, and request throughput at one
+ * concurrency. Optional tpot, points, and precisions record a generate-mode
+ * sweep.
  * Additional properties are allowed.
  */
 export interface LlmBench {
@@ -240,6 +285,17 @@ export interface LlmBench {
   output_tokens?: number;
   requests?: number;
   requests_ok?: number;
+  workload?: string;
+  tpot?: LatencyStats;
+  e2e?: LatencyStats;
+  tokens_per_request_s?: number;
+  prompt_tokens?: number;
+  image_tokens?: number;
+  peak_vram_mb?: number;
+  vram_source?: string;
+  agreement?: Metric;
+  points?: LlmPoint[];
+  precisions?: LlmPrecision[];
 }
 
 /**

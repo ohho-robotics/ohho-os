@@ -104,6 +104,10 @@ document = to_bench_result(
 )
 ```
 
+`ohho bench --mode generate` is a separate measurement. It records TTFT, time
+per output token, and tokens/s on a CPU stand-in without launching an
+engine. See [`bench.md`](bench.md).
+
 ## What this tree does not measure
 
 CPU tests use a local fake streaming server. They do not start vLLM,

@@ -64,6 +64,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 
@@ -77,6 +78,7 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 | `ohho bench launch --backend vllm --model ID --dry-run` | Print the external engine command as JSON |
 | `ohho bench version --backend llama-cpp` | Print the engine version, or a clear error when it is not installed |
 | `ohho bench llm --endpoint URL --model ID --output FILE` | Measure TTFT, inter-token latency, tokens/s, and request throughput |
+| `ohho bench --mode generate --target PROFILE` | TTFT, TPOT, tokens/s, concurrency, and 4-bit vs FP16 |
 
 Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
 external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).

@@ -62,6 +62,14 @@ or retype a v1 field.
 | `llm.inter_token` | yes | Gap between later streamed chunks. |
 | `llm.tokens_per_s` | yes | Output chunks divided by wall-clock seconds. |
 | `llm.requests_per_s` | yes | Completed requests divided by wall-clock seconds. |
+| `llm.tpot` | no | Time per output token. Same fields as `llm.ttft`. |
+| `llm.e2e` | no | End-to-end generate latency for the primary cell. |
+| `llm.tokens_per_request_s` | no | Mean output tokens per second of one request. |
+| `llm.points` | no | One row per precision, prompt length, image size, and concurrency. |
+| `llm.precisions` | no | Precision comparison at the primary prompt, image, and concurrency. |
+| `llm.agreement` | no | Top-1 action-token agreement against the FP16 sequence. |
+| `llm.peak_vram_mb` | no | Weight or device memory for the primary precision, in MiB. |
+| `llm.vram_source` | no | How `peak_vram_mb` was obtained. |
 
 The load generator also writes `latency.stages` named `ttft` and
 `inter_token`, and `throughput.unit` of `tokens/s`. `accuracy.primary` for

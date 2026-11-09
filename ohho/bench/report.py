@@ -84,6 +84,24 @@ def render_markdown(document: dict[str, Any]) -> str:
                 max=_num(stage.get("max", 0)),
             )
         )
+    llm = document.get("llm")
+    if isinstance(llm, dict) and isinstance(llm.get("points"), list) and llm["points"]:
+        lines.append("")
+        lines.append("### Generate")
+        lines.append("")
+        lines.append("| Precision | Conc | Prompt | TTFT p95 | TPOT p95 | tokens/s |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        for point in llm["points"]:
+            lines.append(
+                "| {precision} | {concurrency} | {prompt} | {ttft} | {tpot} | {rate} |".format(
+                    precision=_cell(point.get("precision", "")),
+                    concurrency=point.get("concurrency", ""),
+                    prompt=point.get("prompt_tokens", ""),
+                    ttft=_num(point.get("ttft", {}).get("p95", 0)),
+                    tpot=_num(point.get("tpot", {}).get("p95", 0)),
+                    rate=_num(point.get("tokens_per_s", 0)),
+                )
+            )
     batches = document.get("batches")
     if isinstance(batches, list) and batches:
         lines.append("")

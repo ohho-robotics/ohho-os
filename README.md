@@ -301,6 +301,13 @@ first token, inter-token latency, tokens/s, request throughput) and writes
 TensorRT-LLM, and llama.cpp are external programs, not package dependencies.
 See [`docs/serve/llm-backends.md`](docs/serve/llm-backends.md).
 
+`ohho bench --mode generate --target x86-cpu` measures time to first token,
+time per output token, and tokens/s for an autoregressive model. The default
+backend is a CPU stand-in. It sweeps concurrency and prompt length, and it
+compares FP16 with 4-bit precisions (latency, weight memory, and top-1
+action-token agreement). `--slo ttft_p95<=50ms,tpot_p95<=20ms` gates the
+primary cell. See [`docs/serve/bench.md`](docs/serve/bench.md).
+
 ## TypeScript
 
 The TypeScript SDK (`@ohho/schemas`, `@ohho/connect`, `@ohho/client`) lives in
