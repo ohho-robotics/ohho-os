@@ -7,7 +7,9 @@ checkpoint and seed repeat the same success rate. Scenario geometry is read
 from the suite file at run time.
 
 Scoring distances match the Proof nav regression checker: 0.30 m in XY and
-0.50 rad in yaw. This runner does not launch an external simulator.
+0.50 rad in yaw. The goal is scored after every integration, including the
+last. Precedence is collision, then success, then timeout. This runner does
+not launch an external simulator.
 """
 
 from __future__ import annotations
@@ -257,43 +259,66 @@ def _rollout(
     trace: list[list[float]] = [
         [_round(scenario.start_x), _round(scenario.start_y), _round(scenario.start_yaw)]
     ]
+    # Score the pose after every integration, including the last. A step whose
+    # predicted pose intersects the expanded obstacle is collision and is not
+    # applied, so contact wins over a goal that the same pose would have
+    # entered. Otherwise an integrated pose inside the goal is success.
+    # Reaching the step horizon with neither result is timeout.
+    # length is the integration count on success (0 when the start pose is
+    # already inside the goal), the contacting step on collision, and
+    # MAX_STEPS on timeout.
     failure: str | None = None
-    length = MAX_STEPS
-    for step in range(1, MAX_STEPS + 1):
-        x = sim._odom.x
-        y = sim._odom.y
-        theta = sim._odom.theta
-        vx, wz, done = _command(
-            x,
-            y,
-            theta,
-            scenario,
-            speed=speed,
-            heading_gain=heading_gain,
-            max_ang=max_ang,
-        )
-        if done:
-            length = step - 1
-            failure = None
-            break
-        nxt_x, nxt_y, _nxt_theta = _integrate(x, y, theta, vx, wz, DT_S)
-        if _hits_obstacle(nxt_x, nxt_y, scenario):
-            length = step
-            failure = "collision"
-            break
-        sim.send_velocity(Velocity(vx, 0.0, wz))
-        sim.step(DT_S)
-        trace.append(
-            [_round(sim._odom.x), _round(sim._odom.y), _round(sim._odom.theta)]
-        )
-    else:
-        failure = "timeout"
+    length = 0
+    if not _reached_goal(sim._odom.x, sim._odom.y, sim._odom.theta, scenario):
+        for step in range(1, MAX_STEPS + 1):
+            x = sim._odom.x
+            y = sim._odom.y
+            theta = sim._odom.theta
+            vx, wz, _ = _command(
+                x,
+                y,
+                theta,
+                scenario,
+                speed=speed,
+                heading_gain=heading_gain,
+                max_ang=max_ang,
+            )
+            nxt_x, nxt_y, _nxt_theta = _integrate(x, y, theta, vx, wz, DT_S)
+            if _hits_obstacle(nxt_x, nxt_y, scenario):
+                length = step
+                failure = "collision"
+                break
+            sim.send_velocity(Velocity(vx, 0.0, wz))
+            sim.step(DT_S)
+            trace.append(
+                [_round(sim._odom.x), _round(sim._odom.y), _round(sim._odom.theta)]
+            )
+            if _reached_goal(sim._odom.x, sim._odom.y, sim._odom.theta, scenario):
+                length = step
+                break
+        else:
+            length = MAX_STEPS
+            failure = "timeout"
     return {
         "success": failure is None,
         "length": length,
         "failure_mode": failure,
         "trace": trace,
     }
+
+
+def _reached_goal(
+    x: float,
+    y: float,
+    theta: float,
+    scenario: ProofScenario,
+) -> bool:
+    """True when XY and yaw are inside the Proof goal tolerance."""
+    dx = scenario.goal_x - x
+    dy = scenario.goal_y - y
+    if math.hypot(dx, dy) > GOAL_XY_TOLERANCE_M:
+        return False
+    return abs(_wrap(scenario.goal_yaw - theta)) <= GOAL_YAW_TOLERANCE_RAD
 
 
 def _command(
@@ -308,10 +333,10 @@ def _command(
 ) -> tuple[float, float, bool]:
     dx = scenario.goal_x - x
     dy = scenario.goal_y - y
+    if _reached_goal(x, y, theta, scenario):
+        return 0.0, 0.0, True
     if math.hypot(dx, dy) <= GOAL_XY_TOLERANCE_M:
         yaw_err = _wrap(scenario.goal_yaw - theta)
-        if abs(yaw_err) <= GOAL_YAW_TOLERANCE_RAD:
-            return 0.0, 0.0, True
         return 0.0, _clamp(heading_gain * yaw_err, -max_ang, max_ang), False
     heading_err = _wrap(math.atan2(dy, dx) - theta)
     vx = speed * max(0.0, math.cos(heading_err))

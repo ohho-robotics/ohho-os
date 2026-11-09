@@ -44,9 +44,13 @@ The report stores scenario ids, not the poses.
 
 The kinematic rollout reads each scenario's start, goal, and obstacle box. XY
 success is 0.30 m and yaw success is 0.50 rad, the same limits as the Proof
-nav regression checker. The box is expanded by a 0.18 m body radius. Contact
-is `collision`. Still short of the goal after 400 steps of 0.05 s is
-`timeout`.
+nav regression checker. The box is expanded by a 0.18 m body radius. The goal
+is scored after every 0.05 s integration, including the 400th. Precedence on
+each step is `collision`, then success, then keep driving. A step whose
+predicted pose intersects the expanded box is `collision` and is not applied,
+so it is not also a success when that pose lies inside the goal. `length` is
+the number of integrations on success (0 when the start pose is already
+inside the goal), the contacting step on collision, and 400 on `timeout`.
 
 A JSON checkpoint may set controller gains:
 

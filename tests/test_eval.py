@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import tempfile
 import unittest
@@ -12,7 +13,9 @@ from pathlib import Path
 from unittest import mock
 
 from ohho.cli import main
+from ohho.eval import runner as eval_runner
 from ohho.eval import (
+    ProofScenario,
     SCHEMA_ID,
     SUITES,
     EvalError,
@@ -58,6 +61,30 @@ scenarios:
 """
 
 _REL = "omnibot-ros2/omnibot_navigation/config/nav_regression_scenarios.yaml"
+
+
+def _pose_scenario(
+    scenario_id: str,
+    goal_x: float,
+    obstacle_x: float,
+    obstacle_y: float,
+) -> str:
+    def num(value: float) -> str:
+        return format(value, ".12f")
+
+    return (
+        "version: 1\n"
+        "frame_id: map\n"
+        "world: apartment\n"
+        "scenarios:\n"
+        f"  - id: {scenario_id}\n"
+        "    start: {x: 0.0, y: 0.0, yaw_deg: 0.0}\n"
+        f"    goal: {{x: {num(goal_x)}, y: 0.0, yaw_deg: 0.0}}\n"
+        "    obstacle:\n"
+        "      name: box\n"
+        f"      pose: {{x: {num(obstacle_x)}, y: {num(obstacle_y)}, yaw_deg: 0.0}}\n"
+        "      size: {x: 0.2, y: 0.2, z: 0.2}\n"
+    )
 
 
 def _omnibot_root() -> Path | None:
@@ -220,6 +247,38 @@ class TestEvalRunner(unittest.TestCase):
             **kwargs,  # type: ignore[arg-type]
         )
 
+    def _episode_speed(self, checkpoint: Path, seed: int) -> float:
+        from ohho.registry import get_spec
+
+        digest = eval_runner.checkpoint_sha256(checkpoint)
+        base_speed, _gain = eval_runner.controller_gains(checkpoint, digest)
+        scale = 0.85 + 0.15 * eval_runner._unit(digest, seed)
+        return min(float(get_spec("sim").max_lin), base_speed * scale)
+
+    def _run_pose_case(
+        self,
+        root: Path,
+        checkpoint: Path,
+        scenario_id: str,
+        *,
+        goal_x: float,
+        obstacle_x: float,
+        obstacle_y: float,
+    ) -> dict:
+        scenarios = root / f"{scenario_id}.yaml"
+        scenarios.write_text(
+            _pose_scenario(scenario_id, goal_x, obstacle_x, obstacle_y),
+            encoding="utf-8",
+        )
+        return run_eval(
+            checkpoint,
+            "gazebo-nav-regression",
+            episodes=1,
+            seed=0,
+            scenarios=scenarios,
+            videos=root / f"{scenario_id}-videos",
+        )
+
     def test_same_checkpoint_and_seed_repeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -260,6 +319,104 @@ class TestEvalRunner(unittest.TestCase):
         self.assertEqual((low, high), wilson_interval(4, 6))
         self.assertLessEqual(low, report["success_rate"])
         self.assertGreaterEqual(high, report["success_rate"])
+
+    def test_last_step_goal_is_success_and_collision_still_wins(self) -> None:
+        """Arrival on step MAX_STEPS counts; contact on that step stays collision."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = self._write_checkpoint(root, 0.5)
+            speed = self._episode_speed(checkpoint, seed=0)
+            x = 0.0
+            positions = [0.0]
+            for _step in range(eval_runner.MAX_STEPS):
+                x, _y, _theta = eval_runner._integrate(
+                    x, 0.0, 0.0, speed, 0.0, eval_runner.DT_S
+                )
+                positions.append(x)
+            before = positions[-2]
+            after = positions[-1]
+            step_m = after - before
+            tol = eval_runner.GOAL_XY_TOLERANCE_M
+            # Just outside before the last integration, inside after it.
+            goal = before + tol + 0.5 * step_m
+            self.assertGreater(goal - before, tol)
+            self.assertLessEqual(abs(goal - after), tol)
+
+            success = self._run_pose_case(
+                root,
+                checkpoint,
+                "last_step_goal",
+                goal_x=goal,
+                obstacle_x=-50.0,
+                obstacle_y=-50.0,
+            )
+            hit_goal = after + tol - 0.25 * step_m
+            half_x = 0.2 / 2.0 + eval_runner.BODY_RADIUS_M
+            # Leading edge sits between the last two predicted poses.
+            obstacle_x = before + 0.5 * step_m + half_x
+            hit = ProofScenario(
+                id="last_step_hit",
+                start_x=0.0,
+                start_y=0.0,
+                start_yaw=0.0,
+                goal_x=hit_goal,
+                goal_y=0.0,
+                goal_yaw=0.0,
+                obstacle_name="box",
+                obstacle_x=obstacle_x,
+                obstacle_y=0.0,
+                obstacle_yaw=0.0,
+                size_x=0.2,
+                size_y=0.2,
+                size_z=0.2,
+                world="apartment",
+                frame_id="map",
+            )
+            self.assertGreater(hit_goal - before, tol)
+            self.assertLessEqual(abs(hit_goal - after), tol)
+            self.assertFalse(eval_runner._hits_obstacle(before, 0.0, hit))
+            self.assertTrue(eval_runner._hits_obstacle(after, 0.0, hit))
+            collision = self._run_pose_case(
+                root,
+                checkpoint,
+                "last_step_hit",
+                goal_x=hit_goal,
+                obstacle_x=obstacle_x,
+                obstacle_y=0.0,
+            )
+
+            success_row = success["episodes"][0]
+            self.assertTrue(success_row["success"])
+            self.assertIsNone(success_row["failure_mode"])
+            self.assertEqual(success_row["length"], eval_runner.MAX_STEPS)
+            self.assertEqual(success["success_rate"], 1.0)
+            self.assertEqual(success["failure_modes"], {})
+            success_poses = json.loads(
+                Path(success_row["video_path"]).read_text(encoding="utf-8")
+            )["poses"]
+            self.assertEqual(len(success_poses), eval_runner.MAX_STEPS + 1)
+            self.assertGreater(
+                math.hypot(goal - success_poses[-2][0], success_poses[-2][1]),
+                tol,
+            )
+            self.assertLessEqual(
+                math.hypot(goal - success_poses[-1][0], success_poses[-1][1]),
+                tol,
+            )
+            validate_report(success)
+
+            collision_row = collision["episodes"][0]
+            self.assertFalse(collision_row["success"])
+            self.assertEqual(collision_row["failure_mode"], "collision")
+            self.assertEqual(collision_row["length"], eval_runner.MAX_STEPS)
+            self.assertEqual(collision["success_rate"], 0.0)
+            self.assertEqual(collision["failure_modes"], {"collision": 1})
+            collision_poses = json.loads(
+                Path(collision_row["video_path"]).read_text(encoding="utf-8")
+            )["poses"]
+            # The contacting step is not applied, so the trace stops one short.
+            self.assertEqual(len(collision_poses), eval_runner.MAX_STEPS)
+            validate_report(collision)
 
     def test_checkpoint_changes_the_clear_episode_length(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
