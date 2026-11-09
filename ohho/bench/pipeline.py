@@ -58,9 +58,10 @@ PIPELINE_STAGE_NAMES: tuple[str, ...] = (
 _SOURCES = frozenset({"sim", "lerobot", "rosbag", "fixture", "hardware"})
 _SINKS = frozenset({"inprocess", "sim", "ros2"})
 _WORLDS = frozenset({"sim", "recorded", "hardware"})
-_DEVICE_SCHEMES = frozenset(
-    {"serial", "dds", "feetech", "usb", "can", "mavlink", "px4", "ros2"}
-)
+# Bus and middleware names. Product-specific transport schemes are read from
+# loaded plugins in ``_device_schemes`` so this module does not spell them.
+_GENERIC_DEVICE_SCHEMES = frozenset({"serial", "dds", "usb", "can", "mavlink", "ros2"})
+_SIM_URI_SCHEMES = frozenset({"sim", "simulated"})
 _SHA = re.compile(r"^(sha256:)?[0-9a-fA-F]{7,128}\Z")
 _MAX_EDGE = 4096
 _EPS = 1e-9
@@ -977,7 +978,10 @@ def _episode_images(
             )
         return video[: len(rows)], "camera"
     inline = _jsonl_images(root, episode)
-    if inline:
+    # The episode file exists for a state-only recording too. That is a missing
+    # camera, not a camera with a hole in it. A hole is an image on some frames
+    # and none on others.
+    if any(item is not None for item in inline):
         if len(inline) != len(rows) or any(item is None for item in inline):
             raise BenchHarnessError(
                 f"episode {episode} is missing observation.images.front on a frame"
@@ -1488,11 +1492,44 @@ def _require_digest(policy: Any) -> str:
     return digest
 
 
+def _remember_device_name(names: set[str], raw: str) -> None:
+    """Add one transport or adapter id, and the first token of a compound id."""
+    text = raw.strip().lower()
+    if not text or text in _SIM_URI_SCHEMES:
+        return
+    names.add(text)
+    head = re.split(r"[^a-z0-9]+", text, maxsplit=1)[0]
+    if head and head not in _SIM_URI_SCHEMES:
+        names.add(head)
+
+
+def _device_schemes() -> frozenset[str]:
+    """URI schemes that address a robot link.
+
+    Generic bus names are fixed. Every other scheme is the transport table or
+    adapter id of a plugin that loaded, so a new robot link is refused here
+    without naming that robot in this file. ``sim://`` stays a dataset path.
+    """
+    names = set(_GENERIC_DEVICE_SCHEMES)
+    from ohho.plugins import loaded_plugins
+
+    for info in loaded_plugins():
+        if info.error:
+            continue
+        for scheme in info.schemes:
+            _remember_device_name(names, scheme)
+        for spec in info.specs:
+            adapter = getattr(spec, "adapter", "")
+            if isinstance(adapter, str):
+                _remember_device_name(names, adapter)
+    return frozenset(names)
+
+
 def _reject_device_uri(value: str | None, label: str) -> None:
     if not isinstance(value, str) or "://" not in value:
         return
     scheme = value.split("://", 1)[0].strip().lower()
-    if scheme in _DEVICE_SCHEMES:
+    if scheme in _device_schemes():
         raise BenchHarnessError(
             f"{label} looks like a robot transport ({value!r}). "
             "The pipeline bench does not open a robot."
