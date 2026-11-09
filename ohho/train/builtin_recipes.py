@@ -68,18 +68,24 @@ class ActRecipe:
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         plan = prepare_precision(recipe, family=self)
         kwargs = _act_kwargs(recipe)
+        train_steps = int(kwargs.get("train_steps", 200))
+        pruning = _pruning_for(recipe, train_steps)
+        planned = train_steps
+        if pruning is not None:
+            from .compression.pruning import optimizer_steps
+
+            planned = optimizer_steps(pruning, train_steps)
         dataset_path = _dataset_dir(recipe)
         torch = _load_torch()
         _emit_declared(recipe, emit)
         _apply_seed(torch, recipe, plan.device)
-        train_steps = int(kwargs.get("train_steps", 200))
         emit(
             {
                 "event": "train_start",
                 "family": self.id,
                 "device": plan.device,
                 "precision": plan.precision,
-                "train_steps": train_steps,
+                "train_steps": planned,
             }
         )
         try:
@@ -91,6 +97,7 @@ class ActRecipe:
                 device=plan.device,
                 precision=plan.precision,
                 mock=False,
+                pruning=pruning,
                 **kwargs,
             )
         except Exception as exc:
@@ -167,6 +174,22 @@ def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
             f"hyperparameters.d_model ({d_model}) must be divisible by nhead ({nhead})"
         )
     return kwargs
+
+
+def _pruning_for(recipe: dict[str, Any], train_steps: int) -> dict[str, Any] | None:
+    """Normalize ``recipe["pruning"]`` before training starts.
+
+    A schedule that cannot fit in ``train_steps`` fails here, so the run
+    manifest is not opened.
+    """
+    block = recipe.get("pruning")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise RecipeConfigError("pruning must be a mapping")
+    from .compression.pruning import normalize_pruning
+
+    return normalize_pruning(block, train_steps=train_steps)
 
 
 def _dataset_dir(recipe: dict[str, Any]) -> Path:

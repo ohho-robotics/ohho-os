@@ -71,6 +71,7 @@ CONSOLE_FIELDS = (
     "gpu",
     "final_loss",
     "precision_metrics",
+    "pruning",
     "error",
     "resolved_config",
 )
@@ -211,6 +212,7 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
+    pruning: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON object, with keys in console-summary order."""
@@ -246,6 +248,7 @@ class RunManifest:
                 ),
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
+            "pruning": _copy_pruning(self.pruning),
         }
 
     @classmethod
@@ -318,6 +321,7 @@ class RunManifest:
                 "eval_hooks": [str(item) for item in hooks["eval_hooks"]],
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
+            pruning=_copy_pruning(document.get("pruning")),
         )
 
 
@@ -344,6 +348,7 @@ class RunCapture:
     gpu: GpuRecord | None
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
+    pruning: dict[str, Any] | None = None
 
 
 def schema_path() -> Path:
@@ -586,6 +591,7 @@ def capture_run(
         gpu=None if gpu is None else GpuRecord(**gpu),
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
+        pruning=_capture_pruning(recipe),
     )
 
 
@@ -602,6 +608,8 @@ def manifest_from_capture(
     device: str | None = None,
     throughput_steps_per_s: Any = None,
     peak_memory_bytes: Any = None,
+    pruning_report: Any = None,
+    pruning_from_metrics: bool = False,
 ) -> RunManifest:
     """Build a manifest from a start snapshot plus the outcome fields."""
     used = device.strip() if isinstance(device, str) and device.strip() else ""
@@ -660,6 +668,9 @@ def manifest_from_capture(
             normalize_throughput(throughput_steps_per_s),
             normalize_peak(peak_memory_bytes),
         ),
+        pruning=_copy_pruning(pruning_report)
+        if pruning_from_metrics
+        else _copy_pruning(capture.pruning),
     )
 
 
@@ -779,6 +790,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"final_loss: {_format_value(document.get('final_loss'))}",
             "precision_metrics: "
             + _format_precision_metrics(document.get("precision_metrics")),
+            "pruning: " + _format_pruning(document.get("pruning")),
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
             + json.dumps(
@@ -1109,6 +1121,37 @@ def _format_precision_metrics(value: Any) -> str:
             f"{name} throughput_steps_per_s={throughput} peak_memory_bytes={peak}"
         )
     return " ".join(parts)
+
+
+def _format_pruning(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "null"
+    keys = (
+        "method",
+        "schedule",
+        "target_sparsity",
+        "achieved_sparsity",
+        "params_before",
+        "params_after",
+        "export_bytes_before",
+        "export_bytes_after",
+    )
+    return " ".join(f"{key}={_format_value(value.get(key))}" for key in keys)
+
+
+def _copy_pruning(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return json.loads(json.dumps(value))
+
+
+def _capture_pruning(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    block = recipe.get("pruning")
+    if not isinstance(block, Mapping):
+        return None
+    from .compression.pruning import pending_report
+
+    return pending_report(block)
 
 
 def _capture_precision(recipe: Mapping[str, Any]) -> str:

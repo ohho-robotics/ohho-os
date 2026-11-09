@@ -39,6 +39,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
 | `precision` | `fp32` (default), `fp16`, `bf16`, or `fp8`. See [Mixed precision](precision.md). An unsupported choice fails before training. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
+| `pruning` | Optional magnitude, structured, or 2:4 block. See [Pruning](pruning.md). `target_sparsity`, `schedule`, `include`, and `exclude` are sweepable. Omit the block to train dense. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `output.dir` | Directory for the checkpoint, `metrics.json`, and `run_manifest.json`. |
@@ -59,7 +60,7 @@ Relative paths are resolved from the process working directory.
 8. Call the trainer.
 9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
 
-A failure in steps 1–6 does not call the trainer, does not emit `train_start`, and does not write a manifest. Schema validation happens before the availability check, so an invalid field on an unavailable family is exit `1`, not exit `3`.
+A failure in steps 1–6 does not call the trainer, does not emit `train_start`, and does not write a manifest. Schema validation happens before the availability check, so an invalid field on an unavailable family is exit `1`, not exit `3`. After schema validation the runner normalizes an optional `pruning` block (defaults, and the `nm_2_4` target of `0.5`). An iterative schedule that cannot fit in `train_steps` fails in family preflight, still before `train_start`.
 
 ## `--set`
 
@@ -93,7 +94,7 @@ ACT hyperparameters that are passed through to `train_act` are `train_steps`, `b
 
 `train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command.
 
-The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. `metrics.json` carries the same precision, throughput, and peak memory. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
+The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, the pruning report when a `pruning` block was set, every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. `metrics.json` carries the same precision, throughput, peak memory, and pruning report. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
 
 ## Progress stream
 

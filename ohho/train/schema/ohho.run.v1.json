@@ -209,6 +209,13 @@
         "compression_hooks": {"type": "array", "items": {"type": "string"}},
         "eval_hooks": {"type": "array", "items": {"type": "string"}}
       }
+    },
+    "pruning": {
+      "description": "Pruning report. Null when the recipe has no pruning block. Absent is treated the same as null so an older manifest still validates. Per-layer sparsity is under layers. Structured runs also record parameter counts and exported file sizes before and after the shrink.",
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/pruning_report"}
+      ]
     }
   },
   "$defs": {
@@ -234,6 +241,82 @@
           }
         }
       ]
+    },
+    "pruning_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "schedule",
+        "target_sparsity",
+        "include",
+        "exclude",
+        "start_step",
+        "end_step",
+        "iterations",
+        "finetune_steps",
+        "layers",
+        "skipped",
+        "achieved_sparsity",
+        "params_before",
+        "params_after",
+        "export_bytes_before",
+        "export_bytes_after",
+        "export_format",
+        "export_dir",
+        "tensorrt_engine",
+        "tensorrt_error"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["unstructured", "structured_channel", "structured_head", "nm_2_4"]
+        },
+        "schedule": {
+          "type": "string",
+          "enum": ["one_shot", "gradual", "iterative"]
+        },
+        "target_sparsity": {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+        "include": {"type": "array", "items": {"type": "string"}},
+        "exclude": {"type": "array", "items": {"type": "string"}},
+        "start_step": {"type": ["integer", "null"], "minimum": 0},
+        "end_step": {"type": ["integer", "null"], "minimum": 0},
+        "iterations": {"type": ["integer", "null"], "minimum": 1},
+        "finetune_steps": {"type": ["integer", "null"], "minimum": 1},
+        "layers": {"type": "array", "items": {"$ref": "#/$defs/pruning_layer"}},
+        "skipped": {"type": "array", "items": {"$ref": "#/$defs/pruning_skipped"}},
+        "achieved_sparsity": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "params_before": {"type": ["integer", "null"], "minimum": 0},
+        "params_after": {"type": ["integer", "null"], "minimum": 0},
+        "export_bytes_before": {"type": ["integer", "null"], "minimum": 0},
+        "export_bytes_after": {"type": ["integer", "null"], "minimum": 0},
+        "export_format": {"type": ["string", "null"], "minLength": 1},
+        "export_dir": {"type": ["string", "null"], "minLength": 1},
+        "tensorrt_engine": {"type": ["string", "null"], "minLength": 1},
+        "tensorrt_error": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "pruning_layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "sparsity", "params_before", "params_after", "nonzero"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "sparsity": {"type": "number", "minimum": 0, "maximum": 1},
+        "params_before": {"type": "integer", "minimum": 0},
+        "params_after": {"type": "integer", "minimum": 0},
+        "nonzero": {"type": "integer", "minimum": 0}
+      }
+    },
+    "pruning_skipped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "reason"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
     }
   }
 }

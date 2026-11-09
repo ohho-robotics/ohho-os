@@ -94,6 +94,56 @@
       "enum": ["cpu", "cuda", "mps", "auto"],
       "default": "cpu"
     },
+    "pruning": {
+      "description": "Optional pruning. Omit it to train a dense model. target_sparsity, schedule, include, and exclude are sweepable with --set. nm_2_4 keeps 2 of every 4 weights, so its target_sparsity is 0.5. include and exclude are module-name patterns; an empty include selects every layer the method can prune, and exclude wins.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "schedule", "target_sparsity"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["unstructured", "structured_channel", "structured_head", "nm_2_4"]
+        },
+        "schedule": {
+          "type": "string",
+          "enum": ["one_shot", "gradual", "iterative"]
+        },
+        "target_sparsity": {
+          "description": "Fraction of weights or channels or heads to remove. 0.5 for nm_2_4.",
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "include": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "exclude": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "start_step": {
+          "description": "First gradual step. Defaults to 0. Only for schedule gradual.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_step": {
+          "description": "Gradual step that reaches target_sparsity. Defaults to the last optimizer step. Only for schedule gradual.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "iterations": {
+          "description": "Prune-and-fine-tune cycles. Defaults to 3. Only for schedule iterative.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "finetune_steps": {
+          "description": "Optimizer steps after each iterative prune. When set, the run length is iterations times this value. Only for schedule iterative.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
     "compression_hooks": {
       "type": "array",
       "items": {"$ref": "#/$defs/hook"}
