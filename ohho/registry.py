@@ -30,6 +30,7 @@ from . import capabilities as caps
 from .capability_params import reject_unknown_capabilities
 from .robot_spec import (
     BUILTIN_SOURCE,
+    CI_SCENARIOS,
     GENERIC_CAPABILITIES,
     AerialLimits,
     CiSim,
@@ -223,73 +224,7 @@ class RobotSpec:
         return False if limits is None else limits.flight_ready
 
 
-# Poses the built-in quadruped adapter already forwards
-# (``ohho/adapters/unitree.py`` sport methods). ``euler`` and ``stop_move`` are
-# commands, not poses, so they are not listed. This is not a safety allowlist.
-_QUADRUPED_POSES = (
-    "stand_up",
-    "stand_down",
-    "balance_stand",
-    "recovery_stand",
-    "sit",
-    "rise_sit",
-    "damp",
-)
-
-# OmniBot's SO-101 arm joints (kept in sync with the ROS arm driver defaults).
-_OMNIBOT_ARM = (
-    "arm_shoulder_pan",
-    "arm_shoulder_lift",
-    "arm_elbow_flex",
-    "arm_wrist_flex",
-    "arm_wrist_roll",
-    "arm_gripper",
-)
-
 _BUILTINS: dict[str, RobotSpec] = {
-    "omnibot": RobotSpec(
-        id="omnibot",
-        name="OmniBot",
-        category="mobile-manipulator",
-        capabilities=(
-            caps.BASE_DRIVE,
-            caps.BASE_HOLONOMIC,
-            caps.PERCEPTION_RGB,
-            caps.PERCEPTION_DEPTH,
-            caps.PERCEPTION_SCAN,
-            caps.MANIPULATION,
-        ),
-        adapter="yahboom-serial",
-        dof_base=3,
-        dof_arm=6,
-        max_lin=0.2,
-        max_ang=1.0,
-        joint_names=_OMNIBOT_ARM,
-        joint_groups={"arm": _OMNIBOT_ARM},
-        robot_class=RobotClass.MOBILE_MANIPULATOR,
-        source=BUILTIN_SOURCE,
-    ),
-    "unitree-go2": RobotSpec(
-        id="unitree-go2",
-        name="Unitree Go2",
-        category="legged",
-        capabilities=(
-            caps.BASE_DRIVE,
-            caps.BASE_HOLONOMIC,
-            caps.PERCEPTION_RGB,
-            caps.PERCEPTION_DEPTH,
-            caps.PERCEPTION_SCAN,
-            caps.LEGGED_POSE,
-        ),
-        adapter="unitree-dds",
-        dof_base=3,
-        dof_arm=0,
-        max_lin=1.5,
-        max_ang=2.0,
-        robot_class=RobotClass.QUADRUPED,
-        source=BUILTIN_SOURCE,
-        capability_params={caps.LEGGED_POSE: {"poses": list(_QUADRUPED_POSES)}},
-    ),
     "sim": RobotSpec(
         id="sim",
         name="Generic Sim Bot",
@@ -302,6 +237,10 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_ang=2.0,
         robot_class=RobotClass.MOBILE_BASE,
         source=BUILTIN_SOURCE,
+        ci_sim=CiSim(
+            enabled=True,
+            scenario=CI_SCENARIOS[RobotClass.MOBILE_BASE],
+        ),
     ),
     # Ohho caps, not PX4 MPC_XY_VEL_MAX. Default transport is sim:// (drone-sim).
     # px4-x500 is spec only: nothing connects. Its arming flag is for a
@@ -405,8 +344,10 @@ def register(spec: RobotSpec) -> RobotSpec:
 
     Capability names must be in the vocabulary. Parameter objects are checked
     against their schemas. The parameters describe the robot; they do not
-    change safety caps. Plugin specs are loaded first so a later ``register``
-    replaces one id without hiding the others.
+    change safety caps. Discovery still fills the registry from plugins, and
+    this spec is stored after that, so a later ``register`` replaces one id
+    without hiding the others. A failed built-in plugin is not hidden by a
+    second copy of the built-in table.
     """
     _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)

@@ -1,0 +1,34 @@
+<mujoco model="dummy-humanoid">
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 -9.81">
+    <flag contact="disable"/>
+  </option>
+  <worldbody>
+    <body name="base" pos="0 0 1">
+      <freejoint name="root"/>
+      <geom type="box" size="0.08 0.06 0.12" mass="3"/>
+      <body name="left_thigh" pos="0 0.06 -0.12">
+        <joint name="left_hip" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.22" size="0.025" mass="0.4"/>
+        <body name="left_shin" pos="0 0 -0.22">
+          <joint name="left_knee" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.22" size="0.02" mass="0.3"/>
+        </body>
+      </body>
+      <body name="right_thigh" pos="0 -0.06 -0.12">
+        <joint name="right_hip" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.22" size="0.025" mass="0.4"/>
+        <body name="right_shin" pos="0 0 -0.22">
+          <joint name="right_knee" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.22" size="0.02" mass="0.3"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="left_hip" joint="left_hip" gear="1"/>
+    <motor name="left_knee" joint="left_knee" gear="1"/>
+    <motor name="right_hip" joint="right_hip" gear="1"/>
+    <motor name="right_knee" joint="right_knee" gear="1"/>
+  </actuator>
+</mujoco>

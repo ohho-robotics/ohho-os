@@ -8,6 +8,7 @@ caps. ``SafetyGate`` does not read them.
 from __future__ import annotations
 
 from ohho import capabilities as caps
+from ohho.humanoid_sim import HUMANOID_MUJOCO_BACKEND
 from ohho.registry import RobotSpec
 from ohho.robot_spec import HumanoidLimits, RobotAssets, RobotClass
 
@@ -63,6 +64,7 @@ def booster_t2_spec() -> RobotSpec:
             },
         },
         adapter="sim",
+        sim_backend=HUMANOID_MUJOCO_BACKEND,
         dof_base=3,
         dof_arm=14,
         max_lin=_MAX_LIN,

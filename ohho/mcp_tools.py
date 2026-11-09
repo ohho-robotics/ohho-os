@@ -31,7 +31,7 @@ ToolHandler = Callable[[Dict[str, Any]], Dict[str, Any]]
 class RobotSession:
     """Optional live robot connection shared across tool calls."""
 
-    robot_id: str = "omnibot"
+    robot_id: str = ""
     transport: str = "sim://"
     runtime: str = "native"
     memory_path: Optional[str] = None
@@ -39,6 +39,12 @@ class RobotSession:
     allow_hardware: bool = False
     _robot: Optional[Robot] = field(default=None, repr=False)
     _world: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        if not self.robot_id:
+            from .plugins import preferred_robot_id
+
+            self.robot_id = preferred_robot_id()
 
     def connect(self) -> Robot:
         """Open the session link. Never arms.
@@ -920,7 +926,7 @@ def build_tools(session: RobotSession) -> List[McpTool]:
                 {
                     "robot": {
                         "type": "string",
-                        "description": "Robot id from `ohho list` (default: omnibot).",
+                        "description": "Robot id from `ohho list`.",
                     },
                     "transport": {
                         "type": "string",

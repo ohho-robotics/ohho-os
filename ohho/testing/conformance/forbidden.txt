@@ -1,0 +1,10 @@
+# Grep tokens that cannot be allowlisted, and SDK import roots the sentinel
+# watches. Core Python and JSON do not spell these names (OHH-330). The
+# conformance grep still rejects a token row anywhere it scans.
+#
+# kind	value
+token	booster
+token	t2
+sdk	booster_robotics_sdk
+sdk	booster_robotics_sdk_python
+sdk	unitree_sdk2py

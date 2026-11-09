@@ -17,8 +17,8 @@ from ohho.adapters.composite import CompositeTransport
 from ohho.adapters.feetech import FeetechTransport
 from ohho.adapters.ros2 import Ros2Transport
 from ohho.adapters.sim import SimTransport
-from ohho.adapters.unitree import UnitreeDdsTransport
-from ohho.adapters.yahboom import YahboomTransport
+from ohho.robots.unitree.dds import UnitreeDdsTransport
+from ohho.robots.omnibot.yahboom import YahboomTransport
 from ohho.plugins import ENTRY_GROUP, describe_plugin_schemes, loaded_plugins
 from ohho.registry import RobotSpec, UnknownRobot, get_spec, spec_from_dict
 
@@ -110,15 +110,12 @@ class _DictOnly:
 
 class TestSchemeDictUnchanged(unittest.TestCase):
     def test_hardware_dict_entries(self):
-        self.assertEqual(
-            set(_HARDWARE),
-            {"serial", "yahboom-serial", "feetech", "dds", "unitree-dds", "ros2"},
-        )
-        self.assertIs(_HARDWARE["serial"], YahboomTransport)
-        self.assertIs(_HARDWARE["yahboom-serial"], YahboomTransport)
+        self.assertEqual(set(_HARDWARE), {"feetech", "ros2"})
+        self.assertNotIn("serial", _HARDWARE)
+        self.assertNotIn("yahboom-serial", _HARDWARE)
+        self.assertNotIn("dds", _HARDWARE)
+        self.assertNotIn("unitree-dds", _HARDWARE)
         self.assertIs(_HARDWARE["feetech"], FeetechTransport)
-        self.assertIs(_HARDWARE["dds"], UnitreeDdsTransport)
-        self.assertIs(_HARDWARE["unitree-dds"], UnitreeDdsTransport)
         self.assertIs(_HARDWARE["ros2"], Ros2Transport)
 
 
@@ -233,35 +230,25 @@ class TestPluginSchemesResolve(unittest.TestCase):
             self.assertIsInstance(resolve_transport("simulated://", sim), SimTransport)
             self.assertIsInstance(resolve_transport(None, go2), SimTransport)
 
-            self.assertIsInstance(
-                resolve_transport("serial:///dev/ttyUSB0,/dev/ttyACM0", omni),
-                CompositeTransport,
-            )
-            self.assertIsInstance(
-                resolve_transport("serial:///dev/ttyUSB0", omni),
-                CompositeTransport,
-            )
-            base = resolve_transport("serial:///dev/ttyUSB0", sim)
-            self.assertIsInstance(base, YahboomTransport)
-            self.assertIsInstance(
-                resolve_transport("yahboom-serial:///dev/ttyUSB0", sim),
-                YahboomTransport,
-            )
-            self.assertIsInstance(
-                resolve_transport("serial:///dev/ttyUSB0", None),
-                YahboomTransport,
-            )
+            for uri in (
+                "serial:///dev/ttyUSB0,/dev/ttyACM0",
+                "yahboom-serial:///dev/ttyUSB0",
+            ):
+                with self.assertRaises(AdapterUnavailable):
+                    resolve_transport(uri, omni)
+            with self.assertRaises(AdapterUnavailable):
+                resolve_transport("serial:///dev/ttyUSB0", sim)
+            with self.assertRaises(AdapterUnavailable):
+                resolve_transport("serial:///dev/ttyUSB0", None)
 
             arm = resolve_transport("feetech:///dev/ttyACM0", omni)
             self.assertIsInstance(arm, FeetechTransport)
             self.assertEqual(arm.port, "/dev/ttyACM0")
 
-            dds = resolve_transport("dds://eth0", go2)
-            self.assertIsInstance(dds, UnitreeDdsTransport)
-            self.assertEqual(dds.address, "eth0")
-            alias = resolve_transport("unitree-dds://lo", go2)
-            self.assertIsInstance(alias, UnitreeDdsTransport)
-            self.assertEqual(alias.address, "lo")
+            with self.assertRaises(AdapterUnavailable):
+                resolve_transport("dds://eth0", go2)
+            with self.assertRaises(AdapterUnavailable):
+                resolve_transport("unitree-dds://lo", go2)
 
             ros = resolve_transport("ros2://", omni)
             self.assertIsInstance(ros, Ros2Transport)
@@ -296,8 +283,9 @@ class TestUnknownSchemeListsPluginSchemes(unittest.TestCase):
             message = str(raised.exception)
             self.assertIn("Unknown transport scheme 'wat'", message)
             self.assertIn("Known: sim, serial, feetech, dds, ros2", message)
-            self.assertIn("builtin: sim, simulated, serial, yahboom-serial", message)
-            self.assertIn("feetech, dds, unitree-dds, ros2", message)
+            self.assertIn("builtin: sim, simulated, feetech, ros2", message)
+            self.assertIn("unitree: dds, unitree-dds", message)
+            self.assertIn("omnibot: serial, yahboom-serial", message)
             self.assertIn("lab: widget", message)
             self.assertIn(describe_plugin_schemes(), message)
             names = [info.name for info in loaded_plugins() if info.error is None]
@@ -481,10 +469,14 @@ class TestBuiltinEntryStillLoads(unittest.TestCase):
         with _discovered(reader):
             info = next(item for item in loaded_plugins() if item.name == "builtin")
             self.assertIsNone(info.error)
-            self.assertIn("dds", info.transport_factories)
+            self.assertNotIn("dds", info.transport_factories)
             self.assertIn("kinematic", info.sim_factories)
+            quadruped = next(
+                item for item in loaded_plugins() if item.name == "unitree"
+            )
+            self.assertIsNone(quadruped.error)
             go2 = get_spec("unitree-go2")
-            transport = info.transport_factories["dds"](go2, "eth0", None)
+            transport = quadruped.transport_factories["dds"](go2, "eth0", None)
             self.assertIsInstance(transport, UnitreeDdsTransport)
             self.assertEqual(transport.address, "eth0")
 
