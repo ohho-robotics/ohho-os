@@ -16,7 +16,7 @@ engine or a fake quantized checkpoint.
 ```bash
 ohho optimize --model reference-act --target x86-cpu --precision fp32 --out build/act --json
 ohho optimize --model policy.pt --submodule actor --target x86-cuda --precision fp16 --tensorrt --workspace-gb 2 --max-batch 4 --dynamic-batch --out build/fp16
-ohho optimize --model policy.pt --target jetson-orin-nx --precision int8 --tensorrt --calib-data calib --calib-batch 8 --calib-cache build/int8.cache --out build/int8
+ohho optimize --model policy.pt --target jetson-orin-nx --precision int8 --tensorrt --calib-data calib --calib-batch 8 --calib-max-images 32 --calib-cache build/int8.cache --out build/int8
 ohho optimize --model hf-model/ --target x86-cuda --precision int8 --quant awq --out build/awq
 ohho optimize --model smolvla/ --submodule lm --precision int4-awq --target PROFILE --out build/awq
 ohho optimize --model reference-act --target x86-cpu --precision int8 --out build/int8
@@ -42,7 +42,7 @@ the memory budget are rejected before any export.
 | --- | --- |
 | `fp32` | ONNX opset 17 with a dynamic batch, then an ONNX Runtime session on the selected provider. |
 | `fp16` | A TensorRT engine (`--tensorrt`). The ONNX graph stays FP32. |
-| `int8` + `--tensorrt` | A TensorRT engine. The entropy calibrator is assigned to `config.int8_calibrator` before the build. |
+| `int8` + `--tensorrt` | A TensorRT engine. TensorRT 8 and 9 assign the entropy calibrator to `config.int8_calibrator` before the build. TensorRT 10 and newer deprecate that implicit calibrator and build explicit Q/DQ instead. |
 | `int8` on `x86-cpu` or `rpi5-cpu` | ORT static INT8 (QDQ). `--quant awq` still selects AWQ instead. |
 | `int8` or `int4` + `--quant awq\|gptq` | A weight-quant directory when that package is installed. |
 | `int4-awq`, `int4-gptq` | The same INT4 weight quant, without a separate `--quant` flag. |
@@ -66,10 +66,28 @@ without the batch axis. Either:
 - `calib.json` with `{"shape": [8], "dtype": "float32"}` and one `.bin` file per sample, or
 - `.npy` float32 files when NumPy is installed.
 
-`--calib-batch` groups those samples. A short directory is an error. The
-cache path is read at the start of the build and written when TensorRT
-returns a cache. A later calibration change can replace the batch source
-without moving the `config.int8_calibrator` assignment.
+`--calib-batch` groups those samples. A short directory is an error.
+`--calib-max-images N` reads only the first N samples. N must be at least 1
+and at least `--calib-batch`.
+
+`calib.json` may include a `preprocessing` object with `mean`, `std`,
+`resize` (`[height, width]`), and `layout` (`nchw` or `nhwc`). Those fields,
+the sample shape, the dtype, `--calib-max-images`, and `--submodule` are the
+preprocessing config.
+
+The cache path is read at the start of the build and written when calibration
+finishes. The build also writes `{cache}.meta.json` with the model sha256 and
+that preprocessing config. A second build reuses the cache when both match.
+A different model sha256 or preprocessing config invalidates the cache, logs
+the reason, and calibrates again.
+
+TensorRT 10 and newer do not attach `config.int8_calibrator`. They insert
+`QuantizeLinear` / `DequantizeLinear` nodes (or keep the ones already in the
+graph) and build that explicit graph. An INT8 build with no calibration data
+is refused unless the ONNX model already contains those Q/DQ nodes.
+
+On TensorRT 8 and 9 the entropy calibrator is still assigned to
+`config.int8_calibrator` before the build.
 
 ## Exporters
 
