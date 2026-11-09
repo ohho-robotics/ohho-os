@@ -173,6 +173,14 @@ python scripts/sim_loop.py --mock
 ohho sim-loop --mock
 ```
 
+## Checkpoint eval
+
+`ohho eval` scores a checkpoint with seeded episodes on the in-process kinematic sim and writes an `ohho.eval/v1` report (success rate, Wilson 95% interval, episode length, failure counts, optional trace paths). The Gazebo nav regression suite is loaded from the OmniBot checkout (`OHHO_PROOF_ROOT` or `--scenarios`); the scenario file is not vendored here. See [`docs/eval.md`](docs/eval.md).
+
+```bash
+ohho eval ./checkpoint.json --suite gazebo-nav-regression --episodes 5 --seed 0 --out eval-report.json
+```
+
 To run with custom parameters:
 ```bash
 python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200 --eval-steps 50 --output-dir ./sim_loop_output
@@ -280,6 +288,14 @@ ohho selftest --robot omnibot --allow-spin
 ```
 
 See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, and the JSON schema.
+
+## Benchmark results (`ohho bench`)
+
+`ohho bench validate <file>` checks a Serve benchmark result against
+`ohho.bench/v1`. The schema ships with the package
+(`ohho/bench/schemas/bench.v1.json`). Rules for additive fields and for a
+future v2 converter are in
+[`docs/serve/bench-schema.md`](docs/serve/bench-schema.md).
 
 ## TypeScript
 
