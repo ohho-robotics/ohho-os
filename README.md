@@ -289,6 +289,10 @@ See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, an
 future v2 converter are in
 [`docs/serve/bench-schema.md`](docs/serve/bench-schema.md).
 
+`ohho bench --artifact model.onnx --target x86-cpu --json out.json` runs the
+harness: latency stats, per-stage timing, an optional baseline comparison,
+and SLO / regression gates. See [`docs/serve/bench.md`](docs/serve/bench.md).
+
 ## TypeScript
 
 The TypeScript SDK (`@ohho/schemas`, `@ohho/connect`, `@ohho/client`) lives in

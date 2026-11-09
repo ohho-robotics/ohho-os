@@ -96,6 +96,8 @@ export interface LatencyReport {
   unit: string;
   samples?: number;
   stages: LatencyStage[];
+  cold_start_ms?: number;
+  achievable_hz?: number;
 }
 
 /**
@@ -132,6 +134,7 @@ export interface Telemetry {
   accelerator_memory_mb_max?: number;
   accelerator_util_mean?: number;
   power_w_mean?: number;
+  memory_source?: string;
 }
 
 /**
@@ -150,6 +153,69 @@ export interface EnvironmentVersions {
  */
 export interface Environment {
   versions: EnvironmentVersions;
+  target_profile?: string;
+  git_sha?: string;
+  timing_source?: string;
+  timing_note?: string;
+  execution_provider?: string;
+  driver?: string;
+}
+
+/**
+ * One baseline delta. Latency metrics treat an increase as a regression.
+ * Additional properties are allowed.
+ */
+export interface ComparisonMetric {
+  name: string;
+  unit?: string;
+  baseline: number;
+  current: number;
+  delta: number;
+  pct_change?: number;
+  regression: boolean;
+  higher_is_worse?: boolean;
+}
+
+/**
+ * Per-metric delta against a baseline ohho.bench/v1 result.
+ * Additional properties are allowed.
+ */
+export interface Comparison {
+  baseline_ref: string;
+  metrics: ComparisonMetric[];
+}
+
+/**
+ * One SLO or regression gate.
+ * Additional properties are allowed.
+ */
+export interface GateCheck {
+  name: string;
+  expr: string;
+  passed: boolean;
+  metric?: string;
+  value?: number;
+  limit?: number;
+  detail?: string;
+}
+
+/**
+ * SLO and regression gates for the primary batch.
+ * Additional properties are allowed.
+ */
+export interface Gates {
+  passed: boolean;
+  checks: GateCheck[];
+}
+
+/**
+ * Latency and throughput for one batch size.
+ * Additional properties are allowed.
+ */
+export interface BatchResult {
+  batch_size: number;
+  latency: LatencyReport;
+  throughput: Throughput;
 }
 
 /**
@@ -166,4 +232,7 @@ export interface BenchResult {
   accuracy: Accuracy;
   telemetry: Telemetry;
   environment: Environment;
+  comparison?: Comparison;
+  gates?: Gates;
+  batches?: BatchResult[];
 }
