@@ -50,7 +50,7 @@ through a value that is already a non-mapping is an error.
 | `dimensions` | Search axes, expanded in list order. Default `[]` (one trial, the base recipe). |
 | `constraints` | Drop invalid combinations after expansion. |
 | `objectives` | Metrics a later runner optimizes. At most one `primary`. |
-| `early_stopping` | `metric`, `patience` (default 1), `min_delta` (default 0), `mode` (`min` or `max`). |
+| `early_stopping` | `rule` (`patience`, `asha`, or `median`), `rungs`, `reduction_factor` (default 4), `grace_period` (default 0), plus `metric`, `patience`, `min_delta`, and `mode`. It does not change which trials are proposed. |
 | `strategy` | `grid` (default), `random`, `tpe`, `bayesian`, or `multi`. |
 | `seed` | Integer ≥ 0. Derives the sampler seed and each trial's training seed. Grid order ignores it. |
 | `parallelism` | Integer ≥ 1. Recorded on the plan. It does not change the trial list. |
@@ -175,10 +175,11 @@ kept. `budget.max_gpu_hours` stops at the first trial that would exceed
 the running total. `budget.max_trials` keeps a prefix of the surviving
 grid, then the hour cap is applied.
 
-`objectives` and `early_stopping` are copied onto the plan. For `grid` and
-`random` they do not change which trials exist. For `tpe`, `bayesian`, and
-`multi`, objective values reported to `SweepSampler.tell` choose later
-trials. `early_stopping` stays on the plan for the runner.
+`objectives` are copied onto the plan. For `grid` and `random` they do not
+change which trials exist. For `tpe`, `bayesian`, and `multi`, objective
+values reported to `SweepSampler.tell` choose later trials. `early_stopping`
+does not change which trials are proposed. The trial runner and the sweep
+controller use it to stop a trial early. See Early stopping.
 
 ## 2 × 3 × 4 grid
 
@@ -381,6 +382,113 @@ assert stopped.ask()[0].index == 1
 
 The Connect console Resume button is a separate surface. This package
 exposes the run and `ohho sweep resume`.
+
+## Early stopping
+
+`early_stopping` names the scalar a trial runner reports while a trial is
+still training, and the rule that may stop that trial before the full
+budget. The sampler still proposes the same trials. Stopping is a decision
+on a trial that has already been asked.
+
+The sweep controller that fans those trials out across jobs is not in this
+package. `EarlyStopping` and `SweepRun.report` / `SweepRun.decide` are the
+library that controller calls. They do not launch training processes.
+
+| Field | Meaning |
+| --- | --- |
+| `metric` | Name of the scalar the runner reports. It does not have to be an objective. |
+| `rule` | `patience` (default), `asha`, or `median`. |
+| `mode` | `min` (smaller is better) or `max` (larger is better). |
+| `rungs` | Strictly increasing steps where a decision is made. Required for `asha`. Empty means every reported step can decide for `patience` and `median`. |
+| `reduction_factor` | Integer ≥ 2, default 4. For `asha` this is eta. For `median` it is the minimum number of reports at a step before anyone can be stopped. `patience` ignores it. |
+| `grace_period` | Integer ≥ 0, default 0. A trial is not stopped before this step. Every rung must be ≥ this value. |
+| `patience` | For `patience` only. Stop after this many decision steps with no improvement. Default 1. |
+| `min_delta` | For `patience` only. An improvement must be strictly better than the best value by this amount. Default 0. |
+
+`asha` is successive halving. At a rung, once `n >= reduction_factor`
+trials have reported that rung, a trial stops when its metric is strictly
+worse than the best `floor(n / reduction_factor)` values. A value that
+ties that cutoff continues. The first decision at a rung is kept: a trial
+that was told to continue is not stopped at that same rung when later
+peers report. Reporting every active trial at the rung, then calling
+`decide`, is the synchronous bracket and is what the benchmark below uses.
+Calling `decide` as each report arrives is the asynchronous rule, and an
+early arrival can keep training even if a later full rung would have
+stopped it.
+
+`median` stops a trial that is strictly worse than the median of the
+reports at that step. A value equal to the median continues. `patience`
+watches one trial. The first decision step sets the best value. Later
+decision steps that do not improve it by `min_delta` count toward
+`patience`.
+
+```yaml
+early_stopping:
+  metric: val_loss
+  mode: min
+  rule: asha
+  rungs: [1, 3, 9, 27, 81]
+  reduction_factor: 3
+  grace_period: 1
+```
+
+`ohho/train/schemas/examples/asha.json` is that rule on a 32-trial random
+sweep. A median rule omits `rungs` when every step after the grace period
+should be checked:
+
+```yaml
+early_stopping:
+  metric: val_loss
+  mode: min
+  rule: median
+  grace_period: 5
+  reduction_factor: 2
+```
+
+The trial runner calls `report` at a step. The controller calls `decide`.
+`decide` returns `continue` or `stop`.
+
+```python
+from ohho.train.sweep_run import start_sweep
+
+run = start_sweep("sweep.yaml", sweep_id="push-lr")
+trials = run.ask(32)
+active = [trial.index for trial in trials]
+for step in run.spec.early_stopping["rungs"]:
+    for index in list(active):
+        value = read_validation_metric(index, step)
+        run.report(index, step, value, checkpoint=f"checkpoints/{index}/{step}")
+    active = [
+        index
+        for index in active
+        if run.decide(index).action == "continue"
+    ]
+for index in active:
+    run.tell(index, {"val_loss": read_validation_metric(index, step)})
+```
+
+`stop` sets the trial-table status to `pruned`. The last checkpoint path
+and the intermediate metrics stay on the row. `values` stays null, so a
+partial curve is not a completed objective and does not enter the
+leaderboard or the Parzen estimator. `tell` is what marks a trial
+`completed` and records those objectives. `mark_failed(index, error)` sets
+`failed` instead. A pruned trial is not failed, and neither call rewrites
+the other status. `ohho sweep resume` loads the saved row, so a pruned or
+failed trial stays that way and its index is not proposed again.
+
+## Simulated ASHA benchmark
+
+`ohho.train.sweep_early.simulate_asha_budget` runs 32 synthetic trials.
+Trial `i` at step `t` reports `(i + 1) / t`. The loss falls as the step
+grows, trial 0 is best at every step, and the curves do not cross. The
+rungs are 1, 3, 9, 27, and 81. The reduction factor is 3. The loop reports
+every trial that is still active at a rung before it decides that rung.
+
+A trial stopped at a rung has used that many steps. The same 32 trials
+with no early stopping use `32 * 81 = 2592` trial-steps. The ASHA run uses
+142 trial-steps, which is under half of 2592. Thirty-one trials are
+`pruned` and keep a checkpoint path and their metrics. The best trial
+reaches step 81. `tests/test_sweep_early.py` checks that bound.
 
 ## YAML subset
 

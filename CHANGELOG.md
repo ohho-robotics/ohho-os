@@ -29,6 +29,14 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   proposes trials from completed objectives, stores an
   `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep early stopping** — `early_stopping.rule` `asha` (successive
+  halving at rungs) and `median`, plus the existing `patience` rule.
+  `SweepRun.report` records an intermediate metric and `SweepRun.decide`
+  returns continue or stop. A stopped trial stays `pruned`, keeps its last
+  checkpoint and metrics, and is distinct from `failed`. Resume keeps that
+  status. A 32-trial synthetic ASHA benchmark uses under half the
+  trial-steps of the same sweep with no stopping rule.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
