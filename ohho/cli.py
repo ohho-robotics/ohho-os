@@ -401,7 +401,7 @@ def _cmd_sim_serve(args) -> int:
             ssl_cert=args.ssl_cert,
             ssl_key=args.ssl_key,
         )
-    except SimServeUnavailable as e:
+    except (SimServeUnavailable, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

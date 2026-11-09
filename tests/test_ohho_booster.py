@@ -22,6 +22,14 @@ from unittest.mock import patch
 
 from ohho.cli import main
 from ohho.humanoid import HumanoidMode
+from ohho.humanoid_policy import (
+    HARDWARE_CAPS,
+    SIM_MAX_VX_FORWARD,
+    SIM_MAX_VY,
+    SIM_MAX_WZ,
+    caps_from_spec,
+    class_profile,
+)
 from ohho.plugins import BUILTIN_ENTRY_VALUE, ENTRY_GROUP
 from ohho.registry import list_specs
 from ohho.robot_spec import HumanoidLimits, RobotClass, default_limits
@@ -159,9 +167,18 @@ class TestBoosterSpec(unittest.TestCase):
         self.assertLessEqual(speed, generic.max_vx)
         self.assertNotIn("booster-t2", PROFILES)
         profile = profile_for("booster-t2", self.spec)
-        self.assertLessEqual(profile.max_vx, 0.3)
-        self.assertLessEqual(profile.max_vy, 0.3)
-        self.assertLessEqual(profile.max_wz, 1.0)
+        # The class profile replaced the generic unknown-robot ceiling.
+        # Forward speed on that profile is the sim cap; hardware stays lower.
+        expected = class_profile(caps_from_spec(self.spec))
+        self.assertEqual(profile.max_vx, expected.max_vx)
+        self.assertEqual(profile.max_vy, expected.max_vy)
+        self.assertEqual(profile.max_wz, expected.max_wz)
+        self.assertLessEqual(profile.max_vx, SIM_MAX_VX_FORWARD)
+        self.assertLessEqual(profile.max_vy, SIM_MAX_VY)
+        self.assertLessEqual(profile.max_wz, SIM_MAX_WZ)
+        self.assertEqual(HARDWARE_CAPS.max_vx_forward, 0.3)
+        self.assertLessEqual(HARDWARE_CAPS.max_vy, 0.3)
+        self.assertLessEqual(HARDWARE_CAPS.max_wz, 1.0)
 
     def test_mode_map_is_plain_data_and_omits_soccer(self):
         self.assertEqual(

@@ -15,6 +15,15 @@ Client JSON:
     - ``estop``: boolean. ``true`` latches; only ``false`` clears it.
     - ``mode`` (optional): ``"stand"`` | ``"lie_down"`` | ``"recover"`` — mapped to
       allowlisted high-level actions on a connected :class:`~ohho.robot.Robot`.
+    - ``modes`` (optional): ``{"request": "<posture>", "confirm": "<phrase>"}``.
+      ``request`` is a ``humanoid.posture`` value the spec declares
+      (``prepare``, ``walk``, ``damping``, ``custom``, ``get_up``, ``lie_down``).
+      ``walk_mode`` is accepted when ``walk`` is declared, and ``damp`` when
+      ``damping`` is declared. The check is the capability and that list.
+      ``backend=sim`` does not need ``confirm``. ``backend=robot`` on a URI that
+      is not an explicit sim target does: ``confirm`` must be the arming phrase,
+      and ``OHHO_ARM_HARDWARE=1`` must already be set. This module never sets
+      that variable and never arms the gate.
 
 Server JSON:
     - ``odom``: ``{"x": float, "y": float, "yaw": float}``
@@ -22,6 +31,7 @@ Server JSON:
     - ``protocolVersion``: ``ohho.PROTOCOL_VERSION``
     - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
     - ``posture`` / ``battery`` (optional, when the robot reports them)
+    - ``modes``: the last posture decision, when a request was seen
     - ``camera``: base64 JPEG when a front-camera frame has arrived, otherwise
       ``no_camera: true`` (never both)
 
@@ -33,6 +43,9 @@ Safety:
     - A dropped socket commands zero immediately when no client remains, and
       always within 300 ms.
     - ``estop`` latches until a message with ``estop: false`` arrives.
+    - Silence, a released deadman, or e-stop zeros velocity and leaves the
+      current posture. That path does not damp. A posture request is applied
+      only while the deadman is held and e-stop is clear.
 """
 
 from __future__ import annotations
@@ -44,14 +57,34 @@ import math
 import os
 import threading
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from . import capabilities as caps
+from .humanoid_policy import explicit_sim_target
 from .protocol import PROTOCOL_VERSION
+from .registry import RobotSpec, UnknownRobot, get_spec
+from .safety import ARM_ENV, ARM_PHRASE
 from .schema import Telemetry
 
 # Commanded velocity is zero once this long has passed with no client message.
 DEADMAN_TIMEOUT_S = 0.300
+# Alias used by posture tests. Silence is strictly longer than this interval.
+SILENCE_S = DEADMAN_TIMEOUT_S
+
+# Request token -> (declared posture mode it requires, transport action).
+# ``walk_mode`` is the section 6.1 name for the declared mode ``walk``.
+_MODE_REQUESTS: dict[str, tuple[str, str]] = {
+    "prepare": ("prepare", "prepare"),
+    "walk": ("walk", "walk_mode"),
+    "walk_mode": ("walk", "walk_mode"),
+    "damping": ("damping", "damp"),
+    "damp": ("damping", "damp"),
+    "custom": ("custom", "custom"),
+    "get_up": ("get_up", "get_up"),
+    "lie_down": ("lie_down", "lie_down"),
+}
 
 NOT_IMPLEMENTED_BACKENDS = ("isaac", "mujoco")
 
@@ -78,6 +111,80 @@ TELEOP_CLIENT_MODES: dict[str, str] = {
     "lie_down": "stand_down",
     "recover": "recovery_stand",
 }
+
+
+@dataclass(frozen=True)
+class ModeDecision:
+    """Whether a ``modes`` request may be sent, and the action to send."""
+
+    accepted: bool
+    action: str = ""
+    reason: str = ""
+
+
+def declared_posture_modes(spec: RobotSpec | None) -> frozenset[str]:
+    """Posture modes the spec declares on ``humanoid.posture``.
+
+    An absent capability, or a capability with no ``modes`` list, declares
+    nothing. The robot id is not consulted.
+    """
+    if spec is None or not spec.has(caps.HUMANOID_POSTURE):
+        return frozenset()
+    params = spec.capability_params
+    if not isinstance(params, Mapping):
+        return frozenset()
+    raw = params.get(caps.HUMANOID_POSTURE)
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Mapping):
+        return frozenset()
+    modes = raw.get("modes")
+    if isinstance(modes, (str, bytes)) or not isinstance(modes, Sequence):
+        return frozenset()
+    return frozenset(mode for mode in modes if isinstance(mode, str) and mode)
+
+
+def mode_confirmation_required(backend: str, uri: str | None) -> bool:
+    """True for a robot backend whose URI is not an explicit sim target.
+
+    ``backend=sim`` never needs the phrase. ``sim://``, ``simulated://`` and a
+    loopback humanoid-mujoco URI with ``sim_target=True`` are sim targets.
+    """
+    if backend != "robot":
+        return False
+    return not explicit_sim_target(uri)
+
+
+def decide_mode_request(
+    spec: RobotSpec | None,
+    request: object,
+    *,
+    backend: str,
+    uri: str | None,
+    confirm: object,
+    env: Mapping[str, str],
+) -> ModeDecision:
+    """Accept a posture request or refuse it.
+
+    The request must name a mode the spec declares. On a non-sim robot URI the
+    arming phrase and ``OHHO_ARM_HARDWARE=1`` must already be present. This
+    function only reads ``env``.
+    """
+    if spec is None or not spec.has(caps.HUMANOID_POSTURE):
+        return ModeDecision(False, reason="capability")
+    if backend not in ("sim", "robot"):
+        return ModeDecision(False, reason="backend")
+    if not isinstance(request, str) or not request.strip():
+        return ModeDecision(False, reason="request")
+    name = request.strip()
+    mapped = _MODE_REQUESTS.get(name)
+    declared = declared_posture_modes(spec)
+    if mapped is None or (name not in declared and mapped[0] not in declared):
+        return ModeDecision(False, reason="undeclared")
+    if mode_confirmation_required(backend, uri):
+        if confirm != ARM_PHRASE:
+            return ModeDecision(False, reason="confirm")
+        if env.get(ARM_ENV) != "1":
+            return ModeDecision(False, reason="arm_env")
+    return ModeDecision(True, action=mapped[1])
 
 
 class SimServeUnavailable(RuntimeError):
@@ -478,6 +585,9 @@ class SimServe:
         self._target_vy: float = 0.0
         self._target_w: float = 0.0
         self._target_joints: dict[str, float] = {}
+        self._applied_velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._posture: str = ""
+        self._mode_result: dict[str, Any] | None = None
         self._timeout_handle: Optional[asyncio.TimerHandle] = None
 
         # Telemetry state
@@ -687,7 +797,15 @@ class SimServe:
         if "mode" in data:
             self._apply_teleop_mode(data["mode"])
 
+        if "modes" in data:
+            self._on_modes(data["modes"])
+
         self._arm_timeout()
+        vx, vy, w = self.commanded_velocity(now)
+        if self.backend in ("sim", "robot") and (
+            self._loop is None or not self._loop.is_running()
+        ):
+            self._drive_sync(vx, vy, w)
         self._schedule_gated_velocity()
 
     def _arm_timeout(self) -> None:
@@ -709,6 +827,66 @@ class SimServe:
     def _schedule_gated_velocity(self) -> None:
         if self._loop is not None and self._loop.is_running():
             self._loop.create_task(self._send_velocity())
+
+    def commanded_velocity(self, now: float) -> tuple[float, float, float]:
+        """Velocity to send now. Silence, a released deadman, or e-stop is zero.
+
+        Silence is strictly longer than :data:`SILENCE_S`. This does not change
+        posture and does not consult the client count. The live socket path
+        still uses :func:`gated_velocity`.
+        """
+        silent = (now - self._last_msg_time) > SILENCE_S
+        if silent or not self._deadman or self._estopped:
+            return 0.0, 0.0, 0.0
+        return self._target_vx, self._target_vy, self._target_w
+
+    def _current_spec(self) -> RobotSpec | None:
+        bot = self._bot
+        spec = getattr(bot, "spec", None) if bot is not None else None
+        if isinstance(spec, RobotSpec):
+            return spec
+        try:
+            return get_spec(self.robot_id)
+        except UnknownRobot:
+            return None
+
+    def _on_modes(self, value: object) -> None:
+        """Apply a posture request, or record why it was refused.
+
+        A released deadman or a latched e-stop leaves the current posture
+        unchanged and does not damp. The arming environment is only read.
+        """
+        if self._estopped or not self._deadman:
+            reason = "estop" if self._estopped else "deadman"
+            self._mode_result = {"accepted": False, "reason": reason}
+            return
+        if isinstance(value, (str, bytes)) or not isinstance(value, Mapping):
+            self._mode_result = {"accepted": False, "reason": "modes"}
+            return
+        decision = decide_mode_request(
+            self._current_spec(),
+            value.get("request"),
+            backend=self.backend,
+            uri=self._transport_uri if self.backend == "robot" else "sim://",
+            confirm=value.get("confirm"),
+            env=os.environ,
+        )
+        if not decision.accepted:
+            self._mode_result = {"accepted": False, "reason": decision.reason}
+            return
+        bot = self._bot
+        if bot is None:
+            self._mode_result = {"accepted": False, "reason": "no_robot"}
+            return
+        from .humanoid import apply_posture
+
+        try:
+            apply_posture(bot, decision.action)
+        except Exception:
+            self._mode_result = {"accepted": False, "reason": "transport"}
+            return
+        self._posture = decision.action
+        self._mode_result = {"accepted": True, "action": decision.action}
 
     def _current_velocity(self) -> tuple[float, float, float]:
         """Gate read at send time so a queued task cannot revive an old command."""
@@ -737,6 +915,8 @@ class SimServe:
                 msg.update(telemetry_extras(self._bot.telemetry()))
             except Exception:
                 pass
+        if self._mode_result is not None:
+            msg["modes"] = dict(self._mode_result)
         return msg
 
     async def _broadcast_loop(self) -> None:
@@ -761,6 +941,24 @@ class SimServe:
         command = getattr(transport, "command", None)
         if callable(command):
             command(action)
+
+    def _drive_sync(self, vx: float, vy: float, w: float) -> None:
+        """Send a body velocity on the sim or robot backend. Does not change posture."""
+        self._applied_velocity = (float(vx), float(vy), float(w))
+        if self._bot is not None:
+            self._bot.drive(vx=vx, vy=vy, w=w)
+
+    async def _apply_velocity(self, vx: float, vy: float, w: float) -> None:
+        """Drive an explicit velocity. Used when a caller already gated it."""
+        if self.backend in ("sim", "robot"):
+            self._drive_sync(vx, vy, w)
+        elif self.backend == "ros2" and self._rosbridge_ws is not None:
+            try:
+                await self._rosbridge_ws.send(
+                    json.dumps(cmd_vel_rosbridge(vx, vy, w))
+                )
+            except Exception:
+                pass
 
     async def _send_velocity(self) -> None:
         vx, vy, w = self._current_velocity()

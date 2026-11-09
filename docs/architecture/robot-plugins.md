@@ -252,7 +252,7 @@ allowlist also names `feetech` (R-01) and `ardupilot` (R-03).
   Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
   gate delegates to Ground, Arm and Legged policies, and a plugin may only
   tighten class caps. Caps, watchdogs, arming and the e-stop latch are
-  unchanged.
+  unchanged. OHH-328 adds `HumanoidPolicy` for humanoids on that same path.
   C-03 (OHH-311) asks those plugins for a transport scheme before the scheme
   dict in `ohho/adapters/__init__.py`. The dict and its entries stay, so a
   scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
