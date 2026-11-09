@@ -56,8 +56,11 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `library_versions` | Libraries | `library_versions` |
 | `gpu` | GPU | `gpu` |
 | `final_loss` | Final loss | `final_loss` |
+| `wandb_url` | W&B run | `wandb_url` |
 | `error` | Error | `error` |
 | `resolved_config` | Resolved config | `resolved_config` |
+
+`wandb_url` is null when the W&B mirror is off, or when the W&B client did not return a run link. The trainer does not invent that URL. The native metrics run id is recorded on the W&B run as `ohho_run_id` when the mirror starts. See [`metrics.md`](metrics.md).
 
 `gpu` is null when no CUDA device is reported. When a device is reported the value is `{name, driver, cuda}`. `container_image_digest` is null when the process is not inside a container. `dataset.hash` is null when the recipe names only a version id, or the local path is not present. `base_weights.hash` is null when the uri is not a local file or directory. Remote URIs are stored and are not downloaded.
 

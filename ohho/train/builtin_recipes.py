@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..metrics import open_metrics, summary_path
 from .recipe_registry import Emit, TrainResult, register
 from .recipe_schema import (
     DatasetUnavailable,
@@ -77,21 +78,23 @@ class ActRecipe:
                 "train_steps": train_steps,
             }
         )
-        try:
-            from ohho.train.act import train_act
+        output_dir = Path(recipe["output"]["dir"]).expanduser()
+        with open_metrics(output_dir):
+            try:
+                from ohho.train.act import train_act
 
-            checkpoint = train_act(
-                dataset=str(dataset_path),
-                output_dir=str(Path(recipe["output"]["dir"]).expanduser()),
-                device=device,
-                mock=False,
-                **kwargs,
-            )
-        except Exception as exc:
-            raise TrainFailed(f"ACT training failed: {exc}") from exc
-        metrics = Path(checkpoint) / "metrics.json"
-        if not metrics.is_file():
-            raise TrainFailed(f"ACT training did not write {metrics}")
+                checkpoint = train_act(
+                    dataset=str(dataset_path),
+                    output_dir=str(output_dir),
+                    device=device,
+                    mock=False,
+                    **kwargs,
+                )
+            except Exception as exc:
+                raise TrainFailed(f"ACT training failed: {exc}") from exc
+            metrics = summary_path(checkpoint)
+            if not metrics.is_file():
+                raise TrainFailed(f"ACT training did not write {metrics}")
         return TrainResult(
             checkpoint_dir=str(Path(checkpoint)),
             metrics_path=str(metrics),

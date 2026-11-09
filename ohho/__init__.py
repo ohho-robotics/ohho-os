@@ -2,8 +2,9 @@
 
 Public surface:
 
-    from ohho import Robot, connect
+    from ohho import Robot, connect, log
     bot = Robot.connect("sim")
+    log(step, {"loss": 0.1})  # inside ohho.metrics.open_metrics(...)
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from .schema import (
 )
 from .robot import Robot, connect
 from .registry import RobotSpec, get_spec, list_specs, register
+from .metrics import log
 
 __all__ = [
     "__version__",
@@ -39,4 +41,5 @@ __all__ = [
     "Telemetry",
     "TransportStatus",
     "ConnectionState",
+    "log",
 ]

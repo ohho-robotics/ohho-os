@@ -32,6 +32,7 @@ from .recipe_schema import (
     TrainFailed,
     load_recipe_file,
 )
+from ..metrics import clear_last_metrics_run, wandb_url_for
 from .run_manifest import (
     MANIFEST_NAME,
     RunCapture,
@@ -94,6 +95,7 @@ class _RunSession:
             metrics_path=None,
             final_loss=None,
             base_weights_loaded=False,
+            wandb_url=None,
         )
         path = self.output_dir / MANIFEST_NAME
         write_run_manifest(path, manifest)
@@ -125,6 +127,7 @@ class _RunSession:
             final_loss=final_loss,
             base_weights_loaded=result.base_weights_loaded,
             device=result.device,
+            wandb_url=wandb_url_for(checkpoint_dir) or wandb_url_for(self.output_dir),
         )
         path = write_run_manifest(checkpoint_dir / MANIFEST_NAME, manifest)
         if self.path is not None and self.path.resolve() != path.resolve():
@@ -146,6 +149,7 @@ class _RunSession:
                 metrics_path=None,
                 final_loss=None,
                 base_weights_loaded=False,
+                wandb_url=wandb_url_for(self.output_dir),
             )
             write_run_manifest(self.path, manifest)
             self.final = True
@@ -166,6 +170,7 @@ class _RunSession:
 
 def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
     """Validate ``recipe``, run its family, and return a process exit code."""
+    clear_last_metrics_run()
     family_id = ""
     run = _RunSession()
     try:

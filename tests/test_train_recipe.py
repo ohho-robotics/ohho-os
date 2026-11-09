@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ohho import __version__
+from ohho.metrics import read_metrics
 from ohho.cli import main as cli_main
 from ohho.sim_loop import record_sim_episodes
 from ohho.train.builtin_recipes import ACT
@@ -550,6 +551,11 @@ class TestActRun(unittest.TestCase):
                 manifest["resolved_config"]["hyperparameters"]["train_steps"], 2
             )
             self.assertEqual(manifest["final_loss"], metrics["final_loss"])
+            logged = read_metrics(out)
+            self.assertEqual(logged["schema"], "ohho.metrics/v1")
+            self.assertEqual(logged["final_loss"], metrics["final_loss"])
+            self.assertTrue((out / "metrics.jsonl").is_file())
+            self.assertIsNone(manifest["wandb_url"])
             self.assertEqual(manifest["seeds"]["recipe"], 0)
             self.assertEqual(manifest["seeds"]["python"], 0)
             self.assertEqual(manifest["seeds"]["torch"], 0)

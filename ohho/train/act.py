@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
+from ..metrics import log, open_metrics
 
 try:
     import torch
@@ -179,36 +180,7 @@ def train_act(
     state_dim = reader.state_dim or 9
     action_dim = reader.action_dim or 9
 
-    if mock:
-        loss_curve = [
-            (0, 0.8421),
-            (50, 0.4312),
-            (100, 0.1854),
-            (150, 0.0891),
-            (train_steps, 0.0412),
-        ]
-        config = {
-            "policy": "act",
-            "mock": True,
-            "device": device,
-            "state_dim": state_dim,
-            "action_dim": action_dim,
-            "chunk_size": chunk_size,
-            "train_steps": train_steps,
-            "loss_curve": loss_curve,
-            "final_loss": loss_curve[-1][1],
-        }
-        with open(out / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        with open(out / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {"loss_curve": loss_curve, "final_loss": loss_curve[-1][1]}, f, indent=2
-            )
-        with open(out / "checkpoint.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        return str(out)
-
-    if not TORCH_AVAILABLE:
+    if not mock and not TORCH_AVAILABLE:
         from . import TrainUnavailable
 
         raise TrainUnavailable(
@@ -216,103 +188,114 @@ def train_act(
             "Use mock=True for the dependency-free sim loop."
         )
 
-    all_states: List[List[float]] = []
-    all_action_chunks: List[List[List[float]]] = []
-    for _ep_meta, frames in reader.iter_episodes():
-        if not frames:
-            continue
-        for i in range(len(frames)):
-            s = frames[i].observation_state
-            chunk: List[List[float]] = []
-            for k in range(chunk_size):
-                idx = min(i + k, len(frames) - 1)
-                chunk.append(frames[idx].action)
-            all_states.append(s)
-            all_action_chunks.append(chunk)
-
-    if not all_states:
-        raise ValueError(f"no recorded frames found in dataset at {dataset}")
-
-    tensor_s = torch.tensor(all_states, dtype=torch.float32)
-    tensor_a = torch.tensor(all_action_chunks, dtype=torch.float32)
-
-    ds = TensorDataset(tensor_s, tensor_a)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
-
-    dev = torch.device(device)
-    model = TinyACTPolicy(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        chunk_size=chunk_size,
-        d_model=d_model,
-        nhead=nhead,
-        num_encoder_layers=num_encoder_layers,
-        num_decoder_layers=num_decoder_layers,
-        dim_feedforward=dim_feedforward,
-        latent_dim=latent_dim,
-        kl_weight=kl_weight,
-    )
-    model.to(dev)
-    model.train()
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-
-    loss_curve: List[Tuple[int, float]] = []
-    step = 0
-    while step < train_steps:
-        for batch_s, batch_a in loader:
-            batch_s = batch_s.to(dev)
-            batch_a = batch_a.to(dev)
-
-            optimizer.zero_grad()
-            pred_a, mu, logvar = model(batch_s, batch_a)
-            assert mu is not None and logvar is not None
-            total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
-            total_loss.backward()
-            optimizer.step()
-
-            if step % log_every == 0 or step == train_steps - 1:
-                loss_val = round(float(total_loss.item()), 4)
-                loss_curve.append((step, loss_val))
-
-            step += 1
-            if step >= train_steps:
-                break
-
-    torch.save(model.state_dict(), out / "policy.pt")
-
-    config = {
-        "policy": "act",
-        "mock": False,
-        "device": device,
-        "state_dim": state_dim,
-        "action_dim": action_dim,
-        "chunk_size": chunk_size,
-        "d_model": d_model,
-        "nhead": nhead,
-        "num_encoder_layers": num_encoder_layers,
-        "num_decoder_layers": num_decoder_layers,
-        "dim_feedforward": dim_feedforward,
-        "latent_dim": latent_dim,
-        "kl_weight": kl_weight,
-        "train_steps": train_steps,
-        "loss_curve": loss_curve,
-        "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
-    }
-    with open(out / "config.json", "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "loss_curve": loss_curve,
-                "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
+    with open_metrics(out):
+        if mock:
+            for step, loss in (
+                (0, 0.8421),
+                (50, 0.4312),
+                (100, 0.1854),
+                (150, 0.0891),
+                (train_steps, 0.0412),
+            ):
+                log(int(step), {"loss": float(loss)})
+            config = {
+                "policy": "act",
+                "mock": True,
+                "device": device,
+                "state_dim": state_dim,
+                "action_dim": action_dim,
+                "chunk_size": chunk_size,
                 "train_steps": train_steps,
-            },
-            f,
-            indent=2,
-        )
+            }
+            with open(out / "config.json", "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            with open(out / "checkpoint.json", "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            return str(out)
 
-    return str(out)
+        all_states: List[List[float]] = []
+        all_action_chunks: List[List[List[float]]] = []
+        for _ep_meta, frames in reader.iter_episodes():
+            if not frames:
+                continue
+            for i in range(len(frames)):
+                s = frames[i].observation_state
+                chunk: List[List[float]] = []
+                for k in range(chunk_size):
+                    idx = min(i + k, len(frames) - 1)
+                    chunk.append(frames[idx].action)
+                all_states.append(s)
+                all_action_chunks.append(chunk)
+
+        if not all_states:
+            raise ValueError(f"no recorded frames found in dataset at {dataset}")
+
+        tensor_s = torch.tensor(all_states, dtype=torch.float32)
+        tensor_a = torch.tensor(all_action_chunks, dtype=torch.float32)
+
+        ds = TensorDataset(tensor_s, tensor_a)
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+
+        dev = torch.device(device)
+        model = TinyACTPolicy(
+            state_dim=state_dim,
+            action_dim=action_dim,
+            chunk_size=chunk_size,
+            d_model=d_model,
+            nhead=nhead,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
+            latent_dim=latent_dim,
+            kl_weight=kl_weight,
+        )
+        model.to(dev)
+        model.train()
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+
+        step = 0
+        while step < train_steps:
+            for batch_s, batch_a in loader:
+                batch_s = batch_s.to(dev)
+                batch_a = batch_a.to(dev)
+
+                optimizer.zero_grad()
+                pred_a, mu, logvar = model(batch_s, batch_a)
+                assert mu is not None and logvar is not None
+                total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
+                total_loss.backward()
+                optimizer.step()
+
+                if step % log_every == 0 or step == train_steps - 1:
+                    log(step, {"loss": round(float(total_loss.item()), 4)})
+
+                step += 1
+                if step >= train_steps:
+                    break
+
+        torch.save(model.state_dict(), out / "policy.pt")
+
+        config = {
+            "policy": "act",
+            "mock": False,
+            "device": device,
+            "state_dim": state_dim,
+            "action_dim": action_dim,
+            "chunk_size": chunk_size,
+            "d_model": d_model,
+            "nhead": nhead,
+            "num_encoder_layers": num_encoder_layers,
+            "num_decoder_layers": num_decoder_layers,
+            "dim_feedforward": dim_feedforward,
+            "latent_dim": latent_dim,
+            "kl_weight": kl_weight,
+            "train_steps": train_steps,
+        }
+        with open(out / "config.json", "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+
+        return str(out)
 
 
 def load_act_checkpoint(

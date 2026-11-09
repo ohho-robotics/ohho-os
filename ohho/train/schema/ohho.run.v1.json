@@ -159,6 +159,11 @@
       ]
     },
     "final_loss": {"type": ["number", "null"]},
+    "wandb_url": {
+      "description": "W&B run link returned by the W&B client. Null when the mirror is off or the client did not return a link. OhhO does not invent this URL.",
+      "type": ["string", "null"],
+      "minLength": 1
+    },
     "error": {
       "description": "Failure or interrupt message. Null while running and after success.",
       "type": ["string", "null"],

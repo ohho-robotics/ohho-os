@@ -74,8 +74,9 @@
 | **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
 | **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
 | **Run manifest (`ohho.run/v1`)** | ✅ **OHH-541** — `ohho train` writes `run_manifest.json` at `train_start` and finalises it on success, failure, and interrupt. Fields: resolved config, seeds, git commit and dirty flag, dataset version id and hash, base-weights hash, container image digest, library versions, GPU/driver/CUDA, start/end, status. `ohho run show`. DB storage is a local `RunStore` hook only. Docs `docs/train/run-manifest.md`. |
+| **Metric logging** | ✅ **OHH-544** — `ohho.log(step, metrics)` buffers samples and flushes `metrics.jsonl` next to the run. Optional W&B mirror when `WANDB_API_KEY` is set and the mode is not offline or disabled; `wandb_url` is stored only when the client returns a link. Docs `docs/train/metrics.md`. |
 | CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`), `train`, `run show` |
-| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
+| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. `tests/test_metrics_log.py` covers the OHH-544 metric log. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`; installs `plugins/ohho-booster`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run, and caches and fetches the pinned description archive and walk checkpoint. Other cells skip those tests when the packages or assets are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -154,12 +155,12 @@ across heterogeneous hardware.
 
 ```
 sdk/
-├── pyproject.toml        # name=ohho-os; extras: serial/arm/agent/data/unitree/dji/serve/train/ros2/yaml/dev/all; console_script `ohho`
+├── pyproject.toml        # name=ohho-os; extras: serial/arm/agent/data/unitree/dji/serve/train/wandb/ros2/yaml/dev/all; console_script `ohho`
 ├── README.md             # user-facing quickstart
 ├── AGENTS.md             # ← THIS FILE (handoff + roadmap)
 ├── .gitignore            # egg-info, __pycache__, caches
 ├── ohho/
-│   ├── __init__.py       # exports Robot, connect, schema types, registry fns; __version__
+│   ├── __init__.py       # exports Robot, connect, schema types, registry fns, log; __version__
 │   ├── schema.py         # Velocity, Odometry, JointReading, Telemetry, TransportStatus, ConnectionState, clamp()
 │   ├── capabilities.py   # capability string constants + ALL + is_known()
 │   ├── capability_params.py  # typed parameters for those capabilities (OHH-312)
@@ -191,6 +192,7 @@ sdk/
 │   │   ├── recorder.py   # Recorder — wraps Robot, intercepts drive/move_joints, captures frames
 │   │   ├── writer.py     # write_dataset — LeRobot v2.0 (Parquet via pyarrow, JSON Lines fallback)
 │   │   └── reader.py     # DatasetReader — lightweight reader (no torch needed), stats()
+│   ├── metrics.py        # ohho.log — buffered metrics.jsonl and optional W&B mirror (OHH-544)
 │   ├── train/            # ohho.train — finetune() delegates to lerobot_engine, mock mode for sim
 │   │   ├── __init__.py   # finetune(), SUPPORTED_POLICIES, TrainUnavailable, _mock_train()
 │   │   ├── run_manifest.py # ohho.run/v1 manifest, validator, ohho run show

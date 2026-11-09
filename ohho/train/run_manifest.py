@@ -60,6 +60,7 @@ CONSOLE_FIELDS = (
     "library_versions",
     "gpu",
     "final_loss",
+    "wandb_url",
     "error",
     "resolved_config",
 )
@@ -190,6 +191,7 @@ class RunManifest:
     library_versions: dict[str, str]
     gpu: GpuRecord | None
     final_loss: int | float | None
+    wandb_url: str | None
     error: str | None
     recipe_path: str
     overrides: list[str]
@@ -216,6 +218,7 @@ class RunManifest:
             "library_versions": dict(self.library_versions),
             "gpu": gpu,
             "final_loss": self.final_loss,
+            "wandb_url": self.wandb_url,
             "error": self.error,
             "recipe_path": self.recipe_path,
             "overrides": list(self.overrides),
@@ -286,6 +289,7 @@ class RunManifest:
                 cuda=_optional_str(gpu["cuda"]),
             ),
             final_loss=document["final_loss"],
+            wandb_url=_text(document.get("wandb_url")),
             error=_optional_str(document["error"]),
             recipe_path=str(document["recipe_path"]),
             overrides=[str(item) for item in document["overrides"]],
@@ -568,6 +572,7 @@ def manifest_from_capture(
     final_loss: Any,
     base_weights_loaded: bool,
     device: str | None = None,
+    wandb_url: str | None = None,
 ) -> RunManifest:
     """Build a manifest from a start snapshot plus the outcome fields."""
     used = device.strip() if isinstance(device, str) and device.strip() else ""
@@ -609,6 +614,7 @@ def manifest_from_capture(
         library_versions=dict(capture.library_versions),
         gpu=capture.gpu,
         final_loss=_json_number(final_loss),
+        wandb_url=_text(wandb_url),
         error=error,
         recipe_path=capture.recipe_path,
         overrides=list(capture.overrides),
@@ -732,6 +738,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             + " ".join(f"{key}={versions[key]}" for key in sorted(versions)),
             "gpu: " + _format_gpu(document.get("gpu")),
             f"final_loss: {_format_value(document.get('final_loss'))}",
+            f"wandb_url: {_format_value(document.get('wandb_url'))}",
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
             + json.dumps(

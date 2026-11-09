@@ -41,7 +41,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
-| `output.dir` | Directory for the checkpoint, `metrics.json`, and `run_manifest.json`. |
+| `output.dir` | Directory for the checkpoint, `metrics.jsonl`, `metrics.json`, and `run_manifest.json`. |
 
 `dataset.version_id` is not resolved in this build. A family that has a trainer, and a recipe that sets only `version_id`, exits `4` before training.
 
@@ -90,7 +90,7 @@ ACT hyperparameters that are passed through to `train_act` are `train_steps`, `b
 
 ## What a successful ACT run writes
 
-`train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command.
+`train_act` writes the checkpoint directory (`policy.pt`, `config.json`). Loss samples go through [`ohho.log`](metrics.md), which writes `metrics.jsonl` and `metrics.json` in that directory. `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command. `wandb_url` on the manifest is null unless a configured W&B client returned a run link.
 
 The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
 
@@ -128,9 +128,11 @@ A run that never starts training emits a single `error` line and no `train_start
 
 ## Adding a family
 
-Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines.
+Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. `run` trains for real, records metrics with [`ohho.log`](metrics.md), and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest and does not call W&B itself. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines.
 
 ```python
+from ohho import log
+from ohho.metrics import open_metrics, summary_path
 from ohho.train.recipe_registry import TrainResult, register
 
 class MyFamily:
@@ -141,8 +143,10 @@ class MyFamily:
 
     def run(self, recipe, emit):
         emit({"event": "train_start", "family": self.id, "device": "cpu"})
-        # Train, then write metrics.json under recipe["output"]["dir"].
-        raise NotImplementedError
+        output = recipe["output"]["dir"]
+        with open_metrics(output):
+            log(0, {"loss": 1.0})
+        return TrainResult(output, str(summary_path(output)), "cpu", False)
 
 register(MyFamily(), source="my_package")
 ```

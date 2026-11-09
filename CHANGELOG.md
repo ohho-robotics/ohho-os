@@ -17,6 +17,14 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Training metric log** — `ohho.log(step, metrics)` (OHH-544). Built-in
+  trainers buffer samples and flush an append-only `metrics.jsonl` plus a
+  `metrics.json` snapshot next to the run. A `MetricsUploader` can receive
+  each flushed batch; ohho-os does not upload it. W&B is an optional mirror:
+  `wandb` is imported only when `WANDB_API_KEY` is set and the mode is not
+  offline or disabled. `run_manifest.json` stores `wandb_url` only when the
+  W&B client returns a link. The native run id is `ohho_run_id` on that W&B
+  run. Docs: [`docs/train/metrics.md`](docs/train/metrics.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
