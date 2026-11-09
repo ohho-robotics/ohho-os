@@ -12,8 +12,8 @@ Its `$id` is `https://ohho-robotics.com/schemas/ohho.recipe/v1.json` and its tit
 | --- | --- | --- |
 | `act.yaml` | `act` | Yes. Calls `ohho.train.act.train_act` on CPU or GPU. |
 | `diffusion.yaml` | `diffusion` | Yes. Calls `ohho.train.il.diffusion_policy.train_diffusion`. |
-| `smolvla.yaml` | `smolvla` | No. |
-| `openvla.yaml` | `openvla` | No. |
+| `smolvla.yaml` | `smolvla` | Preflight only, then exit 3. Does not download weights. |
+| `openvla.yaml` | `openvla` | Preflight only, then exit 3. Does not download weights. |
 | `ppo.yaml` | `ppo` | No. |
 
 ```bash
@@ -21,7 +21,7 @@ ohho train ohho/train/examples/il/act-tiny-cpu.yaml --set dataset.path=/path/to/
 ohho train ohho/train/examples/il/diffusion-tiny-cpu.yaml --set dataset.path=/path/to/dataset --set output.dir=/path/to/run
 ```
 
-ACT and Diffusion Policy parameters, defaults, ranges, validation events, and the checkpoint layout serve loads are in [`il-recipes.md`](il-recipes.md). Tiny CPU configs and single-GPU examples live in `ohho/train/examples/il/`. The files in `ohho/train/examples/*.yaml` are one schema example per family. Running `diffusion.yaml` as shipped exits `4` until `dataset.path` is a real directory or an `hf://` hub id. `smolvla`, `openvla`, and `ppo` are schema-valid and exit `3`. They do not train.
+ACT and Diffusion Policy parameters, defaults, ranges, validation events, and the checkpoint layout serve loads are in [`il-recipes.md`](il-recipes.md). Tiny CPU configs and single-GPU examples live in `ohho/train/examples/il/`. SmolVLA and OpenVLA parameters, the memory estimate, LoRA merge export, and base-model licence are in [`vla-recipes.md`](vla-recipes.md). Launch examples live in `ohho/train/examples/vla/`. The files in `ohho/train/examples/*.yaml` are one schema example per family. Running `diffusion.yaml` as shipped exits `4` until `dataset.path` is a real directory or an `hf://` hub id. `smolvla` and `openvla` are schema-valid, check their family parameters, and exit `3` without downloading weights. `ppo` is schema-valid and exits `3`. They do not train.
 
 ## Document
 
@@ -35,7 +35,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `base_weights` | Optional `{uri, revision}`. The ACT trainer records the uri and does not load it. |
 | `dataset` | Exactly one of `path` (local directory) or `version_id`. |
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
-| `precision` | `fp32` (default), `fp16`, or `bf16`. ACT runs `fp32` only. |
+| `precision` | `fp32` (default), `fp16`, or `bf16`. ACT and diffusion run `fp32` only. SmolVLA and OpenVLA store BF16 on `hyperparameters.precision` and do not read this field. OHH-524 will unify the two. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
@@ -50,9 +50,9 @@ Relative paths are resolved from the process working directory.
 1. Parse the file.
 2. Apply every `--set` override.
 3. Validate against the published JSON Schema.
-4. Look up `family`. A missing or unavailable family stops here.
-5. Family preflight (for ACT and diffusion: precision, hyperparameters, dataset, device, torch).
-6. Emit `train_start` and call the trainer.
+4. Look up `family`. A missing family, or one whose `available()` is false (`ppo`), stops here.
+5. Family preflight. ACT and diffusion check the shared precision field, hyperparameters, dataset, device, and torch. SmolVLA and OpenVLA check family hyperparameters (BF16 is `hyperparameters.precision`; the shared precision field is not read) and build a memory estimate, then stop. They do not download weights and do not emit `train_start`.
+6. Emit `train_start` and call the trainer. SmolVLA and OpenVLA do not reach this step.
 
 A failure in steps 1–5 does not call the trainer and does not emit `train_start`. Schema validation happens before the availability check, so an invalid field on an unavailable family is exit `1`, not exit `3`.
 
@@ -118,15 +118,15 @@ A run that never starts training emits a single `error` line and no `train_start
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | ok | Checkpoint, metrics, and `run_manifest.json` were written. |
-| 1 | invalid | Parse error, `--set` error, schema error, or ACT/diffusion preflight refusal (unsupported precision, unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, torch missing). The trainer was not called. |
+| 1 | invalid | Parse error, `--set` error, schema error, ACT/diffusion preflight refusal (unsupported precision, unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, torch missing), or a SmolVLA/OpenVLA hyperparameter outside its range. The trainer was not called. |
 | 2 | usage | The process was invoked incorrectly. This is argparse (the recipe path was missing). No JSON line. |
-| 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build. `message` is `family not available in this build`. The trainer was not called. |
+| 3 | unavailable | PPO has no trainer. A schema-valid SmolVLA or OpenVLA recipe whose family parameters are in range also exits 3: this build does not download base weights or launch the fine-tune. `message` is `family not available in this build`. The trainer was not called. |
 | 4 | dataset | The family can train, but the dataset is not a local directory (`version_id` only, or `path` is not a directory). The trainer was not called. |
 | 5 | failed | `train_start` was emitted and the trainer then failed. No success manifest is written. |
 
 ## Adding a family
 
-Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines.
+Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines. SmolVLA and OpenVLA set `available()` true so parameter preflight runs, then `run` raises `FamilyUnavailable` because this build does not load their base weights.
 
 ```python
 from ohho.train.recipe_registry import TrainResult, register

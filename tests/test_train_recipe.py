@@ -223,8 +223,9 @@ class TestRegistry(unittest.TestCase):
         self.assertTrue(get_family("act").available())
         self.assertTrue(get_family("diffusion").available())
         self.assertIs(get_family("diffusion"), DIFFUSION)
-        for family in ("smolvla", "openvla", "ppo"):
-            self.assertFalse(get_family(family).available())
+        self.assertTrue(get_family("smolvla").available())
+        self.assertTrue(get_family("openvla").available())
+        self.assertFalse(get_family("ppo").available())
         self.assertIs(get_family("act"), ACT)
         register(ACT, source="again")
 
@@ -325,7 +326,7 @@ class TestTrainCommand(unittest.TestCase):
                     "train",
                     str(example_path("act")),
                     "--set",
-                    "family=smolvla",
+                    "family=ppo",
                     "--set",
                     "dataset.path=null",
                     "--set",
@@ -335,7 +336,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(code, EXIT_UNAVAILABLE, stderr.getvalue())
         event = json.loads(stdout.getvalue().strip().splitlines()[-1])
         self.assertEqual(event["message"], UNAVAILABLE_MESSAGE)
-        self.assertEqual(event["family"], "smolvla")
+        self.assertEqual(event["family"], "ppo")
 
     def test_invalid_config_fails_before_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

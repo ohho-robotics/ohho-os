@@ -61,6 +61,7 @@
 | Agent loop | ✅ **real brain** — `HarnessBrain` wires `agent_engine.AgentHarness` (perceive→reason→act→reflect). `ToolRegistry` built from robot capabilities. `ClaudeToolCallingReasoner` over `ReasoningRouter` (cloud Claude when `ANTHROPIC_API_KEY` + `[agent]` extra, echo fallback otherwise). `ScriptedBrain` remains the no-dep fallback. |
 | Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.0), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. |
 | Imitation recipes | ✅ **OHH-508** — ACT and Diffusion Policy recipes on LeRobot datasets through `ohho train`. Defaults, ranges, the validation stream, and the serve checkpoint layout: `docs/train/il-recipes.md`. Tiny CPU and single-GPU examples: `ohho/train/examples/il/`. |
+| VLA recipes | ✅ **OHH-509** — SmolVLA and OpenVLA (LoRA and full) fine-tune recipes. BF16, gradient checkpointing, and LoRA rank/alpha/target modules are family parameters (OHH-524 will unify the shared precision field). Memory estimate, LoRA merge export, and base-model licence metadata: `docs/train/vla-recipes.md`. Launch examples: `ohho/train/examples/vla/`. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0 + OHH-125** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, `CameraPerceptor`, Claude-vision `VlmPerceptor` with 1 Hz rate-limiting and cost/latency hooks). Go2 front-camera frames over DDS (`get_camera_frame()`), odom + bearing projection from image x with fixed-range assumption. CLI `ohho look`, `ohho memory`, and `ohho look unitree-go2 --transport dds://lo?domain=1`. |
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 / OHH-89** — `ohho.sim_serve` JSON session shared with the Connect console: velocity/joints/deadman/estop in, odom/joint state/camera or `no_camera`/backend id out. Missing deadman or a dropped socket zeroes velocity within 300 ms (watchdog is not tied to the telemetry rate). `ros2` bridges `/cmd_vel`, `/odom`, joint state, front camera, `/emergency_stop` via rosbridge (tests use a fake bridge, no Gazebo). `isaac`/`mujoco` return `not-implemented` and the CLI prints `not built`. CLI `ohho sim-serve`. Default port **8790** (8765 is OmniBot's Foxglove bridge). |
@@ -193,7 +194,8 @@ sdk/
 │   │   └── reader.py     # DatasetReader — lightweight reader (no torch needed), stats()
 │   ├── train/            # ohho.train — finetune() delegates to lerobot_engine, mock mode for sim
 │   │   ├── __init__.py   # finetune(), SUPPORTED_POLICIES, TrainUnavailable, _mock_train()
-│   │   └── act.py        # TinyACTPolicy + train_act() CPU Action Chunking Transformer
+│   │   ├── act.py        # TinyACTPolicy + train_act() CPU Action Chunking Transformer
+│   │   └── vla/          # OHH-509 SmolVLA + OpenVLA: params, memory estimate, licence, LoRA merge
 │   ├── serve/            # ohho.serve — FastAPI inference server, `ohho serve` CLI
 │   │   ├── __init__.py   # serve(), build_app(), ServeUnavailable, _MockModel
 │   │   └── act.py        # ACTModel inference adapter
