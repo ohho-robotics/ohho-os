@@ -1,8 +1,9 @@
 """Built-in recipe families.
 
 ACT calls :func:`ohho.train.act.train_act` and writes a real checkpoint.
-Diffusion Policy, SmolVLA, OpenVLA, and PPO are registered so a recipe can
-name them, and their run step reports that the family is not available.
+PPO calls :func:`ohho.train.ppo.run_ppo` and writes a real checkpoint.
+Diffusion Policy, SmolVLA, and OpenVLA are registered so a recipe can name
+them, and their run step reports that the family is not available.
 They do not call a mock trainer.
 """
 
@@ -100,6 +101,24 @@ class ActRecipe:
         )
 
 
+class PpoRecipe:
+    """PPO on a registered task.
+
+    The CPU path is a built-in PyTorch trainer. ``rsl_rl`` and ``skrl`` are
+    optional backends. See :mod:`ohho.train.ppo`.
+    """
+
+    id = "ppo"
+
+    def available(self) -> bool:
+        return True
+
+    def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
+        from .ppo import run_ppo
+
+        return run_ppo(recipe, emit)
+
+
 class UnavailableRecipe:
     """A family id with no trainer in this build."""
 
@@ -118,7 +137,7 @@ ACT = ActRecipe()
 DIFFUSION = UnavailableRecipe("diffusion")
 SMOLVLA = UnavailableRecipe("smolvla")
 OPENVLA = UnavailableRecipe("openvla")
-PPO = UnavailableRecipe("ppo")
+PPO = PpoRecipe()
 
 
 def register_builtins() -> None:

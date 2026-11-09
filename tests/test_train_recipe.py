@@ -14,7 +14,7 @@ from unittest.mock import patch
 from ohho import __version__
 from ohho.cli import main as cli_main
 from ohho.sim_loop import record_sim_episodes
-from ohho.train.builtin_recipes import ACT
+from ohho.train.builtin_recipes import ACT, PPO
 from ohho.train.recipe_registry import (
     RecipeRegistryError,
     TrainResult,
@@ -230,9 +230,11 @@ class TestRegistry(unittest.TestCase):
             {"act", "diffusion", "smolvla", "openvla", "ppo"} <= set(family_ids())
         )
         self.assertTrue(get_family("act").available())
-        for family in ("diffusion", "smolvla", "openvla", "ppo"):
+        self.assertTrue(get_family("ppo").available())
+        for family in ("diffusion", "smolvla", "openvla"):
             self.assertFalse(get_family(family).available())
         self.assertIs(get_family("act"), ACT)
+        self.assertIs(get_family("ppo"), PPO)
         register(ACT, source="again")
 
         class Other:
@@ -317,7 +319,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(caught.exception.code, EXIT_USAGE)
 
     def test_unavailable_families_do_not_train(self) -> None:
-        for family in ("diffusion", "smolvla", "openvla", "ppo"):
+        for family in ("diffusion", "smolvla", "openvla"):
             with self.subTest(family=family):
                 code, events, err = _run(example_path(family))
                 self.assertEqual(code, EXIT_UNAVAILABLE, err)
