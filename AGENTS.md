@@ -61,6 +61,7 @@
 | Agent loop | ✅ **real brain** — `HarnessBrain` wires `agent_engine.AgentHarness` (perceive→reason→act→reflect). `ToolRegistry` built from robot capabilities. `ClaudeToolCallingReasoner` over `ReasoningRouter` (cloud Claude when `ANTHROPIC_API_KEY` + `[agent]` extra, echo fallback otherwise). `ScriptedBrain` remains the no-dep fallback. |
 | Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.0), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. |
 | Serve bench harness | ✅ **OHH-431** — `ohho bench --artifact --target` writes `ohho.bench/v1` (schema from **OHH-473**) with mean/median/p95/min/max, per-stage timing, baseline deltas, and `--slo` / `--max-regression` gates. `--target` is an OHH-427 profile id. Docs `docs/serve/bench.md`. |
+| **LLM serving backends** | ✅ **OHH-475** — `ServingBackend` in `ohho/serve/backends` (`launch`, `health`, OpenAI `endpoint_url`, `teardown`, `version`) for vLLM, SGLang, TensorRT-LLM (`trtllm-serve` or `tritonserver`), and llama.cpp. Engines are external programs, not base dependencies. `ohho bench llm` writes `ohho.bench/v1` with an optional `ohho.bench.llm/v1` block (TTFT, inter-token latency, tokens/s, request throughput). GPU and Jetson runs are not in CI. Docs `docs/serve/llm-backends.md`. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0 + OHH-125** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, `CameraPerceptor`, Claude-vision `VlmPerceptor` with 1 Hz rate-limiting and cost/latency hooks). Go2 front-camera frames over DDS (`get_camera_frame()`), odom + bearing projection from image x with fixed-range assumption. CLI `ohho look`, `ohho memory`, and `ohho look unitree-go2 --transport dds://lo?domain=1`. |
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 / OHH-89** — `ohho.sim_serve` JSON session shared with the Connect console: velocity/joints/deadman/estop in, odom/joint state/camera or `no_camera`/backend id out. Missing deadman or a dropped socket zeroes velocity within 300 ms (watchdog is not tied to the telemetry rate). `ros2` bridges `/cmd_vel`, `/odom`, joint state, front camera, `/emergency_stop` via rosbridge (tests use a fake bridge, no Gazebo). `isaac`/`mujoco` return `not-implemented` and the CLI prints `not built`. CLI `ohho sim-serve`. Default port **8790** (8765 is OmniBot's Foxglove bridge). |
@@ -194,7 +195,7 @@ sdk/
 │   ├── train/            # ohho.train — finetune() delegates to lerobot_engine, mock mode for sim
 │   │   ├── __init__.py   # finetune(), SUPPORTED_POLICIES, TrainUnavailable, _mock_train()
 │   │   └── act.py        # TinyACTPolicy + train_act() CPU Action Chunking Transformer
-│   ├── serve/            # ohho.serve — FastAPI inference server, `ohho serve` CLI
+│   ├── serve/            # ohho.serve — FastAPI policy server; OHH-475 backends/ and loadgen.py
 │   │   ├── __init__.py   # serve(), build_app(), ServeUnavailable, _MockModel
 │   │   └── act.py        # ACTModel inference adapter
 │   ├── bench/            # ohho.bench — ohho.bench/v1 schema (OHH-473) and the Serve bench harness (OHH-431)
@@ -218,7 +219,7 @@ sdk/
 │   ├── agent_rules/      # ohho rules install (OHH-271 phase 6); body is ohho-rules.md
 │   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
 │   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
-│   ├── cli.py            # argparse: doctor/verify/list(--plugins, --json --ci-sim)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/selftest/hil/mcp/rules; main()
+│   ├── cli.py            # argparse: doctor/verify/list(--plugins, --json --ci-sim)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/selftest/hil/mcp/rules/bench; main()
 │   ├── robots/
 │   │   ├── __init__.py   # package for the built-in plugin and example manifests
 │   │   ├── builtin.py    # built-in plugin (sim, aerial); vendor SDKs stay lazy
@@ -248,7 +249,7 @@ sdk/
 │   ├── hil_run.py        # one-command HIL runner (delegates to ohho.hil)
 │   ├── sim_loop.py       # one-liner reproducible sim loop runner
 │   └── sim_demo_harness.py  # OHH-134 sim demo harness entry point
-└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py, test_humanoid_telemetry.py, test_humanoid_mujoco.py, test_conformance.py, test_hil_mock.py, and tests/fixtures/humanoid (small MJCF, no meshes)
+└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py, test_humanoid_telemetry.py, test_humanoid_mujoco.py, test_conformance.py, test_hil_mock.py, test_serve_backends.py, and tests/fixtures/humanoid (small MJCF, no meshes)
 ```
 
 ---

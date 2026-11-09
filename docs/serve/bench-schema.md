@@ -43,8 +43,36 @@ git ids and full sha256 digests both fit.
 
 Optional fields already named in the schema (`run.id`, `latency.samples`,
 `throughput.batch_size`, `accuracy.metrics`, resource gauges on `telemetry`,
-host `platform` / `arch` / `cpu` / `accelerator`, and extra version keys)
-may be omitted. Extra version keys are strings.
+host `platform` / `arch` / `cpu` / `accelerator`, the `llm` block, and extra
+version keys) may be omitted. Extra version keys are strings.
+
+## LLM serving block
+
+`llm` is optional. The parent document stays `ohho.bench/v1`. When the object
+is present its own id is `llm.schema` = `ohho.bench.llm/v1`. That id versions
+the block. A breaking change of the block uses a new id. It does not remove
+or retype a v1 field.
+
+| Path | Required on `llm` | Meaning |
+|---|---|---|
+| `llm.schema` | yes | Constant `ohho.bench.llm/v1`. |
+| `llm.backend` | yes | Serving backend id. |
+| `llm.concurrency` | yes | Maximum in-flight requests. |
+| `llm.ttft` | yes | Time to first token. Same fields as a latency distribution. |
+| `llm.inter_token` | yes | Gap between later streamed chunks. |
+| `llm.tokens_per_s` | yes | Output chunks divided by wall-clock seconds. |
+| `llm.requests_per_s` | yes | Completed requests divided by wall-clock seconds. |
+
+The load generator also writes `latency.stages` named `ttft` and
+`inter_token`, and `throughput.unit` of `tokens/s`. `accuracy.primary` for
+that generator is `request_completion_rate` (requests that returned a token
+divided by requests sent). It is not a model-quality score.
+
+`run.model_sha` is the sha256 of the model file when that file is local and
+at most 8 MiB. Otherwise it is the sha256 of the model identifier, and
+`llm.model_sha_of` is `identifier`. `run.artifact_sha_of` =
+`serving-setup` means the artifact digest hashes the backend, version,
+precision, and model id rather than a package file.
 
 The harness (see [`bench.md`](bench.md)) adds more optional v1 fields. None of
 them are required, and none change the type of a field v1 already defined:

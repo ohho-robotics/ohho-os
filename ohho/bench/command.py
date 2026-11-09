@@ -3,12 +3,17 @@
 ``ohho bench validate FILE`` is the schema check from OHH-473. A run is
 ``ohho bench --artifact PATH --target PROFILE``. ``ohho bench`` with neither
 is rejected by the root parser so the historical exit code 2 stays.
+
+OHH-475 adds ``version``, ``launch``, and ``llm`` on the same parser. Those
+talk to external OpenAI-compatible engines and do not replace the harness.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from typing import Any
 
 from ohho.bench.errors import BenchHarnessError
@@ -27,9 +32,10 @@ def register_bench(subparsers: Any) -> None:
     """Add ``bench`` to the root CLI parser."""
     bench = subparsers.add_parser(
         "bench",
-        help="benchmark an inference artifact or validate a result",
+        help="benchmark an inference artifact, an LLM server, or validate a result",
         description=(
-            "Run an inference benchmark, or validate an ohho.bench/v1 result. "
+            "Run an inference benchmark, measure an external LLM server, "
+            "or validate an ohho.bench/v1 result. "
             "A bare `ohho bench` is not a run."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -40,6 +46,9 @@ def register_bench(subparsers: Any) -> None:
             "  ohho bench --artifact model.onnx --target x86-cpu --baseline prev.json "
             "--slo p95<=200ms --max-regression p95=10%% --markdown summary.md\n"
             "  ohho bench validate out.json\n"
+            "  ohho bench launch --backend vllm --model org/model --dry-run\n"
+            "  ohho bench llm --endpoint http://127.0.0.1:8000/v1 "
+            "--model org/model --output result.json\n"
         ),
     )
     bench.add_argument("--artifact", help="path to an ONNX artifact")
@@ -125,6 +134,7 @@ def register_bench(subparsers: Any) -> None:
     )
     validate.add_argument("file", help="path to a JSON result")
     validate.set_defaults(func=run_validate)
+    _register_llm_commands(commands)
     bench.set_defaults(func=run_bench_command, bench_command=None)
 
 
@@ -239,3 +249,184 @@ def _exporters(args: argparse.Namespace, document: dict[str, Any]) -> None:
         push_prometheus(url, document)
     if getattr(args, "wandb", False):
         log_wandb(document)
+
+
+_LLM_BACKENDS = ("vllm", "sglang", "tensorrt-llm", "llama-cpp")
+
+
+def _register_llm_commands(commands: Any) -> None:
+    """Add the OHH-475 external-engine subcommands."""
+    version = commands.add_parser(
+        "version",
+        help="print an external LLM engine version",
+    )
+    version.add_argument("--backend", required=True, choices=_LLM_BACKENDS)
+    version.add_argument(
+        "--executable",
+        default=None,
+        help="engine executable to query instead of the default",
+    )
+    version.add_argument(
+        "--launcher",
+        default=None,
+        choices=("trtllm-serve", "triton"),
+        help="tensorrt-llm only: trtllm-serve (default) or triton",
+    )
+    version.set_defaults(func=run_bench_version)
+    launch = commands.add_parser(
+        "launch",
+        help="launch an external OpenAI-compatible LLM server",
+    )
+    launch.add_argument("--backend", required=True, choices=_LLM_BACKENDS)
+    launch.add_argument("--model", required=True)
+    launch.add_argument("--precision", default="auto")
+    launch.add_argument("--host", default="127.0.0.1")
+    launch.add_argument("--port", type=int, default=None)
+    launch.add_argument("--startup-timeout", type=float, default=30.0)
+    launch.add_argument("--executable", default=None)
+    launch.add_argument(
+        "--launcher",
+        default=None,
+        choices=("trtllm-serve", "triton"),
+    )
+    launch.add_argument("--model-repository", default=None)
+    launch.add_argument("--n-gpu-layers", default=None, dest="n_gpu_layers")
+    launch.add_argument("--ctx-size", type=int, default=None)
+    launch.add_argument("--tp-size", type=int, default=None)
+    launch.add_argument("--extra-arg", action="append", default=[])
+    launch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the command and URLs as JSON and do not start a process",
+    )
+    launch.set_defaults(func=run_bench_launch)
+    llm = commands.add_parser(
+        "llm",
+        help="measure TTFT, inter-token latency, and throughput",
+    )
+    llm.add_argument("--endpoint", required=True, help="OpenAI base URL, .../v1")
+    llm.add_argument("--model", required=True)
+    llm.add_argument("--output", required=True, help="ohho.bench/v1 JSON path")
+    llm.add_argument("--concurrency", type=int, default=1)
+    llm.add_argument("--requests", type=int, default=4)
+    llm.add_argument("--max-tokens", type=int, default=8)
+    llm.add_argument("--prompt", default="ping")
+    llm.add_argument("--precision", default="auto")
+    llm.add_argument("--backend-name", default="openai-compatible")
+    llm.add_argument("--backend-version", default="unknown")
+    llm.add_argument("--timeout", type=float, default=30.0)
+    llm.set_defaults(func=run_bench_llm)
+
+
+def run_bench_version(args: argparse.Namespace) -> int:
+    """``ohho bench version --backend NAME``."""
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config: dict[str, object] = {}
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    try:
+        print(open_backend(args.backend).version(config))
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _launch_config(args: argparse.Namespace) -> dict[str, object]:
+    config: dict[str, object] = {
+        "host": args.host,
+        "startup_timeout_s": args.startup_timeout,
+    }
+    if args.port is not None:
+        config["port"] = args.port
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    if args.model_repository:
+        config["model_repository"] = args.model_repository
+    if args.n_gpu_layers is not None:
+        config["n_gpu_layers"] = args.n_gpu_layers
+    if args.ctx_size is not None:
+        config["ctx_size"] = args.ctx_size
+    if args.tp_size is not None:
+        config["tp_size"] = args.tp_size
+    if args.extra_arg:
+        config["extra_args"] = list(args.extra_arg)
+    return config
+
+
+def run_bench_launch(args: argparse.Namespace) -> int:
+    """``ohho bench launch`` starts an external engine, or prints a dry run."""
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config = _launch_config(args)
+    try:
+        backend = open_backend(args.backend)
+        if args.dry_run:
+            config["dry_run"] = True
+            plan = backend.plan(args.model, args.precision, config)
+            json.dump(
+                {
+                    "backend": backend.name,
+                    "commands": [list(command) for command in plan.commands],
+                    "endpoint_url": plan.endpoint_url,
+                    "health_url": plan.health_url,
+                    "version_argv": list(plan.version_argv),
+                    "precision": plan.precision,
+                },
+                sys.stdout,
+                indent=2,
+            )
+            sys.stdout.write("\n")
+            return 0
+        backend.launch(args.model, args.precision, config)
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(backend.endpoint_url())
+    try:
+        while backend.running:
+            time.sleep(0.5)
+        print("error: serving process exited", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        backend.teardown()
+
+
+def run_bench_llm(args: argparse.Namespace) -> int:
+    """``ohho bench llm`` measures a running OpenAI-compatible server."""
+    from pathlib import Path
+
+    from ohho.bench.schema import BenchValidationError
+    from ohho.serve.loadgen import LoadGenError, LoadSpec, run_load, to_bench_result
+
+    spec = LoadSpec(
+        endpoint_url=args.endpoint,
+        model=args.model,
+        prompt=args.prompt,
+        max_tokens=args.max_tokens,
+        concurrency=args.concurrency,
+        requests=args.requests,
+        timeout_s=args.timeout,
+    )
+    try:
+        result = run_load(spec)
+        document = to_bench_result(
+            result,
+            backend=args.backend_name,
+            backend_version=args.backend_version,
+            precision=args.precision,
+        )
+    except (LoadGenError, BenchValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    path = Path(args.output)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {path}")
+    return 0

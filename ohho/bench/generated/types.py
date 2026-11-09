@@ -30,6 +30,7 @@ __all__ = [
     "GateCheck",
     "Gates",
     "BatchResult",
+    "LlmBench",
     "BenchResult",
 ]
 
@@ -298,6 +299,34 @@ class BatchResult(TypedDict):
     throughput: Throughput
 
 
+class _LlmBenchRequired(TypedDict):
+    schema: Literal["ohho.bench.llm/v1"]
+    backend: str
+    concurrency: int
+    ttft: LatencyStats
+    inter_token: LatencyStats
+    tokens_per_s: float
+    requests_per_s: float
+
+
+class LlmBench(_LlmBenchRequired, total=False):
+    """LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
+    ohho.bench/v1 result. Records time to first token, inter-token latency,
+    token throughput, and request throughput at one concurrency.
+
+    Additional properties are allowed.
+    """
+
+    backend_version: str
+    precision: str
+    model: str
+    model_sha_of: str
+    prompt: str
+    output_tokens: int
+    requests: int
+    requests_ok: int
+
+
 class _BenchResultRequired(TypedDict):
     schema: Literal["ohho.bench/v1"]
     run: BenchRun
@@ -319,3 +348,4 @@ class BenchResult(_BenchResultRequired, total=False):
     comparison: Comparison
     gates: Gates
     batches: list[BatchResult]
+    llm: LlmBench

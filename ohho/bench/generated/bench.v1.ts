@@ -219,6 +219,30 @@ export interface BatchResult {
 }
 
 /**
+ * LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
+ * ohho.bench/v1 result. Records time to first token, inter-token latency,
+ * token throughput, and request throughput at one concurrency.
+ * Additional properties are allowed.
+ */
+export interface LlmBench {
+  schema: "ohho.bench.llm/v1";
+  backend: string;
+  backend_version?: string;
+  precision?: string;
+  model?: string;
+  model_sha_of?: string;
+  prompt?: string;
+  concurrency: number;
+  ttft: LatencyStats;
+  inter_token: LatencyStats;
+  tokens_per_s: number;
+  requests_per_s: number;
+  output_tokens?: number;
+  requests?: number;
+  requests_ok?: number;
+}
+
+/**
  * Serve benchmark result (ohho.bench/v1). Objects allow additional properties.
  * Removing, renaming, or retyping a field requires ohho.bench/v2 and a
  * converter.
@@ -235,4 +259,5 @@ export interface BenchResult {
   comparison?: Comparison;
   gates?: Gates;
   batches?: BatchResult[];
+  llm?: LlmBench;
 }
