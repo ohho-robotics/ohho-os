@@ -287,8 +287,13 @@ def evaluate_policy_sim(
     robot_id: str | None = None,
     eval_steps: int = 50,
     instruction: str = "simulated reach and grasp demonstration",
+    probe: Any = None,
 ) -> Tuple[int, List[float]]:
-    """Execute closed-loop policy steps on simulated robot and measure serve latency."""
+    """Execute closed-loop policy steps on simulated robot and measure serve latency.
+
+    ``probe``, when set, is called as ``probe(step_index, robot, action)``
+    after each simulated step. Omitting it leaves the loop unchanged.
+    """
     robot_id = _robot_id(robot_id)
     spec = get_spec(robot_id)
     tp = SimTransport(spec)
@@ -331,6 +336,8 @@ def evaluate_policy_sim(
                 )
             tp.step(0.1)
             completed_steps += 1
+            if probe is not None:
+                probe(step_i, bot, action_vec)
     finally:
         bot.stop()
         bot.disconnect()

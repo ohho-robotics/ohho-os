@@ -78,9 +78,10 @@ def _cmd_doctor(args) -> int:
     print(
         "  parity      : "
         + (
-            "reference vs candidate  (ONNX compare needs onnxruntime; TensorRT is unchecked)"
+            "tensor gate plus optional task accuracy  "
+            "(ONNX compare needs onnxruntime; TensorRT is unchecked)"
             if have("torch")
-            else "needs torch  (onnxruntime to compare an ONNX candidate)"
+            else "task accuracy is available; tensor compare needs torch"
         )
     )
     from .mcp_tools import SIM_TOOL_NAMES

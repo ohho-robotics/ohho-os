@@ -87,11 +87,17 @@ builtin = "ohho.robots.builtin:plugin"
 omnibot = "ohho.robots.omnibot:plugin"
 unitree = "ohho.robots.unitree:plugin"
 
+[project.entry-points."ohho.parity.tasks"]
+action_error = "ohho.parity.tasks.action_error:evaluator"
+sim_success = "ohho.parity.tasks.sim_success:evaluator"
+detection_map = "ohho.parity.tasks.detection_map:evaluator"
+token_match = "ohho.parity.tasks.token_match:evaluator"
+
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "targets/profiles/*.json", "targets/*.json", "optimize/*.json", "parity/*.json"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "targets/profiles/*.json", "targets/*.json", "optimize/*.json", "parity/*.json", "bench/schemas/*.json", "bench/examples/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

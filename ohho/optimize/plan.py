@@ -57,6 +57,12 @@ class OptimizeRequest:
     parity_mean_abs: float | None = None
     parity_thresholds: str | None = None
     parity_family: str | None = None
+    tasks: str | None = None
+    task_tolerances: str | None = None
+    task_seeds: int = 20
+    task_episodes: str | None = None
+    task_detections: str | None = None
+    task_tokens: str | None = None
 
 
 @dataclass(frozen=True)

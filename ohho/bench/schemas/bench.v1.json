@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.bench/v1.json",
+  "title": "BenchResult",
+  "description": "Serve benchmark result (ohho.bench/v1). Objects allow additional properties. Removing, renaming, or retyping a field requires ohho.bench/v2 and a converter.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "run",
+    "latency",
+    "throughput",
+    "accuracy",
+    "telemetry",
+    "environment"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "ohho.bench/v1",
+      "description": "Schema id. A breaking change uses a new id and a converter."
+    },
+    "run": {"$ref": "#/$defs/run"},
+    "latency": {"$ref": "#/$defs/latency_report"},
+    "throughput": {"$ref": "#/$defs/throughput"},
+    "accuracy": {"$ref": "#/$defs/accuracy"},
+    "telemetry": {"$ref": "#/$defs/telemetry"},
+    "environment": {"$ref": "#/$defs/environment"}
+  },
+  "$defs": {
+    "host": {
+      "title": "BenchHost",
+      "description": "Machine that executed the run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Host name or CI runner id."
+        },
+        "platform": {"type": "string", "minLength": 1},
+        "arch": {"type": "string", "minLength": 1},
+        "cpu": {"type": "string", "minLength": 1},
+        "accelerator": {"type": "string", "minLength": 1}
+      }
+    },
+    "run": {
+      "title": "BenchRun",
+      "description": "Identity of the model, artifact, workload, manifest, and host.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["model_sha", "artifact_sha", "target", "manifest_ref", "host"],
+      "properties": {
+        "model_sha": {
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-fA-F]{7,128}$",
+          "description": "Digest of the model weights. Hex, optional sha256: prefix, 7 to 128 digits."
+        },
+        "artifact_sha": {
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-fA-F]{7,128}$",
+          "description": "Digest of the packaged artifact that was executed."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workload class. Common values are vision, vla, and llm.",
+          "examples": ["vision", "vla", "llm"]
+        },
+        "manifest_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Manifest the run was launched from (path, URI, or digest)."
+        },
+        "host": {"$ref": "#/$defs/host"},
+        "id": {"type": "string", "minLength": 1},
+        "started_at": {"type": "string", "minLength": 1},
+        "finished_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "metric": {
+      "title": "Metric",
+      "description": "One named accuracy figure.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "value"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "value": {"type": "number"},
+        "unit": {"type": "string", "minLength": 1}
+      }
+    },
+    "latency_stats": {
+      "title": "LatencyStats",
+      "description": "Latency distribution for one sample set.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["mean", "median", "p50", "p90", "p95", "p99", "min", "max", "std", "unit"],
+      "properties": {
+        "mean": {"type": "number", "minimum": 0},
+        "median": {"type": "number", "minimum": 0},
+        "p50": {"type": "number", "minimum": 0},
+        "p90": {"type": "number", "minimum": 0},
+        "p95": {"type": "number", "minimum": 0},
+        "p99": {"type": "number", "minimum": 0},
+        "min": {"type": "number", "minimum": 0},
+        "max": {"type": "number", "minimum": 0},
+        "std": {"type": "number", "minimum": 0},
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scale for every number in this object. Examples use ms."
+        },
+        "samples": {"type": "integer", "minimum": 0}
+      }
+    },
+    "latency_stage": {
+      "title": "LatencyStage",
+      "description": "Latency distribution for one named stage.",
+      "type": "object",
+      "additionalProperties": true,
+      "allOf": [
+        {"$ref": "#/$defs/latency_stats"},
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stage name."
+            }
+          }
+        }
+      ]
+    },
+    "latency_report": {
+      "title": "LatencyReport",
+      "description": "End-to-end latency and the per-stage breakdown.",
+      "type": "object",
+      "additionalProperties": true,
+      "allOf": [
+        {"$ref": "#/$defs/latency_stats"},
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["stages"],
+          "properties": {
+            "stages": {
+              "type": "array",
+              "description": "Per-stage latency. An empty array means only the end-to-end distribution was recorded.",
+              "items": {"$ref": "#/$defs/latency_stage"}
+            }
+          }
+        }
+      ]
+    },
+    "throughput": {
+      "title": "Throughput",
+      "description": "Work completed per unit of time.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": {"type": "number", "minimum": 0},
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unit such as frames/s, steps/s, or tokens/s."
+        },
+        "samples": {"type": "integer", "minimum": 0},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "duration_s": {"type": "number", "minimum": 0}
+      }
+    },
+    "joint_accuracy": {
+      "title": "JointAccuracy",
+      "description": "Reference and optimised error for one action joint.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["index", "reference", "optimized", "delta"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "name": {"type": "string", "minLength": 1},
+        "reference": {"type": "number"},
+        "optimized": {"type": "number"},
+        "delta": {"type": "number"}
+      }
+    },
+    "accuracy_comparison": {
+      "title": "AccuracyComparison",
+      "description": "Reference versus optimised score for one task metric, and whether the delta is inside the tolerance.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["task", "metric", "reference", "optimized", "delta", "tolerance", "result"],
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Evaluator name, such as action_error, sim_success, detection_map, or token_match."
+        },
+        "metric": {"type": "string", "minLength": 1},
+        "reference": {
+          "type": "number",
+          "description": "Score of the reference model on this metric."
+        },
+        "optimized": {
+          "type": "number",
+          "description": "Score of the optimised model on this metric."
+        },
+        "delta": {
+          "type": "number",
+          "description": "optimized minus reference. Negative means the optimised score is lower."
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest allowed regression. A value equal to the tolerance passes."
+        },
+        "result": {"type": "string", "enum": ["pass", "fail"]},
+        "direction": {
+          "type": "string",
+          "enum": ["lower_is_better", "higher_is_better"],
+          "description": "lower_is_better passes when delta is at most the tolerance. higher_is_better passes when the drop (reference minus optimized) is at most the tolerance."
+        },
+        "unit": {"type": "string", "minLength": 1},
+        "samples": {"type": "integer", "minimum": 0},
+        "per_joint": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/joint_accuracy"}
+        },
+        "seeds": {
+          "type": "array",
+          "description": "Fixed sim or episode seeds that were scored, in order.",
+          "items": {"type": "integer"}
+        }
+      }
+    },
+    "accuracy": {
+      "title": "Accuracy",
+      "description": "Quality of the model on the bench set. A task gate may add reference-versus-optimised comparisons; primary stays the headline figure.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["primary"],
+      "properties": {
+        "primary": {"$ref": "#/$defs/metric"},
+        "metrics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/metric"}
+        },
+        "samples": {"type": "integer", "minimum": 0},
+        "result": {
+          "type": "string",
+          "enum": ["pass", "fail"],
+          "description": "Task-gate result. Omitted when this run did not record a task gate."
+        },
+        "reasons": {
+          "type": "array",
+          "description": "Why the task gate failed. Empty when result is pass.",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "comparisons": {
+          "type": "array",
+          "description": "One reference-versus-optimised row per task metric.",
+          "items": {"$ref": "#/$defs/accuracy_comparison"}
+        }
+      }
+    },
+    "telemetry": {
+      "title": "Telemetry",
+      "description": "Resource and runtime measurements for the run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["duration_s", "samples"],
+      "properties": {
+        "duration_s": {"type": "number", "minimum": 0},
+        "samples": {"type": "integer", "minimum": 0},
+        "cpu_percent_mean": {"type": "number", "minimum": 0},
+        "memory_mb_max": {"type": "number", "minimum": 0},
+        "accelerator_memory_mb_max": {"type": "number", "minimum": 0},
+        "accelerator_util_mean": {"type": "number", "minimum": 0},
+        "power_w_mean": {"type": "number", "minimum": 0}
+      }
+    },
+    "environment_versions": {
+      "title": "EnvironmentVersions",
+      "description": "Component name to version string. python and ohho are required.",
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1},
+      "required": ["python", "ohho"],
+      "properties": {
+        "python": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Python version."
+        },
+        "ohho": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ohho-os package version."
+        }
+      }
+    },
+    "environment": {
+      "title": "Environment",
+      "description": "Software environment the run executed in.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["versions"],
+      "properties": {
+        "versions": {"$ref": "#/$defs/environment_versions"}
+      }
+    }
+  }
+}
