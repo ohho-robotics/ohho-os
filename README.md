@@ -289,6 +289,14 @@ See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, an
 future v2 converter are in
 [`docs/serve/bench-schema.md`](docs/serve/bench-schema.md).
 
+`ohho bench launch --backend vllm --model <id> --dry-run` prints the engine
+command. `ohho bench llm --endpoint http://127.0.0.1:8000/v1 --model <id>
+--output result.json` measures a running OpenAI-compatible server (time to
+first token, inter-token latency, tokens/s, request throughput) and writes
+`ohho.bench/v1` with an optional `ohho.bench.llm/v1` block. vLLM, SGLang,
+TensorRT-LLM, and llama.cpp are external programs, not package dependencies.
+See [`docs/serve/llm-backends.md`](docs/serve/llm-backends.md).
+
 ## TypeScript
 
 The TypeScript SDK (`@ohho/schemas`, `@ohho/connect`, `@ohho/client`) lives in

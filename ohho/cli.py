@@ -970,7 +970,10 @@ def _cmd_logout(args) -> int:
     return 0
 
 
-def _cmd_bench(args) -> int:
+_LLM_BACKENDS = ("vllm", "sglang", "tensorrt-llm", "llama-cpp")
+
+
+def _cmd_bench_validate(args) -> int:
     from .bench.schema import BenchValidationError, validate_path
 
     try:
@@ -979,6 +982,117 @@ def _cmd_bench(args) -> int:
         print(exc, file=sys.stderr)
         return 1
     print(f"valid ohho.bench/v1: {args.file}")
+    return 0
+
+
+def _cmd_bench_version(args) -> int:
+    from .serve.backends import ServingBackendError, open_backend
+
+    config: dict[str, object] = {}
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    try:
+        print(open_backend(args.backend).version(config))
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _bench_launch_config(args) -> dict[str, object]:
+    config: dict[str, object] = {
+        "host": args.host,
+        "startup_timeout_s": args.startup_timeout,
+    }
+    if args.port is not None:
+        config["port"] = args.port
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    if args.model_repository:
+        config["model_repository"] = args.model_repository
+    if args.n_gpu_layers is not None:
+        config["n_gpu_layers"] = args.n_gpu_layers
+    if args.ctx_size is not None:
+        config["ctx_size"] = args.ctx_size
+    if args.tp_size is not None:
+        config["tp_size"] = args.tp_size
+    if args.extra_arg:
+        config["extra_args"] = list(args.extra_arg)
+    return config
+
+
+def _cmd_bench_launch(args) -> int:
+    from .serve.backends import ServingBackendError, open_backend
+
+    config = _bench_launch_config(args)
+    try:
+        backend = open_backend(args.backend)
+        if args.dry_run:
+            config["dry_run"] = True
+            plan = backend.plan(args.model, args.precision, config)
+            json.dump(
+                {
+                    "backend": backend.name,
+                    "commands": [list(command) for command in plan.commands],
+                    "endpoint_url": plan.endpoint_url,
+                    "health_url": plan.health_url,
+                    "version_argv": list(plan.version_argv),
+                    "precision": plan.precision,
+                },
+                sys.stdout,
+                indent=2,
+            )
+            sys.stdout.write("\n")
+            return 0
+        backend.launch(args.model, args.precision, config)
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(backend.endpoint_url())
+    try:
+        while backend.running:
+            time.sleep(0.5)
+        print("error: serving process exited", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        backend.teardown()
+
+
+def _cmd_bench_llm(args) -> int:
+    from pathlib import Path
+
+    from .bench.schema import BenchValidationError
+    from .serve.loadgen import LoadGenError, LoadSpec, run_load, to_bench_result
+
+    spec = LoadSpec(
+        endpoint_url=args.endpoint,
+        model=args.model,
+        prompt=args.prompt,
+        max_tokens=args.max_tokens,
+        concurrency=args.concurrency,
+        requests=args.requests,
+        timeout_s=args.timeout,
+    )
+    try:
+        result = run_load(spec)
+        document = to_bench_result(
+            result,
+            backend=args.backend_name,
+            backend_version=args.backend_version,
+            precision=args.precision,
+        )
+    except (LoadGenError, BenchValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    path = Path(args.output)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {path}")
     return 0
 
 
@@ -1585,7 +1699,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bench = sub.add_parser(
         "bench",
-        help="validate ohho.bench/v1 benchmark results",
+        help="benchmark results and external LLM servers",
     )
     bench_sub = bench.add_subparsers(dest="bench_command", required=True)
     bench_validate = bench_sub.add_parser(
@@ -1593,7 +1707,67 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate a result file against ohho.bench/v1",
     )
     bench_validate.add_argument("file", help="path to a JSON result")
-    bench_validate.set_defaults(func=_cmd_bench)
+    bench_validate.set_defaults(func=_cmd_bench_validate)
+    bench_version = bench_sub.add_parser(
+        "version",
+        help="print an external LLM engine version",
+    )
+    bench_version.add_argument("--backend", required=True, choices=_LLM_BACKENDS)
+    bench_version.add_argument(
+        "--executable",
+        default=None,
+        help="engine executable to query instead of the default",
+    )
+    bench_version.add_argument(
+        "--launcher",
+        default=None,
+        choices=("trtllm-serve", "triton"),
+        help="tensorrt-llm only: trtllm-serve (default) or triton",
+    )
+    bench_version.set_defaults(func=_cmd_bench_version)
+    bench_launch = bench_sub.add_parser(
+        "launch",
+        help="launch an external OpenAI-compatible LLM server",
+    )
+    bench_launch.add_argument("--backend", required=True, choices=_LLM_BACKENDS)
+    bench_launch.add_argument("--model", required=True)
+    bench_launch.add_argument("--precision", default="auto")
+    bench_launch.add_argument("--host", default="127.0.0.1")
+    bench_launch.add_argument("--port", type=int, default=None)
+    bench_launch.add_argument("--startup-timeout", type=float, default=30.0)
+    bench_launch.add_argument("--executable", default=None)
+    bench_launch.add_argument(
+        "--launcher",
+        default=None,
+        choices=("trtllm-serve", "triton"),
+    )
+    bench_launch.add_argument("--model-repository", default=None)
+    bench_launch.add_argument("--n-gpu-layers", default=None, dest="n_gpu_layers")
+    bench_launch.add_argument("--ctx-size", type=int, default=None)
+    bench_launch.add_argument("--tp-size", type=int, default=None)
+    bench_launch.add_argument("--extra-arg", action="append", default=[])
+    bench_launch.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the command and URLs as JSON and do not start a process",
+    )
+    bench_launch.set_defaults(func=_cmd_bench_launch)
+    bench_llm = bench_sub.add_parser(
+        "llm",
+        help="measure TTFT, inter-token latency, and throughput",
+    )
+    bench_llm.add_argument("--endpoint", required=True, help="OpenAI base URL, .../v1")
+    bench_llm.add_argument("--model", required=True)
+    bench_llm.add_argument("--output", required=True, help="ohho.bench/v1 JSON path")
+    bench_llm.add_argument("--concurrency", type=int, default=1)
+    bench_llm.add_argument("--requests", type=int, default=4)
+    bench_llm.add_argument("--max-tokens", type=int, default=8)
+    bench_llm.add_argument("--prompt", default="ping")
+    bench_llm.add_argument("--precision", default="auto")
+    bench_llm.add_argument("--backend-name", default="openai-compatible")
+    bench_llm.add_argument("--backend-version", default="unknown")
+    bench_llm.add_argument("--timeout", type=float, default=30.0)
+    bench_llm.set_defaults(func=_cmd_bench_llm)
 
     return p
 

@@ -25,7 +25,8 @@
     "throughput": {"$ref": "#/$defs/throughput"},
     "accuracy": {"$ref": "#/$defs/accuracy"},
     "telemetry": {"$ref": "#/$defs/telemetry"},
-    "environment": {"$ref": "#/$defs/environment"}
+    "environment": {"$ref": "#/$defs/environment"},
+    "llm": {"$ref": "#/$defs/llm"}
   },
   "$defs": {
     "host": {
@@ -234,6 +235,62 @@
       "required": ["versions"],
       "properties": {
         "versions": {"$ref": "#/$defs/environment_versions"}
+      }
+    },
+    "llm": {
+      "title": "LlmBench",
+      "description": "LLM serving measurements (ohho.bench.llm/v1). Optional on the parent ohho.bench/v1 result. Records time to first token, inter-token latency, token throughput, and request throughput at one concurrency.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema",
+        "backend",
+        "concurrency",
+        "ttft",
+        "inter_token",
+        "tokens_per_s",
+        "requests_per_s"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "ohho.bench.llm/v1",
+          "description": "LLM block id. A breaking change of this block uses a new id. The parent result stays ohho.bench/v1."
+        },
+        "backend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Serving backend id, such as vllm, sglang, tensorrt-llm, or llama-cpp."
+        },
+        "backend_version": {"type": "string", "minLength": 1},
+        "precision": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "model_sha_of": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What run.model_sha hashes: file when the weights were read, otherwise identifier."
+        },
+        "prompt": {"type": "string", "minLength": 1},
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of requests in flight."
+        },
+        "ttft": {"$ref": "#/$defs/latency_stats"},
+        "inter_token": {"$ref": "#/$defs/latency_stats"},
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Output token chunks divided by wall-clock seconds."
+        },
+        "requests_per_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Completed requests divided by wall-clock seconds."
+        },
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "requests": {"type": "integer", "minimum": 0},
+        "requests_ok": {"type": "integer", "minimum": 0}
       }
     }
   }

@@ -65,6 +65,18 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
 
+## Benchmark (`ohho bench`)
+
+| Command | Description |
+|---------|-------------|
+| `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
+| `ohho bench launch --backend vllm --model ID --dry-run` | Print the external engine command as JSON |
+| `ohho bench version --backend llama-cpp` | Print the engine version, or a clear error when it is not installed |
+| `ohho bench llm --endpoint URL --model ID --output FILE` | Measure TTFT, inter-token latency, tokens/s, and request throughput |
+
+Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
+external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
+
 ## Simulation services
 
 | Command | Description |

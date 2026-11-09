@@ -17,6 +17,14 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **LLM serving backends** (OHH-475) — `ServingBackend` adapters for vLLM,
+  SGLang, TensorRT-LLM (`trtllm-serve` or `tritonserver`), and llama.cpp.
+  Each builds a launch command and parses a version. The engines stay
+  external programs and are not base dependencies. A failed launch reports
+  the exit or the health timeout and stops the process tree. `ohho bench llm`
+  measures time to first token, inter-token latency, tokens/s, and request
+  throughput against an OpenAI-compatible stream and writes `ohho.bench/v1`
+  with an optional `llm` block (`ohho.bench.llm/v1`).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);

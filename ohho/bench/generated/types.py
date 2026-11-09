@@ -25,6 +25,7 @@ __all__ = [
     "Telemetry",
     "EnvironmentVersions",
     "Environment",
+    "LlmBench",
     "BenchResult",
 ]
 
@@ -213,14 +214,35 @@ class Environment(TypedDict):
     versions: EnvironmentVersions
 
 
-class BenchResult(TypedDict):
-    """Serve benchmark result (ohho.bench/v1). Objects allow additional properties.
-    Removing, renaming, or retyping a field requires ohho.bench/v2 and a
-    converter.
+class _LlmBenchRequired(TypedDict):
+    schema: Literal["ohho.bench.llm/v1"]
+    backend: str
+    concurrency: int
+    ttft: LatencyStats
+    inter_token: LatencyStats
+    tokens_per_s: float
+    requests_per_s: float
+
+
+class LlmBench(_LlmBenchRequired, total=False):
+    """LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
+    ohho.bench/v1 result. Records time to first token, inter-token latency,
+    token throughput, and request throughput at one concurrency.
 
     Additional properties are allowed.
     """
 
+    backend_version: str
+    precision: str
+    model: str
+    model_sha_of: str
+    prompt: str
+    output_tokens: int
+    requests: int
+    requests_ok: int
+
+
+class _BenchResultRequired(TypedDict):
     schema: Literal["ohho.bench/v1"]
     run: BenchRun
     latency: LatencyReport
@@ -228,3 +250,14 @@ class BenchResult(TypedDict):
     accuracy: Accuracy
     telemetry: Telemetry
     environment: Environment
+
+
+class BenchResult(_BenchResultRequired, total=False):
+    """Serve benchmark result (ohho.bench/v1). Objects allow additional properties.
+    Removing, renaming, or retyping a field requires ohho.bench/v2 and a
+    converter.
+
+    Additional properties are allowed.
+    """
+
+    llm: LlmBench
