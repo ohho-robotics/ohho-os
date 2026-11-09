@@ -328,6 +328,7 @@ class TestImportAndSchema(unittest.TestCase):
             "--out",
             "--json",
             "--submodule",
+            "--allow-parity-fail",
         ):
             self.assertIn(flag, text)
 

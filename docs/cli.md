@@ -63,7 +63,8 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
-| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)) |
+| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
+| `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
