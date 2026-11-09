@@ -74,8 +74,9 @@
 | **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
 | **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
 | **Run manifest (`ohho.run/v1`)** | ✅ **OHH-541** — `ohho train` writes `run_manifest.json` at `train_start` and finalises it on success, failure, and interrupt. Fields: resolved config, seeds, git commit and dirty flag, dataset version id and hash, base-weights hash, container image digest, library versions, GPU/driver/CUDA, start/end, status. `ohho run show`. DB storage is a local `RunStore` hook only. Docs `docs/train/run-manifest.md`. |
-| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`), `train`, `run show` |
-| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
+| **Artifact retention** | ✅ **OHH-545** — per-run layout (`checkpoints/`, `logs/`, `eval/`). Default keep is best + last checkpoint and every eval report and log. `ohho run retain` deletes intermediate checkpoints of pruned trials after N days (default 14), with `--dry-run`. Pinned and promoted runs and checkpoints are never deleted. Deletions are recorded in `artifact_index.json`; `run_manifest.json` and `metrics.json` are not rewritten. `storage_used` / `storage_used_experiment` for the console. Docs `docs/train/artifacts.md`. |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`), `train`, `run show`, `run retain`, `run storage` |
+| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. `tests/test_artifacts.py` covers OHH-545 retention. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`; installs `plugins/ohho-booster`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run, and caches and fetches the pinned description archive and walk checkpoint. Other cells skip those tests when the packages or assets are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
@@ -194,6 +195,7 @@ sdk/
 │   ├── train/            # ohho.train — finetune() delegates to lerobot_engine, mock mode for sim
 │   │   ├── __init__.py   # finetune(), SUPPORTED_POLICIES, TrainUnavailable, _mock_train()
 │   │   ├── run_manifest.py # ohho.run/v1 manifest, validator, ohho run show
+│   │   ├── artifacts.py  # per-run artifact layout, retention, storage_used (OHH-545)
 │   │   └── act.py        # TinyACTPolicy + train_act() CPU Action Chunking Transformer
 │   ├── serve/            # ohho.serve — FastAPI inference server, `ohho serve` CLI
 │   │   ├── __init__.py   # serve(), build_app(), ServeUnavailable, _MockModel
@@ -248,7 +250,7 @@ sdk/
 │   ├── hil_run.py        # one-command HIL runner (delegates to ohho.hil)
 │   ├── sim_loop.py       # one-liner reproducible sim loop runner
 │   └── sim_demo_harness.py  # OHH-134 sim demo harness entry point
-└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py, test_humanoid_telemetry.py, test_humanoid_mujoco.py, test_conformance.py, test_hil_mock.py, and tests/fixtures/humanoid (small MJCF, no meshes)
+└── tests/                # unittest suite including test_sim_loop.py, test_sim_serve.py, test_sim_demo.py, test_selftest.py, test_humanoid_telemetry.py, test_humanoid_mujoco.py, test_conformance.py, test_hil_mock.py, test_artifacts.py, and tests/fixtures/humanoid (small MJCF, no meshes)
 ```
 
 ---
@@ -518,6 +520,10 @@ Implemented `Ros2Runtime` (rclpy node behind the existing `Runtime` port) and
 - 22 new tests (`test_market.py` + `test_profiles.py`).
 - **PyPI:** not published from this repository. OHH-20 covers trusted
   publishing. Do not add a publish workflow here.
+
+Post-M5 train reproducibility on this tree: OHH-541 run manifests
+(`docs/train/run-manifest.md`); OHH-545 artifact retention
+(`ohho run retain`, `docs/train/artifacts.md`).
 
 ---
 

@@ -1599,7 +1599,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser(
         "run",
-        help="show an ohho.run/v1 training manifest",
+        help="show a training run, its storage, and artifact retention",
     )
     run_sub = run.add_subparsers(dest="run_command", required=True)
     show = run_sub.add_parser(
@@ -1616,6 +1616,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the manifest as JSON",
     )
     show.set_defaults(func=_cmd_run)
+    # OHH-545 retain and storage. Parser setup stays in ohho.train.artifacts.
+    from .train.artifacts import add_run_commands
+
+    add_run_commands(run_sub)
 
     return p
 
