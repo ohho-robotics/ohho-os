@@ -12,6 +12,10 @@
     "finished_at",
     "family",
     "device",
+    "precision",
+    "loss_scaling",
+    "precision_backend",
+    "precision_metrics",
     "resolved_config",
     "seeds",
     "git",
@@ -57,6 +61,32 @@
       "description": "Device the trainer used.",
       "type": "string",
       "minLength": 1
+    },
+    "precision": {
+      "description": "Numeric format used for the training step.",
+      "type": "string",
+      "enum": ["fp32", "fp16", "bf16", "fp8"]
+    },
+    "loss_scaling": {
+      "description": "True when fp16 training applies GradScaler. False for fp32, bf16, and fp8.",
+      "type": "boolean"
+    },
+    "precision_backend": {
+      "description": "fp32, torch.amp for fp16 and bf16, or transformer_engine for fp8.",
+      "type": "string",
+      "enum": ["fp32", "torch.amp", "transformer_engine"]
+    },
+    "precision_metrics": {
+      "description": "Throughput and peak memory keyed by precision. Only the precision that ran is an object. The others are null.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fp32", "fp16", "bf16", "fp8"],
+      "properties": {
+        "fp32": {"$ref": "#/$defs/precision_metric"},
+        "fp16": {"$ref": "#/$defs/precision_metric"},
+        "bf16": {"$ref": "#/$defs/precision_metric"},
+        "fp8": {"$ref": "#/$defs/precision_metric"}
+      }
     },
     "resolved_config": {
       "description": "Recipe after overrides and defaults, with the device the run used.",
@@ -179,6 +209,31 @@
         "compression_hooks": {"type": "array", "items": {"type": "string"}},
         "eval_hooks": {"type": "array", "items": {"type": "string"}}
       }
+    }
+  },
+  "$defs": {
+    "precision_metric": {
+      "description": "Throughput and peak memory for one precision, or null when that precision was not used.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["throughput_steps_per_s", "peak_memory_bytes"],
+          "properties": {
+            "throughput_steps_per_s": {
+              "description": "Training steps per second over the step loop. Null until the loop finishes.",
+              "type": ["number", "null"],
+              "minimum": 0
+            },
+            "peak_memory_bytes": {
+              "description": "CUDA allocator peak, or the process resident set on CPU and MPS. Null when it was not sampled.",
+              "type": ["integer", "null"],
+              "minimum": 0
+            }
+          }
+        }
+      ]
     }
   }
 }
