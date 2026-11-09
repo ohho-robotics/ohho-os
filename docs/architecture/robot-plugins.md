@@ -223,18 +223,22 @@ scenario on the plugin's sim backend only. The kit calls
 A new plugin runs it like this:
 
 1. Register a sim backend from `sim_backends()` and set `RobotSpec.sim_backend`,
-   or leave it empty to use the class default (`kinematic` for a ground robot
-   or an arm the built-in backend can run).
+   or leave it empty to use the class default (`kinematic` for a ground robot,
+   a quadruped, or an arm the built-in backend can run).
 2. Run `python -m ohho.testing.conformance --robot <id>`.
 3. `mobile_base` and `mobile_manipulator` drive a 1 m square, then check that a
    stale command zeros velocity and that e-stop latches.
 4. An `arm` moves to home, clamps a joint command to the safety profile, and
    disables torque on e-stop in sim.
-5. `humanoid` runs `humanoid_walk` on `humanoid-mujoco`: prepare, walk 1 m,
+5. `quadruped` runs `quadruped_walk` on the kinematic backend. The sim starts
+   lying; velocity is ignored until stand; sit and lie-down block drive; body
+   euler is clamped to the safety limit (never widened); a stale command zeros
+   velocity and e-stop latches.
+6. `humanoid` runs `humanoid_walk` on `humanoid-mujoco`: prepare, walk 1 m,
    turn 90 degrees, stop, e-stop while walking (hold prepare, do not damp
    while upright), then an injected push that latches the fall and damps.
-   `quadruped` and `aerial` stay in the kit registry with no sim backend.
-   That report is skipped, with the reason, and is not a pass.
+   `aerial` stays in the kit registry with no sim backend. That report is
+   skipped, with the reason, and is not a pass.
 
 Every run also checks the telemetry schema, that MCP payloads carry `backend`
 and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that
@@ -248,13 +252,15 @@ allowlist also names `feetech` (R-01) and `ardupilot` (R-03).
 - `example.json` still loads. Built-in `max_lin` / `max_ang` are unchanged.
 - Safety caps, watchdogs, arming and the e-stop path are unchanged.
 - Plugin discovery is C-02 (`ohho/plugins.py`, group `ohho.robots`).
+  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
+  gate delegates to Ground, Arm and Legged policies, and a plugin may only
+  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
+  unchanged.
   C-03 (OHH-311) asks those plugins for a transport scheme before the scheme
   dict in `ohho/adapters/__init__.py`. The dict and its entries stay, so a
   scheme only the dict knows still resolves. `RobotSpec.sim_backend` (empty by
   default) selects a plugin sim backend for `sim://` and for auto; an empty
   name keeps today's simulator return. `dds://` stays the Unitree scheme.
-  Per-class `SafetyPolicy` is C-05 / OHH-313 (`ohho/safety_policy.py`): the
-  gate delegates to Ground, Arm and Legged policies, and a plugin may only
-  tighten class caps. Caps, watchdogs, arming and the e-stop latch are
-  unchanged. The robot-id resolver remains C-06. The CI matrix is
+  The robot-id resolver remains C-06. It should follow this ADR rather than
+  grow more fields on the flat spec. The CI matrix is
   `.github/workflows/sim-matrix.yml` (C-08 / OHH-316).

@@ -20,8 +20,10 @@ has no entry point; discovery then loads that same module directly.
 
 One plugin failing to import is recorded and skipped. A duplicate robot id,
 transport scheme or sim backend is a load error naming both plugins; the
-earlier plugin keeps its robots and factories. The built-in plugin is applied
-first so a third-party collision does not drop sim, OmniBot or Go2.
+earlier plugin keeps its robots and factories. Shipped entry points from ``pyproject.toml`` are applied first, in file
+order, so a third-party collision does not drop a robot that ships with
+ohho-os. A missing shipped entry point (source checkout, or an install from
+before that entry existed) is loaded from the same table.
 
 ``resolve_transport`` reads the factories stored here. A scheme or backend a
 plugin did not register is absent from these maps, so the adapter scheme dict
@@ -162,16 +164,16 @@ class PluginInfo:
     # Empty when the plugin has no ``asset_source`` pin. CI skips the fetch.
     asset_repository: str = ""
     asset_commit: str = ""
+    # The instance, so a later policy load can call ``safety_policy`` and a
+    # sim connect can call an optional ``prepare_sim``. Discovery does not
+    # call either. Not part of equality or the list report.
+    plugin: Any = field(default=None, compare=False, hash=False, repr=False)
     transport_factories: Mapping[str, TransportFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
     sim_factories: Mapping[str, SimFactory] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
-    # The instance, so a later policy load can call ``safety_policy`` and a
-    # sim connect can call an optional ``prepare_sim``. Discovery does not
-    # call either. Not part of equality or the list report.
-    plugin: Any = field(default=None, compare=False, hash=False, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -195,16 +197,51 @@ def _read_entry_points() -> list[Any]:
     return list(found)
 
 
-def _points_at_builtin(entry: Any) -> bool:
-    return getattr(entry, "value", None) == BUILTIN_ENTRY_VALUE
+_ENTRY_LINE = re.compile(
+    r"""(?m)^(?P<name>[A-Za-z0-9_.-]+)\s*=\s*["'](?P<value>[^"']+)["']\s*$"""
+)
 
 
-def _fallback_entry() -> Any:
-    return importlib.metadata.EntryPoint(
-        name="builtin",
-        value=BUILTIN_ENTRY_VALUE,
-        group=ENTRY_GROUP,
-    )
+def _pyproject_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "pyproject.toml"
+
+
+def _parse_robot_entries(text: str) -> list[tuple[str, str]]:
+    """``name = "module:attr"`` rows under the ``ohho.robots`` table."""
+    marker = '[project.entry-points."ohho.robots"]'
+    start = text.find(marker)
+    if start < 0:
+        return []
+    rows: list[tuple[str, str]] = []
+    for line in text[start + len(marker) :].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        match = _ENTRY_LINE.match(line.strip())
+        if match:
+            rows.append((match.group("name"), match.group("value")))
+    return rows
+
+
+def _declared_robot_entries() -> list[tuple[str, str]]:
+    """Shipped ``ohho.robots`` entry points, in ``pyproject.toml`` order.
+
+    A checkout that has not been reinstalled still has the file. An installed
+    copy relies on importlib and only needs this when an entry point is absent.
+    """
+    path = _pyproject_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return [("builtin", BUILTIN_ENTRY_VALUE)]
+    found = _parse_robot_entries(text)
+    if found:
+        return found
+    return [("builtin", BUILTIN_ENTRY_VALUE)]
+
+
+def _entry_point(name: str, value: str) -> Any:
+    return importlib.metadata.EntryPoint(name=name, value=value, group=ENTRY_GROUP)
 
 
 def _distribution_name(entry: Any) -> str:
@@ -225,28 +262,30 @@ def _distribution_name(entry: Any) -> str:
 def _discover_entries() -> list[tuple[Any, bool]]:
     """Entry points in load order, as ``(entry, fallback)``.
 
-    The built-in plugin is first. A missing built-in entry point (source
-    checkout, or an install from before this group existed) appends one
-    fallback that imports the same module.
+    Shipped plugins come first, in ``pyproject.toml`` order. A shipped entry
+    point that importlib did not return is appended as a source fallback that
+    imports the same target. Other entry points follow, sorted by name.
     """
     found = _read_entry_points()
-    pairs = [(entry, False) for entry in found]
-    if not any(_points_at_builtin(entry) for entry in found):
-        pairs.append((_fallback_entry(), True))
+    declared = _declared_robot_entries()
+    declared_values = [value for _name, value in declared]
+    present = {getattr(entry, "value", None) for entry in found}
+    pairs: list[tuple[Any, bool]] = [(entry, False) for entry in found]
+    for name, value in declared:
+        if value in present:
+            continue
+        pairs.append((_entry_point(name, value), True))
+        present.add(value)
 
-    builtins: list[tuple[Any, bool]] = []
-    rest: list[tuple[Any, bool]] = []
-    seen_builtin = False
-    for entry, fallback in pairs:
-        if _points_at_builtin(entry):
-            if seen_builtin:
-                continue
-            seen_builtin = True
-            builtins.append((entry, fallback))
-        else:
-            rest.append((entry, fallback))
-    rest.sort(key=lambda item: str(getattr(item[0], "name", "")))
-    return builtins + rest
+    def sort_key(item: tuple[Any, bool]) -> tuple[int, int | str]:
+        entry, _fallback = item
+        value = getattr(entry, "value", None)
+        if value in declared_values:
+            return (0, declared_values.index(value))
+        return (1, str(getattr(entry, "name", "")))
+
+    pairs.sort(key=sort_key)
+    return pairs
 
 
 def _missing_methods(obj: object) -> list[str]:
@@ -392,9 +431,9 @@ def _load_one(entry: Any, *, fallback: bool) -> PluginInfo:
         distribution=_distribution_name(entry),
         asset_repository=asset_repository,
         asset_commit=asset_commit,
+        plugin=plugin,
         transport_factories=MappingProxyType(schemes),
         sim_factories=MappingProxyType(backends),
-        plugin=plugin,
     )
 
 
@@ -465,6 +504,151 @@ def _load_all() -> tuple[PluginInfo, ...]:
         _load_one(entry, fallback=fallback) for entry, fallback in _discover_entries()
     ]
     return _reject_collisions(loaded)
+
+
+def preferred_robot_id() -> str:
+    """Robot id a loaded plugin offers as the default, else ``sim``.
+
+    The first shipped plugin that implements ``preferred_robot_id`` wins.
+    Callers use this so core source does not name a robot.
+    """
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        fn = getattr(info.plugin, "preferred_robot_id", None)
+        if not callable(fn):
+            continue
+        value = fn()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "sim"
+
+
+def _usable_plugins() -> list[object]:
+    plugins: list[object] = []
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        plugins.append(info.plugin)
+    return plugins
+
+
+def plugin_for_spec(spec: object) -> object | None:
+    """Loaded plugin that registered ``spec``, or ``None``."""
+    source = getattr(spec, "source", "")
+    if not isinstance(source, str) or not source:
+        return None
+    return plugin_named(source)
+
+
+def plugin_text(method: str) -> str:
+    """First non-empty string returned by ``method`` on a loaded plugin."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, method, None)
+        if not callable(fn):
+            continue
+        value = fn()
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def scheme_supports_read_only(scheme: str | None) -> bool:
+    """True when a plugin factory marked ``supports_read_only`` owns ``scheme``."""
+    if not scheme:
+        return False
+    key = scheme.strip().lower()
+    for info in loaded_plugins():
+        if info.error:
+            continue
+        factory = info.transport_factories.get(key)
+        if factory is not None and getattr(factory, "supports_read_only", False):
+            return True
+    return False
+
+
+def probe_adapter_schemes() -> list[str]:
+    """Schemes a plugin reports as importable in this environment."""
+    found: list[str] = []
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "probe_schemes", None)
+        if not callable(fn):
+            continue
+        reported = fn() or ()
+        for name in reported:
+            if isinstance(name, str) and name not in found:
+                found.append(name)
+    return found
+
+
+def plugin_environment_lines() -> list[str]:
+    """Extra ``ohho doctor`` lines contributed by plugins, in load order."""
+    lines: list[str] = []
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "environment_lines", None)
+        if not callable(fn):
+            continue
+        for line in fn() or ():
+            if isinstance(line, str):
+                lines.append(line)
+    return lines
+
+
+def uri_is_hardware(uri: str | None) -> bool:
+    """True when a plugin says ``uri`` is a hardware link that must be armed."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "uri_is_hardware", None)
+        if callable(fn) and fn(uri):
+            return True
+    return False
+
+
+def look_mock_allowed(uri: str | None) -> bool:
+    """True when a plugin allows mock perception detections on ``uri``."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "look_mock_allowed", None)
+        if callable(fn) and fn(uri):
+            return True
+    return False
+
+
+def contributed_model_class(name: str) -> type | None:
+    """Model class a plugin binds to ``name``, or ``None``."""
+    if not name:
+        return None
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "model_class", None)
+        if not callable(fn):
+            continue
+        found = fn(name)
+        if isinstance(found, type):
+            return found
+    return None
+
+
+def model_uses_base_action(name: str) -> bool:
+    """True when a plugin says ``name`` selects the base-velocity schema."""
+    if not name:
+        return False
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "model_uses_base_action", None)
+        if callable(fn) and fn(name):
+            return True
+    return False
+
+
+def is_contributed_model(model: object) -> bool:
+    """True when ``model`` is an instance of a plugin policy class."""
+    for plugin in _usable_plugins():
+        fn = getattr(plugin, "is_model", None)
+        if callable(fn) and fn(model):
+            return True
+    return False
+
+
+def default_base_model_name() -> str:
+    """Model-class key for a base-only robot, or ``\"\"`` when none is registered."""
+    return plugin_text("default_base_model_name")
 
 
 def plugin_named(name: str) -> object | None:
@@ -753,16 +937,28 @@ __all__ = [
     "SimFactory",
     "TransportFactory",
     "ci_sim_matrix_rows",
+    "contributed_model_class",
     "declared_sim_backend",
+    "default_base_model_name",
     "describe_plugin_schemes",
     "describe_plugin_sim_backends",
     "format_matrix_runtime",
     "format_plugin_report",
+    "is_contributed_model",
     "loaded_plugins",
+    "look_mock_allowed",
     "materialise_ci_assets",
+    "model_uses_base_action",
+    "plugin_environment_lines",
+    "plugin_for_spec",
     "plugin_named",
+    "plugin_text",
+    "preferred_robot_id",
     "plugin_sim_backend",
     "plugin_transport",
+    "probe_adapter_schemes",
     "register_loaded_specs",
     "reload_plugins",
+    "scheme_supports_read_only",
+    "uri_is_hardware",
 ]

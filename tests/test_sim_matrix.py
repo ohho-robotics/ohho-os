@@ -191,10 +191,10 @@ class TestCiSimList(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(text.endswith("\n\n"))
         rows = json.loads(text)
-        self.assertEqual(
-            [row["robot"] for row in rows if row["plugin"] == "builtin"],
-            ["omnibot", "sim"],
-        )
+        robots = [row["robot"] for row in rows]
+        self.assertIn("omnibot", robots)
+        self.assertIn("sim", robots)
+        self.assertNotIn("unitree-go2", robots)
         by_id = {row["robot"]: row for row in rows}
         self.assertEqual(
             by_id["sim"],
@@ -208,7 +208,7 @@ class TestCiSimList(unittest.TestCase):
             },
         )
         self.assertEqual(by_id["omnibot"]["robot_class"], "mobile_manipulator")
-        self.assertEqual(by_id["omnibot"]["plugin"], "builtin")
+        self.assertEqual(by_id["omnibot"]["plugin"], "omnibot")
         self.assertEqual(by_id["omnibot"]["scenario"], "drive_square")
         self.assertEqual(by_id["omnibot"]["asset_commit"], "")
         self.assertNotIn("unitree-go2", by_id)

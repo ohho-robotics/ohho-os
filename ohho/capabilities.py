@@ -2,8 +2,8 @@
 
 A robot declares *what it can do*; behaviors ask ``robot.has(...)`` rather than
 assuming hardware. This is what lets one behavior — or a whole agent — run across
-a wheeled base, a quadruped, a humanoid and an arm, degrading gracefully when a
-capability is absent.
+a wheeled base, a quadruped, a humanoid, an arm, or an aircraft, degrading
+gracefully when a capability is absent.
 
 ``has`` stays a string check. Typed parameters for the names that carry them
 live in ``ohho.capability_params`` and are stored on ``RobotSpec.capability_params``.
@@ -17,12 +17,14 @@ from collections.abc import Mapping
 BASE_DRIVE = "base.drive"
 BASE_HOLONOMIC = "base.holonomic_drive"  # implies BASE_DRIVE, plus strafing (linear_y)
 LEGGED_POSE = "legged.pose"
-AERIAL = "aerial"
 
 # Humanoid
 HUMANOID_LOCOMOTION = "humanoid.locomotion"
 HUMANOID_POSTURE = "humanoid.posture"
 WHOLE_BODY_JOINT = "whole_body.joint"
+
+# Aerial. Planar ``base.drive`` does not imply this.
+AERIAL = "aerial"
 
 # Manipulation
 MANIPULATION = "manipulation"

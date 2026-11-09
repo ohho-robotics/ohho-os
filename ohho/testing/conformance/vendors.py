@@ -4,6 +4,9 @@ Core source is ``ohho/**/*.py`` plus ``pyproject.toml``. Plugin packages
 (``ohho/robots/`` and ``plugins/``) may name a vendor. Docs are not scanned.
 A path under ``tests/`` is scanned only when it is listed in
 :data:`FIXTURE_WHITELIST`. This module is not scanned: it is the denylist.
+Product names that core Python and JSON must not spell are loaded from
+``forbidden.txt`` (OHH-330). Names the allowlist may still cite are loaded
+from ``token_issues.txt``. The grep and the import sentinel still enforce them.
 """
 
 from __future__ import annotations
@@ -17,19 +20,88 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
-# Token -> issue that moves that name out of core. ``booster`` and ``t2`` are
-# enforced immediately and cannot appear in the allowlist.
-TOKEN_ISSUE: dict[str, str] = {
-    "omnibot": "R-01",
-    "yahboom": "R-01",
-    "feetech": "R-01",
-    "unitree": "R-02",
-    "go2": "R-02",
-    "px4": "R-03",
-    "ardupilot": "R-03",
-    "crazyflie": "R-03",
-}
-UNALLOWABLE = frozenset({"booster", "t2"})
+# Token -> issue that moves that name out of core. The map lives in
+# token_issues.txt so this module does not spell those names. Tokens in
+# forbidden.txt are enforced immediately and cannot appear in the allowlist.
+_FORBIDDEN_PATH = Path(__file__).with_name("forbidden.txt")
+_TOKEN_ISSUE_PATH = Path(__file__).with_name("token_issues.txt")
+
+
+def load_forbidden(
+    path: Path | None = None,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Load grep tokens that cannot be allowlisted, and extra SDK roots.
+
+    ``token`` rows are the denylist. ``sdk`` rows are import roots the
+    sentinel watches. Both stay in the text file so this module's source
+    does not spell the humanoid plugin's product names.
+    """
+    path = _FORBIDDEN_PATH if path is None else path
+    tokens: set[str] = set()
+    sdks: set[str] = set()
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2:
+            raise ValueError(f"{path}:{lineno}: expected kind and value")
+        kind, value = (part.strip() for part in parts)
+        value = value.casefold()
+        if not re.fullmatch(r"[a-z0-9_]+", value):
+            raise ValueError(f"{path}:{lineno}: bad value {value!r}")
+        if kind == "token":
+            if value in tokens:
+                raise ValueError(f"{path}:{lineno}: duplicate token {value}")
+            tokens.add(value)
+        elif kind == "sdk":
+            if value in sdks:
+                raise ValueError(f"{path}:{lineno}: duplicate sdk {value}")
+            sdks.add(value)
+        else:
+            raise ValueError(f"{path}:{lineno}: kind must be token or sdk")
+    if not tokens:
+        raise ValueError(f"{path}: no tokens")
+    return frozenset(tokens), frozenset(sdks)
+
+
+def load_token_issues(
+    path: Path | None = None,
+    *,
+    unallowable: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Load ``token issue`` rows. The issue is the one that removes that token.
+
+    Rows live in ``token_issues.txt`` so this module's source does not spell
+    them. A token listed in ``forbidden.txt`` cannot be given an issue.
+    """
+    path = _TOKEN_ISSUE_PATH if path is None else path
+    table: dict[str, str] = {}
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) != 2:
+            raise ValueError(f"{path}:{lineno}: expected token and issue")
+        token, issue = (part.strip() for part in parts)
+        token = token.casefold()
+        if not re.fullmatch(r"[a-z0-9_]+", token):
+            raise ValueError(f"{path}:{lineno}: bad token {token!r}")
+        if not re.fullmatch(r"R-\d+", issue):
+            raise ValueError(f"{path}:{lineno}: bad issue {issue!r}")
+        if token in unallowable:
+            raise ValueError(f"{path}:{lineno}: {token} cannot be assigned an issue")
+        if token in table:
+            raise ValueError(f"{path}:{lineno}: duplicate token {token}")
+        table[token] = issue
+    if not table:
+        raise ValueError(f"{path}: no tokens")
+    return table
+
+
+UNALLOWABLE, _EXTRA_SDK_ROOTS = load_forbidden()
+TOKEN_ISSUE: dict[str, str] = load_token_issues(unallowable=UNALLOWABLE)
 TOKENS = tuple(sorted(set(TOKEN_ISSUE) | UNALLOWABLE))
 
 # Import roots a plugin must not load while its module is imported.
@@ -38,13 +110,10 @@ VENDOR_SDK_ROOTS = frozenset(
         "serial",
         "lerobot",
         "cyclonedds",
-        "unitree_sdk2py",
         "rclpy",
         "pymavlink",
-        "booster_robotics_sdk",
-        "booster_robotics_sdk_python",
     }
-)
+) | _EXTRA_SDK_ROOTS
 
 EXCLUDED_PREFIXES = ("ohho/robots/", "plugins/")
 EXCLUDED_FILES = ("ohho/testing/conformance/vendors.py",)
@@ -148,8 +217,8 @@ def scan_repository(root: Path | None = None) -> list[VendorHit]:
 def load_allowlist(path: Path | None = None) -> dict[tuple[str, str], str]:
     """Load ``path token issue`` rows. A bad row or a forbidden token raises.
 
-    Each issue is the one that removes that token (R-01 OmniBot, R-02 Go2,
-    R-03 drones). ``booster`` and ``t2`` cannot be listed.
+    Each issue is the one that removes that token (see ``token_issues.txt``).
+    Tokens in forbidden.txt cannot be listed.
     """
     path = _ALLOWLIST_PATH if path is None else path
     table: dict[tuple[str, str], str] = {}

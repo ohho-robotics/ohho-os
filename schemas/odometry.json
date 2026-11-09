@@ -1,0 +1,33 @@
+{
+  "$id": "https://ohho-robotics.com/schemas/Odometry.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "omega": {
+      "default": 0,
+      "type": "number"
+    },
+    "theta": {
+      "default": 0,
+      "type": "number"
+    },
+    "vx": {
+      "default": 0,
+      "type": "number"
+    },
+    "vy": {
+      "default": 0,
+      "type": "number"
+    },
+    "x": {
+      "default": 0,
+      "type": "number"
+    },
+    "y": {
+      "default": 0,
+      "type": "number"
+    }
+  },
+  "title": "Odometry",
+  "type": "object"
+}
