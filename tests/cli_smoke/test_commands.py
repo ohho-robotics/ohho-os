@@ -319,7 +319,7 @@ class TestCliSmokeTrain(unittest.TestCase):
     def test_train_reports_unavailable_family(self):
         from ohho.train.recipe_schema import example_path
 
-        code, out, err = _run_cli(["train", str(example_path("diffusion"))])
+        code, out, err = _run_cli(["train", str(example_path("smolvla"))])
         self.assertEqual(code, 3, err + out)
         self.assertIn("family not available in this build", out)
         self.assertIn("family not available in this build", err)

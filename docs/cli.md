@@ -69,7 +69,7 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the progress stream are in [`train/recipes.md`](train/recipes.md). |
 
 ## Simulation services
 

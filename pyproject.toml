@@ -97,7 +97,7 @@ ppo = "ohho.train.builtin_recipes:PPO"
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "train/schema/*.json", "train/examples/*.yaml"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "train/schema/*.json", "train/examples/*.yaml", "train/examples/il/*.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
