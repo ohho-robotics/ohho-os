@@ -89,6 +89,7 @@ ohho/drone/telemetry.py	px4	R-03
 ohho/evals.py	go2	R-02
 ohho/evals.py	unitree	R-02
 ohho/lidar.py	go2	R-02
+ohho/mcp_drone.py	px4	R-03
 ohho/mcp_tools.py	omnibot	R-01
 ohho/profiles.py	omnibot	R-01
 ohho/serve/__init__.py	go2	R-02

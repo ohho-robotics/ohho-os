@@ -2,9 +2,12 @@
 
 Handlers live in :mod:`ohho.mcp_tools`. That includes the OHH-173 on-robot
 catalog and the OHH-47 Link v0 tools (``connect``, ``drive``, ``telemetry``,
-``nav_goto``, ``look``) plus ``emergency_stop``. Transports are ``sim://``
-unless the human started the process with ``--allow-hardware``. The server
-never arms a robot and never releases an e-stop (OHH-278).
+``nav_goto``, ``look``) plus ``emergency_stop``. OHH-293 adds
+``drone_connect``, ``drone_telemetry``, ``drone_velocity``, ``drone_hold``,
+and ``drone_land``. Transports are ``sim://`` unless the human started the
+process with ``--allow-hardware``. The server never arms a robot and never
+releases an e-stop (OHH-278). It does not register ``drone_arm``,
+``drone_takeoff``, ``drone_rtl``, or ``release_stop``.
 """
 
 from __future__ import annotations

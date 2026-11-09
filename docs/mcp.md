@@ -12,7 +12,10 @@ existing `ohho mcp --sim` invocations keep working.
 | `telemetry` | Odometry, battery, joints |
 | `nav_goto` | Native `Navigator.navigate_to` (simulation) |
 | `look` | `SimPerceptor.look` + spatial memory (simulation) |
-| `emergency_stop` | Latch e-stop on sim or a gated link. Always allowed. |
+| `emergency_stop` | Latch e-stop on sim or a gated link. Always allowed. On an aircraft it follows the drone e-stop map (land, or hold then land). |
+
+Aircraft tools (OHH-293) use the same server and the same `--allow-hardware`
+switch. They are listed in [Drone tools](#drone-tools-ohh-293).
 
 The same process also serves the OHH-173 on-robot catalog (`connect.listRobots`,
 `connect.connect`, `connect.emergencyStop`, `bridge.listAdapters`, and the
@@ -264,6 +267,71 @@ the safety-profile cap (Go2 forward 0.5 m/s), whichever applies.
 
 `ohho mcp connect` only records how to launch the server. It does not arm
 hardware and it does not call `Robot.connect`. See [safety.md](safety.md).
+
+## Drone tools (OHH-293)
+
+Experimental. Nothing has flown. `flight_ready` stays false.
+
+| Tool | What it does |
+|------|----------------|
+| `drone_connect` | `Robot.connect` for an aircraft. Default robot `px4-sitl`, default URI `sim://`. Never calls `arm()` or `arm_flight()`. |
+| `drone_telemetry` | Read `custom["drone"]`, battery, and the planar odometry shadow. No setpoint. |
+| `drone_velocity` | `offboard_velocity`. Clamped before the backend. Hardware only after a human has armed the gate from a TTY. The tool does not arm. |
+| `drone_hold` | Autopilot hold. Does not arm. |
+| `drone_land` | Land. Always attempted, including when the server was started without `--allow-hardware`. Does not arm and does not clear an e-stop. |
+| `emergency_stop` | The existing tool. Always allowed. Latches. On a gated aircraft it uses the drone e-stop map. On `drone-sim` it freezes horizontal motion and descends. |
+
+`drone_arm`, `drone_takeoff`, `drone_rtl`, and `release_stop` are not
+registered. The same denylist rejects a future tool whose name is `takeoff`,
+`rtl`, `arm_flight`, or a fence change (`set_fence`, `fence_change`).
+`drone_mcp_allowed` is checked again when the drone tools are registered:
+`hold`, `land`, and `offboard_velocity` must pass, or the server refuses to
+start those tools.
+
+`--allow-hardware` is the OHH-278 flag. It is not a drone-only switch.
+`OHHO_ARM_HARDWARE`, `OHHO_ALLOW_HARDWARE`, and tool arguments do not enable
+hardware and do not arm. The process stdin is the JSON-RPC pipe, so there is
+no interactive TTY.
+
+`drone_connect` to `serial://`, `px4+dds://`, or any other non-`sim` URI
+without that flag returns `hardware_refused` / `sim_only` and does not open
+the link. A ground robot id such as `omnibot` returns `not_aerial`.
+
+Every drone result includes `"backend": "sim"` or `"backend": "hardware"`.
+
+### Caps and geofence
+
+Clamps are applied in the tool, before `offboard_velocity`:
+
+| | Cap |
+|--|-----|
+| Horizontal speed | 1.5 m/s (vector magnitude) |
+| Vertical speed | 1.0 m/s |
+| Yaw rate | 0.8 rad/s |
+| Altitude | 3 m on `sim://`. On hardware, the gate's geofence ceiling |
+
+A 3 m/s request is clamped to 1.5 m/s. The sim backend's own horizontal cap
+is 2 m/s; the tool does not hand it a value above the drone profile.
+
+The fence is the cylinder from the drone profile (radius 10 m, and the
+altitude ceiling above). The check uses the clamped velocity over the
+profile's command window (0.3 s).
+
+- The vehicle is already outside: error `geofence`, and hold is requested.
+  The position is not clipped onto the fence.
+- The clamped velocity would leave the cylinder inside that window: same
+  error and hold. A climb is not silently shortened so the craft stops on
+  the ceiling.
+- The pose is not known yet: the velocity is clamped and sent. Hardware
+  still has to be armed or the tool returns `not_armed` and sends nothing.
+
+`frame` is required: `LOCAL_NED`, `LOCAL_ENU`, or `BODY_FRD`. There is no
+default. In `LOCAL_NED` and `BODY_FRD`, positive `vz` is down.
+
+On a disarmed hardware gate, `drone_land` and `drone_hold` are still
+invoked. The gate drops them until a human arms from a TTY (`not_armed`).
+This server does not call `arm()` to make them succeed. `emergency_stop`
+still latches and, in the air, asks the backend to land.
 
 ## Manual check
 
