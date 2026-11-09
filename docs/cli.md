@@ -61,6 +61,8 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile list` | Hardware deployment profiles |
 | `ohho profile show <name>` | Profile details |
 | `ohho profile detect` | Auto-detect this machine |
+| `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
+| `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.

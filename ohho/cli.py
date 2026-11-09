@@ -1347,6 +1347,10 @@ def build_parser() -> argparse.ArgumentParser:
     ).set_defaults(action="detect")
     pf.set_defaults(func=_cmd_profile)
 
+    from .targets.command import register_targets
+
+    register_targets(sub)
+
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
         "--robot",
