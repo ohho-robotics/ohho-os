@@ -34,17 +34,24 @@ dependencies = []
 
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0"]                       # load robot manifests from .yaml
-serial = ["pyserial>=3.5"]                   # Yahboom serial adapter (OmniBot base)
-arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101, OmniBot arm)
+serial = ["pyserial>=3.5"]                   # serial base adapter
+arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101)
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
-# cyclonedds is a build/runtime dep of unitree_sdk2py (not on PyPI — install from GitHub).
-unitree = ["cyclonedds>=0.10"]               # Unitree DDS adapter (G1, Go2, H1, B2 …)
+# cyclonedds is a build and runtime dependency of the DDS SDK (not on PyPI).
+unitree = ["cyclonedds>=0.10"]               # DDS transport extra
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
-ros2 = []                                    # rclpy ships with ROS 2 (Jazzy, or Humble). px4+dds also needs px4_msgs release/1.17, a ROS package, not pip. PX4 v1.17.0.
+humanoid-sim = [
+  "mujoco>=3.1",
+  "numpy>=1.24",
+  "onnx>=1.15",
+  "onnxruntime>=1.16",
+  "torch>=2.1",
+]                                            # humanoid-mujoco backend, ONNX and TorchScript policies, CPU
+ros2 = []                                    # rclpy ships with your ROS 2 distro (Jazzy, or Humble) — source it, then install this extra. px4+dds also needs px4_msgs release/1.17, a ROS package, not pip. PX4 v1.17.0.
 dev = ["pytest>=7", "coverage>=7", "httpx>=0.27,<0.28"]
 all = [
   "pyyaml>=6.0",
@@ -54,6 +61,9 @@ all = [
   "anthropic>=0.40",
   "pyarrow>=14.0",
   "torch>=2.1",
+  "mujoco>=3.1",
+  "onnx>=1.15",
+  "onnxruntime>=1.16",
   "cyclonedds>=0.10",
   "pymavlink>=2.4",
   "fastapi>=0.110",
@@ -73,12 +83,14 @@ ohho = "ohho.cli:main"
 
 [project.entry-points."ohho.robots"]
 builtin = "ohho.robots.builtin:plugin"
+omnibot = "ohho.robots.omnibot:plugin"
+unitree = "ohho.robots.unitree:plugin"
 
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "agent_rules/*.md"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "bench/schemas/*.json", "bench/examples/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

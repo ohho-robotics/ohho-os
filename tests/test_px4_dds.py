@@ -39,7 +39,7 @@ from ohho.adapters.px4_dds import (
     offboard_field_mismatch,
     parse_px4_dds_uri,
 )
-from ohho.adapters.unitree import UnitreeDdsTransport
+from ohho.robots.unitree.dds import UnitreeDdsTransport
 from ohho.aerial import Frame
 from ohho.registry import RobotSpec, get_spec
 from ohho.robot import Robot

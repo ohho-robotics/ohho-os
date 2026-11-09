@@ -9,7 +9,7 @@ Pinned firmware is PX4 v1.17.0 with ``px4_msgs`` branch ``release/1.17``.
 v1.18 is refused. ROS 2 Jazzy is the distro this was written against; Humble
 is the alternative. The agent line is Micro XRCE-DDS Agent 2.4.3.
 
-``dds://`` stays the Unitree CycloneDDS adapter. This scheme is ``px4+dds``.
+``dds://`` stays the quadruped plugin's CycloneDDS adapter. This scheme is ``px4+dds``.
 """
 
 from __future__ import annotations
@@ -254,7 +254,7 @@ def parse_px4_dds_uri(uri: str) -> tuple[str, int, str]:
     if parsed.scheme != "px4+dds":
         raise Px4DdsError(
             f"URI scheme {parsed.scheme!r} is not px4+dds. "
-            "dds:// is the Unitree adapter and is not accepted here."
+            "dds:// is the quadruped plugin adapter and is not accepted here."
         )
     if parsed.username or parsed.password:
         raise Px4DdsError("px4+dds URI does not take credentials")

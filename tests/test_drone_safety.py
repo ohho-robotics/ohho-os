@@ -20,11 +20,11 @@ from unittest import mock
 from ohho.aerial import Frame
 from ohho.drone.estop import EstopCommand
 from ohho.registry import RobotSpec, get_spec
+from ohho.robots.unitree.policy import GO2_PROFILE
 from ohho.safety import (
     ARM_ENV,
     ARM_PHRASE,
     DRONE_PROFILE,
-    GO2_PROFILE,
     RELEASE_PHRASE,
     AuditLog,
     SafetyConfig,

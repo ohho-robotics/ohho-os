@@ -1,0 +1,14 @@
+# Token to the issue that moves that name out of core.
+# Columns are separated by tabs. Inline comments start with #.
+# R-01 mobile manipulator, R-02 quadruped, R-03 aerial.
+# Tokens listed in forbidden.txt cannot appear here.
+#
+# token	issue
+omnibot	R-01
+yahboom	R-01
+feetech	R-01
+unitree	R-02
+go2	R-02
+px4	R-03
+ardupilot	R-03
+crazyflie	R-03

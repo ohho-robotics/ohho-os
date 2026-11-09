@@ -16,8 +16,8 @@ from .safety import EULER_LIMIT_RAD
 if TYPE_CHECKING:
     from .robot import Robot
 
-# Agent-facing drive cap for Go2 (SafetyGate may clamp further on hardware).
-GO2_AGENT_MAX_LIN_M_S = 0.5
+# Agent-facing drive cap for a quadruped (SafetyGate may clamp further on hardware).
+LEGGED_AGENT_MAX_LIN_M_S = 0.5
 DEFAULT_MAX_TRAVEL_M = 6.0
 DEFAULT_MAX_STEPS = 20
 
@@ -30,7 +30,7 @@ _STAIRS_RE = re.compile(r"\b(stairs?|staircase|upstairs|downstairs)\b", re.I)
 
 def agent_max_linear_speed(robot: Robot) -> float:
     if robot.has(caps.LEGGED_POSE):
-        return GO2_AGENT_MAX_LIN_M_S
+        return LEGGED_AGENT_MAX_LIN_M_S
     return robot.spec.max_lin
 
 
@@ -43,8 +43,8 @@ def build_robot_card(robot: Robot) -> str:
     ]
     if robot.has(caps.LEGGED_POSE):
         lines += [
-            "Form factor: quadruped (Unitree Go2 class) — no arm, no manipulation.",
-            f"Max safe drive speed: {GO2_AGENT_MAX_LIN_M_S} m/s forward/lateral.",
+            "Form factor: quadruped — no arm, no manipulation.",
+            f"Max safe drive speed: {LEGGED_AGENT_MAX_LIN_M_S} m/s forward/lateral.",
             "You must call stand before any drive or navigate_to.",
             "When the goal is complete, call lie_down before goal_complete.",
             "Stairs / uneven vertical terrain: not supported in v0 — refuse such goals.",

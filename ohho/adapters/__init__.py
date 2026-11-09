@@ -1,19 +1,18 @@
 """Adapter resolution.
 
 Adapters connect the unified Transport interface to a robot's native protocol.
-This build bundles: ``sim`` (always), ``serial`` (Yahboom / OmniBot base, needs
-the ``[serial]`` extra at connect time), ``feetech`` (SO-101 arm, needs ``[arm]``),
-``composite`` (base+arm merge for mobile-manipulators), ``dds`` (Unitree Go2,
-needs ``[unitree]``), and ``px4+dds`` (PX4 v1.17 uXRCE-DDS, needs a ROS 2
-graph and ``px4_msgs`` release/1.17 at connect time). ``sim://`` for robot ids
+This build bundles: ``sim`` (always), ``feetech`` (SO-101 arm, needs ``[arm]``),
+``composite`` (base+arm merge), and ``px4+dds`` (PX4 v1.17 uXRCE-DDS, needs a
+ROS 2 graph and ``px4_msgs`` release/1.17 at connect time). ``serial://`` is
+provided by the mobile-manipulator plugin: a spec with ``manipulation``
+composes a base link and an arm link. ``dds://`` is provided by the quadruped
+plugin. ``sim://`` for robot ids
 ``px4-sitl`` and ``crazyflie-sim`` selects the kinematic ``drone-sim`` backend.
 ``px4-x500`` is a registry spec only; nothing in this build connects to it.
 
 Policy: **auto (no explicit transport) runs in simulation** so zero-config use and
 tests never touch hardware; pass an explicit transport URI (``serial://…``,
-``dds://…``, ``feetech://…``) to engage a real robot. For a mobile-manipulator
-that has ``manipulation`` capability, ``serial://<base_port>,<arm_port>``
-auto-composes a composite (Yahboom base + Feetech arm).
+``dds://…``, ``feetech://…``) to engage a real robot.
 
 Plugin registries are asked first. A scheme a plugin registered uses that
 factory. ``sim://`` (and auto) uses ``spec.sim_backend`` when it names a plugin
@@ -26,33 +25,26 @@ from __future__ import annotations
 import importlib.util
 from typing import Optional
 
-from .. import capabilities as caps
 from ..registry import RobotSpec
 from ..transport import Transport
-from .composite import CompositeTransport
 from .drone_sim import DroneSimTransport
 from .errors import AdapterUnavailable
-from .feetech import DEFAULT_PORT as DEFAULT_ARM_PORT
 from .feetech import FeetechTransport
 from .px4_dds import Px4DdsTransport
 from .ros2 import Ros2Transport
 from .sim import SimTransport
-from .unitree import UnitreeDdsTransport
-from .yahboom import YahboomTransport
 
 # sim:// with these robot ids is the kinematic drone stub, not the ground sim.
 _DRONE_SIM_IDS = frozenset({"px4-sitl", "crazyflie-sim"})
 # Registry data only. resolve_transport refuses every URI, including sim://.
 _SPEC_ONLY_IDS = frozenset({"px4-x500"})
 
-# transport scheme -> hardware adapter class (sim/composite handled separately)
-_READ_ONLY_SCHEMES = frozenset({"dds", "unitree-dds"})
+# transport scheme -> hardware adapter class (sim/composite handled separately).
+# ``dds://`` is a plugin scheme. ``read_only`` is valid for ``dds`` and for any
+# plugin factory that sets ``supports_read_only``.
+_READ_ONLY_SCHEMES = frozenset({"dds"})
 _HARDWARE = {
-    "serial": YahboomTransport,
-    "yahboom-serial": YahboomTransport,
     "feetech": FeetechTransport,
-    "dds": UnitreeDdsTransport,
-    "unitree-dds": UnitreeDdsTransport,
     "ros2": Ros2Transport,
 }
 
@@ -64,8 +56,11 @@ def available_adapters() -> list[str]:
         out.append("serial")
     if importlib.util.find_spec("lerobot") is not None:
         out.append("feetech")
-    if importlib.util.find_spec("unitree_sdk2py") is not None:
-        out.append("dds")
+    from ..plugins import probe_adapter_schemes
+
+    for scheme in probe_adapter_schemes():
+        if scheme not in out:
+            out.append(scheme)
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
     if (
@@ -74,14 +69,6 @@ def available_adapters() -> list[str]:
     ):
         out.append("px4+dds")
     return out
-
-
-def _split_ports(address: str) -> tuple[str, str]:
-    """Split ``base_port,arm_port`` into parts; arm defaults to the Feetech port."""
-    if "," in address:
-        base, arm = address.split(",", 1)
-        return base.strip(), arm.strip()
-    return address.strip(), DEFAULT_ARM_PORT
 
 
 def _uri_scheme(uri: Optional[str]) -> Optional[str]:
@@ -136,23 +123,23 @@ def resolve_transport(
     - ``uri="sim://"`` → the ground simulator, except those two ids, which
       select ``drone-sim``, or the spec's declared sim backend.
     - ``px4-x500`` → ``AdapterUnavailable`` (spec only; nothing connects).
-    - ``uri="serial://<port>"`` → Yahboom serial adapter. If the robot has
-      ``manipulation`` capability, ``<port>`` may be ``base_port,arm_port`` and
-      a composite (Yahboom base + Feetech arm) is returned.
+    - ``uri="serial://<port>"`` → the plugin that registered ``serial``. A
+      mobile manipulator composes ``base_port,arm_port`` there.
     - ``uri="feetech://<port>"`` → Feetech arm adapter (arm only).
-    - ``uri="dds://<iface>?domain=<n>"`` → Unitree DDS adapter (defaults
-      ``dds://lo?domain=1`` for local simulators such as unitree_mujoco).
+    - ``uri="dds://<iface>?domain=<n>"`` → the plugin that registered ``dds``
+      (defaults ``dds://lo?domain=1`` for a local simulator).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
     - ``uri="px4+dds://HOST:PORT?ns=NAME"`` → PX4 uXRCE-DDS transport. This is
-      not ``dds://`` (that scheme stays Unitree). ``Robot.connect`` wraps the
+      not ``dds://`` (that scheme stays the quadruped plugin). ``Robot.connect`` wraps the
       result in ``SafetyGate``. Loopback hosts set ``sim_target``, which is
       how the gate tells a sim agent from a vehicle.
     - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
-    - ``read_only=True`` is only valid for ``dds://`` and ``unitree-dds://``.
-      Any other scheme raises :class:`AdapterUnavailable` before a transport
-      that could still send motion is built.
+    - ``read_only=True`` is only valid for ``dds://`` and a plugin scheme whose
+      factory sets ``supports_read_only``. Any other scheme raises
+      :class:`AdapterUnavailable` before a transport that could still send
+      motion is built.
     """
     if spec is not None and spec.id in _SPEC_ONLY_IDS:
         raise AdapterUnavailable(
@@ -161,7 +148,12 @@ def resolve_transport(
             "and to mavlink+serial://, which is not implemented."
         )
     scheme = _uri_scheme(uri)
-    if read_only and scheme not in _READ_ONLY_SCHEMES:
+    read_only_ok = scheme in _READ_ONLY_SCHEMES
+    if read_only and not read_only_ok:
+        from ..plugins import scheme_supports_read_only
+
+        read_only_ok = scheme_supports_read_only(scheme)
+    if read_only and not read_only_ok:
         shown = scheme if scheme else "sim"
         raise AdapterUnavailable(
             f"read_only is only supported for dds:// transports, not '{shown}'."
@@ -169,7 +161,7 @@ def resolve_transport(
     routed = _plugins_first(uri, spec, runtime)
     if routed is not None:
         if read_only:
-            if not isinstance(routed, UnitreeDdsTransport):
+            if not hasattr(routed, "read_only"):
                 shown = scheme if scheme else "sim"
                 raise AdapterUnavailable(
                     f"read_only is only supported for dds:// transports, not '{shown}'."
@@ -182,16 +174,6 @@ def resolve_transport(
     scheme = scheme.lower()
     if scheme in ("sim", "simulated"):
         return _sim_transport(spec)
-
-    if (
-        scheme in ("serial", "yahboom-serial")
-        and spec is not None
-        and spec.has(caps.MANIPULATION)
-    ):
-        base_port, arm_port = _split_ports(address)
-        base = YahboomTransport(spec, base_port)
-        arm = FeetechTransport(spec, arm_port)
-        return CompositeTransport(base, arm)
 
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
@@ -208,20 +190,15 @@ def resolve_transport(
             f"dds, ros2, px4+dds — or omit the transport to run in simulation. "
             f"{describe_plugin_schemes()}"
         )
-    if cls is UnitreeDdsTransport:
-        return UnitreeDdsTransport(spec, address, read_only=read_only)
     return cls(spec, address)
 
 
 __all__ = [
     "SimTransport",
     "DroneSimTransport",
-    "YahboomTransport",
     "FeetechTransport",
-    "UnitreeDdsTransport",
     "Ros2Transport",
     "Px4DdsTransport",
-    "CompositeTransport",
     "AdapterUnavailable",
     "resolve_transport",
     "available_adapters",

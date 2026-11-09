@@ -76,7 +76,7 @@ def non_sim_refusal(
     environ: Mapping[str, str],
     *,
     transport: Optional[str] = None,
-    robot: str = "omnibot",
+    robot: str | None = None,
 ) -> Optional[str]:
     """A refusal message when something tries to select a non-sim URI.
 
@@ -85,7 +85,7 @@ def non_sim_refusal(
     """
     if transport is not None and transport.strip() and not is_sim_uri(transport):
         return "ohho verify accepts only sim:// (refusing --transport)"
-    robot_text = robot.strip()
+    robot_text = (robot or "").strip()
     if "://" in robot_text and not is_sim_uri(robot_text):
         return "ohho verify accepts only sim:// (refusing --robot)"
     for key in TRANSPORT_ENV_KEYS:
@@ -236,7 +236,7 @@ def _passed(distance: float, vx: float, duration_s: float, tolerance_m: float) -
 
 
 def run_verify(
-    robot: str = "omnibot",
+    robot: str | None = None,
     *,
     duration_s: float = DRIVE_S,
     vx: float = DRIVE_MPS,
@@ -270,6 +270,10 @@ def run_verify(
     monotonic = time.monotonic if clock is None else clock
     pause = time.sleep if sleep is None else sleep
     env: Mapping[str, str] = os.environ if environ is None else environ
+    if not robot:
+        from .plugins import preferred_robot_id
+
+        robot = preferred_robot_id()
     spec = get_spec(robot)
     sim = SimTransport(spec)
     if command_log is not None:
