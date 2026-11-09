@@ -29,6 +29,7 @@ ohho/adapters/composite.py	omnibot	R-01
 ohho/adapters/composite.py	yahboom	R-01
 ohho/adapters/errors.py	unitree	R-02
 ohho/adapters/feetech.py	feetech	R-01
+ohho/adapters/mavlink_drone.py	px4	R-03
 ohho/adapters/feetech.py	omnibot	R-01
 ohho/adapters/feetech.py	yahboom	R-01
 ohho/adapters/ros2.py	omnibot	R-01
