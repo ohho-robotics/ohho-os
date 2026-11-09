@@ -59,6 +59,8 @@
         "max_batch",
         "dynamic_batch",
         "calib_batch",
+        "calib_max_images",
+        "quantization",
         "opset",
         "submodule"
       ],
@@ -72,6 +74,8 @@
         "max_batch": {"type": "integer", "minimum": 1},
         "dynamic_batch": {"type": "boolean"},
         "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
+        "quantization": {"type": ["string", "null"], "enum": ["implicit", "explicit", null]},
         "opset": {"type": ["integer", "null"]},
         "submodule": {"type": ["string", "null"]}
       }
@@ -104,6 +108,7 @@
         "calib_data",
         "calib_cache",
         "calib_batch",
+        "calib_max_images",
         "submodule"
       ],
       "properties": {
@@ -120,6 +125,7 @@
         "calib_data": {"type": ["string", "null"]},
         "calib_cache": {"type": ["string", "null"]},
         "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
         "submodule": {"type": ["string", "null"]}
       }
     },

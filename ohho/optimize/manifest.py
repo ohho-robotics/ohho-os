@@ -38,6 +38,8 @@ _FLAG_KEYS = (
     "max_batch",
     "dynamic_batch",
     "calib_batch",
+    "calib_max_images",
+    "quantization",
     "opset",
     "submodule",
 )
@@ -58,6 +60,7 @@ _INPUT_KEYS = (
     "calib_data",
     "calib_cache",
     "calib_batch",
+    "calib_max_images",
     "submodule",
 )
 _OUTPUT_KEYS = ("role", "path", "sha256", "bytes")
