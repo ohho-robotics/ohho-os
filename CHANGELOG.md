@@ -17,6 +17,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **`ohho optimize`** — ONNX opset 17 export (dynamic batch, submodule
+  selection, ACT-style and MLP policies, TorchScript), TensorRT FP16/INT8/FP8
+  builds with an entropy calibrator attached before the build, ONNX Runtime
+  sessions checked against a target profile, and AWQ/GPTQ/bitsandbytes/FP8
+  weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
+  quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
+  Docs: [`docs/optimize.md`](docs/optimize.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
