@@ -180,6 +180,8 @@ python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200
 
 The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run this pipeline on CPU-only runners, verify LeRobotDataset loading, and upload the trained checkpoint and dataset artifacts (first run pending).
 
+`ohho sweep plan` expands an `ohho.sweep/v1` spec into trial recipes and an estimated GPU-hour total. See [`docs/train/sweeps.md`](docs/train/sweeps.md).
+
 ## Simulation WebSocket Server (`sim-serve`)
 
 `ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`), a live robot via the unified `Robot` API (`--backend robot --transport <uri>`), or ROS 2 through rosbridge.

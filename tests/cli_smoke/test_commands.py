@@ -198,6 +198,18 @@ class TestCliSmokeCore(unittest.TestCase):
         code, _out, err = _run_cli(["sim-demo", "--sim", "--fast"])
         self.assertEqual(code, 0, err)
 
+    def test_sweep_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sweep.json"
+            path.write_text(
+                json.dumps({"schema": "ohho.sweep/v1", "dimensions": []}),
+                encoding="utf-8",
+            )
+            code, out, err = _run_cli(["sweep", "plan", str(path)])
+            self.assertEqual(code, 0, err)
+            self.assertIn("trials: 1", out)
+            self.assertIn("estimate", out)
+
     def test_selftest_sim(self):
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "report.json"

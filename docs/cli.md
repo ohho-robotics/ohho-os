@@ -62,6 +62,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile show <name>` | Profile details |
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
+| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec into trial recipes ([`train/sweeps.md`](train/sweeps.md)) |
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
 

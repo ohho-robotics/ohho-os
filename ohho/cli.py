@@ -970,6 +970,16 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_sweep(args) -> int:
+    from .train.sweep import SweepError, run_plan
+
+    try:
+        return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+    except (SweepError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -1570,6 +1580,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
+
+    sweep = sub.add_parser(
+        "sweep",
+        help="expand a training sweep into trial recipes",
+    )
+    sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
+    plan = sweep_sub.add_parser(
+        "plan",
+        help="print trial count, estimated GPU-hours, and resolved recipes",
+    )
+    plan.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="print the plan as JSON",
+    )
+    plan.set_defaults(func=_cmd_sweep)
 
     return p
 
