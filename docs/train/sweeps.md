@@ -74,6 +74,7 @@ are unique.
 | Type | Grid levels | Random draw |
 | --- | --- | --- |
 | `categorical` | `values` (required), in listed order | uniform over `values` |
+| `dataset` | `values` (required): dataset version ids, in listed order. At most one dataset dimension | uniform over those ids |
 | `int` | `values`, or `low`/`high` with `step` (default 1) or `n` points | uniform over that same set; `low`/`high` alone is uniform over the integers |
 | `float` | `values`, or `n` linspace points from `low` to `high` (endpoints included) | those points when `n` or `values` is set; otherwise continuous uniform |
 | `log_uniform` | `values`, or `n` log-spaced points from `low` to `high` (endpoints included, both bounds positive) | those points when `n` or `values` is set; otherwise continuous log-uniform |
@@ -127,8 +128,9 @@ dimensions:
 The `act` trial has no `model.lora.rank` override. Each `vla` trial has
 one rank.
 
-Precision, pruning, dataset, and model choice are ordinary categorical
-dimensions. Nothing in the schema is specific to one robot.
+Precision, pruning, and model choice are ordinary categorical
+dimensions. Dataset versions use `type: dataset`, described below.
+Nothing in the schema is specific to one robot.
 
 ## Conditions and constraints
 
@@ -381,6 +383,69 @@ assert stopped.ask()[0].index == 1
 
 The Connect console Resume button is a separate surface. This package
 exposes the run and `ohho sweep resume`.
+
+## Dataset versions
+
+`type: dataset` is a categorical dimension whose `values` are dataset
+version ids (`dv_` plus 32 lowercase hex characters), the ids from
+[`dataset-versions.md`](../dataset-versions.md). A sweep allows one
+dataset dimension. Grid expansion crosses it with the other axes: 3
+dataset versions and 2 models produce 6 trials. Each trial stores the
+chosen id on `dataset_version_id` and as the dimension's override, so
+the resolved recipe carries it too.
+
+`ohho/train/schemas/examples/dataset_3x2.json` is that 3×2 grid.
+
+```yaml
+dimensions:
+  - name: dataset
+    type: dataset
+    values:
+      - dv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - dv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      - dv_cccccccccccccccccccccccccccccccc
+  - name: model
+    type: categorical
+    values: [act, diffusion]
+```
+
+`ohho sweep plan` prints `dataset_version_id` on each trial that selected
+one. The same field is stored on `ohho.sweep.run/v1` trial rows and on
+the sampler state. A conditional dataset dimension that does not apply
+leaves the field off that trial.
+
+A worker resolves the id to a local dataset directory through
+`DatasetVersionCache`. The cache key is the version id. The first
+request calls the fetcher (by default
+`ohho.datasets.resolve_dataset_version`) and copies the tree into
+`OHHO_SWEEP_DATASET_CACHE` or `~/.ohho/sweep-datasets/<version_id>`.
+A later trial with the same id, including a new cache on that
+directory, returns the stored path and does not fetch or copy again.
+
+```python
+from ohho.train.sweep_dataset import (
+    resolve_trial_dataset,
+    worker_dataset_cache,
+)
+
+cache = worker_dataset_cache()
+root = resolve_trial_dataset(trial, cache)
+```
+
+`ohho sweep group <id>` prints the persisted trial table grouped by
+dataset version id. `--json` prints `ohho.sweep.dataset_groups/v1`
+(`ohho/train/schemas/sweep.dataset_groups.v1.json`). Trials that did
+not select a version are grouped under `(none)` in the text and `null`
+in the JSON. Group order is the order in which version ids first appear.
+
+```bash
+ohho sweep group push-lr
+ohho sweep group push-lr --json
+```
+
+Follow-up: the Connect console comparison view, and copying
+`dataset_version_id` onto `ohho.run/v1` when that manifest exists. This
+package records the id on the trial and on `ohho.sweep.run/v1`.
 
 ## YAML subset
 

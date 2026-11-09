@@ -1,0 +1,22 @@
+{
+  "schema": "ohho.sweep/v1",
+  "strategy": "grid",
+  "seed": 1,
+  "recipe": {"task": "push"},
+  "dimensions": [
+    {
+      "name": "dataset",
+      "type": "dataset",
+      "values": [
+        "dv_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "dv_cccccccccccccccccccccccccccccccc"
+      ]
+    },
+    {
+      "name": "model",
+      "type": "categorical",
+      "values": ["act", "diffusion"]
+    }
+  ]
+}

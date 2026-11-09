@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.sweep.dataset_groups.v1.json",
+  "title": "ohho.sweep.dataset_groups/v1",
+  "description": "Sweep trial table grouped by dataset version id. groups preserves first-seen version order. trials are the run-table rows in that group, in proposal order. dataset_version_id null collects trials that did not select a dataset version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "groups"],
+  "properties": {
+    "schema": {"const": "ohho.sweep.dataset_groups/v1"},
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "groups": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/group"}
+    }
+  },
+  "$defs": {
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataset_version_id", "trials"],
+      "properties": {
+        "dataset_version_id": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^dv_[0-9a-f]{32}$"}
+          ]
+        },
+        "trials": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/trial"}
+        }
+      }
+    },
+    "trial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "seed",
+        "overrides",
+        "sets",
+        "recipe",
+        "estimated_gpu_hours",
+        "values"
+      ],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "dataset_version_id": {
+          "type": "string",
+          "pattern": "^dv_[0-9a-f]{32}$"
+        },
+        "overrides": {"type": "object"},
+        "sets": {"type": "array", "items": {"type": "string"}},
+        "recipe": {"type": "object"},
+        "estimated_gpu_hours": {"type": "number", "minimum": 0},
+        "values": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": {"type": "number"}}
+          ]
+        }
+      }
+    }
+  }
+}

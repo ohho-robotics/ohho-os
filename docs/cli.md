@@ -65,6 +65,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho sweep start <file> [--id ID]` | Persist a new sweep run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` |
 | `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
+| `ohho sweep group <id>` | Group that run's trial table by dataset version id ([`train/sweeps.md`](train/sweeps.md)) |
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
 

@@ -29,6 +29,12 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   proposes trials from completed objectives, stores an
   `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Dataset version sweep axis** — `type: dataset` on `ohho.sweep/v1` lists
+  content-hashed dataset version ids. A grid of 3 versions and 2 models
+  yields 6 trials, and each trial records `dataset_version_id` on the plan,
+  the sampler state, and `ohho.sweep.run/v1`. A worker cache keyed by that
+  id fetches and copies a version once. `ohho sweep group` groups the trial
+  table by version id. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);

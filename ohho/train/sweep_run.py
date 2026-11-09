@@ -7,7 +7,8 @@ Trial indexes already in the table are not proposed again. Each row's
 ``seed`` is the training seed from :func:`ohho.train.sweep_seed.trial_training_seed`.
 
 ``ohho.run/v1`` is not defined here. :func:`ohho.train.sweep_seed.derived_trial_seed`
-reads the stored training seed for a later manifest.
+reads the stored training seed for a later manifest. When the spec has a
+dataset dimension, each trial row also stores ``dataset_version_id``.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from .sweep import (
     _format_set,
     _read_resource,
     _validate,
+    dataset_version_for,
     load_sweep,
 )
 from .sweep_sampler import SAMPLER_SCHEMA_ID, SweepSampler
@@ -280,6 +282,8 @@ def format_resume(run: SweepRun, proposed: tuple[Trial, ...]) -> str:
         lines.append("---")
         lines.append(f"trial: {trial.index}")
         lines.append(f"seed: {derived_trial_seed({'seed': trial.seed})}")
+        if trial.dataset_version_id is not None:
+            lines.append(f"dataset_version_id: {trial.dataset_version_id}")
         lines.append("sets:")
         if trial.sets:
             lines.extend(f"  {item}" for item in trial.sets)
@@ -305,7 +309,7 @@ def resume_as_dict(run: SweepRun, proposed: tuple[Trial, ...]) -> dict[str, Any]
 
 
 def _proposed_dict(trial: Trial) -> dict[str, Any]:
-    return {
+    row = {
         "index": trial.index,
         "seed": trial.seed,
         "overrides": dict(trial.overrides),
@@ -313,10 +317,13 @@ def _proposed_dict(trial: Trial) -> dict[str, Any]:
         "recipe": trial.recipe,
         "estimated_gpu_hours": trial.estimated_gpu_hours,
     }
+    if trial.dataset_version_id is not None:
+        row["dataset_version_id"] = trial.dataset_version_id
+    return row
 
 
 def _row_from_trial(trial: Trial) -> dict[str, Any]:
-    return {
+    row = {
         "index": trial.index,
         "seed": trial.seed,
         "overrides": copy.deepcopy(trial.overrides),
@@ -325,13 +332,16 @@ def _row_from_trial(trial: Trial) -> dict[str, Any]:
         "estimated_gpu_hours": float(trial.estimated_gpu_hours),
         "values": None,
     }
+    if trial.dataset_version_id is not None:
+        row["dataset_version_id"] = trial.dataset_version_id
+    return row
 
 
 def _copy_row(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise SweepError("sweep trial must be an object")
     values = raw.get("values")
-    return {
+    row = {
         "index": raw.get("index"),
         "seed": raw.get("seed"),
         "overrides": copy.deepcopy(dict(raw.get("overrides") or {})),
@@ -340,6 +350,10 @@ def _copy_row(raw: Mapping[str, Any]) -> dict[str, Any]:
         "estimated_gpu_hours": raw.get("estimated_gpu_hours"),
         "values": None if values is None else copy.deepcopy(dict(values)),
     }
+    version_id = raw.get("dataset_version_id")
+    if version_id is not None:
+        row["dataset_version_id"] = version_id
+    return row
 
 
 def _check_consistency(run: SweepRun) -> None:
@@ -365,6 +379,15 @@ def _check_consistency(run: SweepRun) -> None:
         derived_trial_seed(row)
         if row.get("overrides") != saved.get("overrides"):
             raise SweepError(f"trial {index} overrides do not match the sampler state")
+        if row.get("dataset_version_id") != saved.get("dataset_version_id"):
+            raise SweepError(
+                f"trial {index} dataset version does not match the sampler state"
+            )
+        expected_version = dataset_version_for(run.spec, row["overrides"])
+        if row.get("dataset_version_id") != expected_version:
+            raise SweepError(
+                f"trial {index} dataset version does not match its overrides"
+            )
         if list(row.get("sets") or []) != list(saved.get("sets") or []):
             raise SweepError(f"trial {index} sets do not match the sampler state")
         if row.get("values") != saved.get("values"):

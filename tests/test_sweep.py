@@ -62,6 +62,7 @@ class TestSchemaPackage(unittest.TestCase):
             "constrained.json",
             "tpe.json",
             "multi.json",
+            "dataset_3x2.json",
         )
         for name in names:
             doc = json.loads((_EXAMPLES / name).read_text(encoding="utf-8"))
