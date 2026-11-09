@@ -14,7 +14,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ohho.cli import main
-from ohho.safety import CMD_TIMEOUT_S, OMNIBOT_PROFILE, SafetyGate
+from ohho.robots.omnibot.policy import OMNIBOT_PROFILE
+from ohho.safety import CMD_TIMEOUT_S, SafetyGate
 from ohho.schema import Velocity
 from ohho.verify import (
     COMMAND_PERIOD_S,
@@ -352,11 +353,11 @@ class RefusalTests(unittest.TestCase):
             home = Path(tmp)
             with (
                 patch(
-                    "ohho.adapters.yahboom.YahboomTransport",
+                    "ohho.robots.omnibot.yahboom.YahboomTransport",
                     side_effect=AssertionError("serial"),
                 ),
                 patch(
-                    "ohho.adapters.unitree.UnitreeDdsTransport",
+                    "ohho.robots.unitree.dds.UnitreeDdsTransport",
                     side_effect=AssertionError("dds"),
                 ),
             ):

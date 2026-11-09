@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.metadata
 import io
 import json
@@ -138,6 +139,7 @@ class TestBoosterSpec(unittest.TestCase):
         self.assertEqual(spec.assets.licence, "BSD-3-Clause")
         self.assertTrue(spec.assets.urdf.endswith("T2_31dof.urdf"))
         self.assertTrue(spec.assets.mjcf.endswith("T2_31dof.xml"))
+        self.assertEqual(spec.sim_backend, "humanoid-mujoco")
         self.assertFalse(spec.ci_sim.enabled)
 
     def test_limits_are_not_looser_than_the_humanoid_defaults(self):
@@ -284,18 +286,27 @@ class TestAssetPin(unittest.TestCase):
         self.assertIn("BoosterRobotics", pin["copyright"])
         notice = (_PLUGIN / "NOTICE").read_text(encoding="utf-8")
         self.assertIn(pin["commit"], notice)
+        self.assertIn(pin["sha256"], notice)
+        self.assertEqual(len(pin["sha256"]), 64)
         self.assertIn(pin["upstream"], notice)
         self.assertIn(self.archive_url(pin), notice)
         self.assertIn("BSD-3-Clause", notice)
         self.assertIn("Copyright (c) 2025, BoosterRobotics", notice)
+        walk = pin["policies"]["walk"]
+        self.assertEqual(walk["commit"], "7bb1462e2ac742eba5c01659b815e2e99fbe617f")
+        self.assertEqual(walk["licence"], "Apache-2.0")
+        self.assertEqual(len(walk["sha256"]), 64)
+        self.assertIn(walk["commit"], notice)
+        self.assertIn(walk["sha256"], notice)
+        self.assertIn("Apache-2.0", notice)
         pyproject = (_PLUGIN / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('[project.entry-points."ohho.robots"]', pyproject)
         self.assertIn('booster = "ohho_booster:plugin"', pyproject)
 
     def test_fetch_accepts_a_local_archive_and_refuses_a_different_commit(self):
-        from ohho_booster.assets import fetch_assets
+        from ohho_booster import assets as assets_mod
 
-        pin = self.manifest
+        pin = dict(self.manifest)
         commit = pin["commit"]
         files = {
             pin["paths"]["urdf"]: b"<robot/>",
@@ -307,19 +318,55 @@ class TestAssetPin(unittest.TestCase):
             folder = Path(tmp)
             archive = folder / "ok.tar.gz"
             _archive(archive, commit, files)
-            root = fetch_assets(folder / "cache", url=archive.as_uri())
-            self.assertTrue((root / pin["paths"]["urdf"]).is_file())
-            receipt = json.loads(
-                (folder / "cache" / commit / "receipt.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(receipt["commit"], commit)
-            self.assertEqual(receipt["licence"], "BSD-3-Clause")
-            self.assertEqual(receipt["upstream"], pin["upstream"])
+            pin["sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
+            with patch.object(assets_mod, "load_manifest", return_value=pin):
+                root = assets_mod.fetch_assets(folder / "cache", url=archive.as_uri())
+                self.assertTrue((root / pin["paths"]["urdf"]).is_file())
+                again = assets_mod.fetch_assets(folder / "cache")
+                self.assertEqual(again, root)
+                receipt = json.loads(
+                    (folder / "cache" / commit / "receipt.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(receipt["commit"], commit)
+                self.assertEqual(receipt["sha256"], pin["sha256"])
+                self.assertEqual(receipt["licence"], "BSD-3-Clause")
+                self.assertEqual(receipt["upstream"], pin["upstream"])
 
-            wrong = folder / "wrong.tar.gz"
-            _archive(wrong, "0" * 40, files)
-            with self.assertRaises(ValueError):
-                fetch_assets(folder / "cache-wrong", url=wrong.as_uri())
+                wrong = folder / "wrong.tar.gz"
+                _archive(wrong, "0" * 40, files)
+                with self.assertRaises(ValueError) as caught:
+                    assets_mod.fetch_assets(folder / "cache-wrong", url=wrong.as_uri())
+                self.assertIn("sha256", str(caught.exception))
+
+            wrong_pin = dict(pin)
+            wrong_pin["sha256"] = hashlib.sha256(wrong.read_bytes()).hexdigest()
+            with patch.object(assets_mod, "load_manifest", return_value=wrong_pin):
+                with self.assertRaises(ValueError) as caught:
+                    assets_mod.fetch_assets(folder / "cache-root", url=wrong.as_uri())
+                self.assertIn("pinned commit", str(caught.exception))
+
+    def test_policy_fetch_checks_sha256(self):
+        from ohho_booster import assets as assets_mod
+
+        payload = b"checkpoint-bytes"
+        digest = hashlib.sha256(payload).hexdigest()
+        pin = json.loads(json.dumps(self.manifest))
+        pin["policies"]["walk"]["sha256"] = digest
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            blob = folder / "policy.pt"
+            blob.write_bytes(payload)
+            with patch.object(assets_mod, "load_manifest", return_value=pin):
+                path = assets_mod.fetch_policy(folder / "cache", url=blob.as_uri())
+                self.assertEqual(path.read_bytes(), payload)
+                self.assertEqual(path, assets_mod.fetch_policy(folder / "cache"))
+            pin["policies"]["walk"]["sha256"] = "0" * 64
+            with patch.object(assets_mod, "load_manifest", return_value=pin):
+                with self.assertRaises(ValueError) as caught:
+                    assets_mod.fetch_policy(folder / "other", url=blob.as_uri())
+                self.assertIn("sha256", str(caught.exception))
 
     def test_network_fetch_matches_pinned_joint_names(self):
         """Compare upstream T2_JOINT_NAMES with the copy in the plugin.

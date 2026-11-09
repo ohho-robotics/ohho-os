@@ -178,14 +178,31 @@ def _is_raspberry_pi() -> bool:
         return False
 
 
+def _legacy_profile_env() -> str:
+    """Profile name from a plugin's legacy env var, or ``""``."""
+    from .plugins import loaded_plugins
+
+    for info in loaded_plugins():
+        if info.error or info.plugin is None:
+            continue
+        fn = getattr(info.plugin, "legacy_profile_env", None)
+        if not callable(fn):
+            continue
+        key = fn()
+        if not isinstance(key, str) or not key:
+            continue
+        value = os.environ.get(key, "")
+        if value:
+            return value
+    return ""
+
+
 def detect_profile() -> HardwareProfile:
     """Best-guess profile for the current machine.
 
     ``OHHO_HW_PROFILE`` env var overrides; falls back on platform detection.
     """
-    forced = os.environ.get("OHHO_HW_PROFILE", "") or os.environ.get(
-        "OMNIBOT_HW_PROFILE", ""
-    )
+    forced = os.environ.get("OHHO_HW_PROFILE", "") or _legacy_profile_env()
     if forced:
         return get_profile(forced)
     if _is_jetson():
@@ -199,13 +216,16 @@ def detect_profile() -> HardwareProfile:
     return BUILTIN_PROFILES["edge_cpu"]
 
 
-def emit_robot_descriptor(robot_id: str = "omnibot", *, kind: str = "real") -> str:
+def emit_robot_descriptor(robot_id: str | None = None, *, kind: str = "real") -> str:
     """JSON text of the RobotDescriptor v1 document for a registered robot.
 
     Drive and safety caps stay at or below the descriptor ceilings.
     """
     from .descriptor import emit_descriptor, robot_descriptor
+    from .plugins import preferred_robot_id
 
+    if not robot_id:
+        robot_id = preferred_robot_id()
     return emit_descriptor(robot_descriptor(robot_id, kind=kind))
 
 
