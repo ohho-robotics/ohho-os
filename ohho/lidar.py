@@ -1,6 +1,6 @@
 """Planar scan synthesis from 3-D lidar point clouds (stdlib + optional numpy).
 
-Go2 and MuJoCo sim publish ``sensor_msgs/PointCloud2`` on DDS; native
+Legged robots and MuJoCo sim publish ``sensor_msgs/PointCloud2`` on DDS; native
 ``ohho nav`` consumes :class:`~ohho.schema.Scan` on ``Telemetry.scan``.
 This module converts body-frame points into a 360-ray scan for mapping.
 """
@@ -20,14 +20,14 @@ DEFAULT_Z_MAX = 0.5
 DEFAULT_NUM_RAYS = 360
 DEFAULT_RANGE_MAX = 30.0
 
-# DDS topic used by Go2 onboard lidar and ohho-quadruped MuJoCo sim (domain 1).
+# DDS topic used by onboard lidar and the quadruped MuJoCo sim (domain 1).
 DEFAULT_LIDAR_DDS_TOPIC = "rt/utlidar/cloud"
 
 PointLike = Union[Sequence[float], tuple[float, float, float]]
 
 
 def lidar_dds_topic() -> str:
-    """DDS topic for Go2 / sim point clouds (override with ``OHHO_LIDAR_DDS_TOPIC``)."""
+    """DDS topic for quadruped / sim point clouds (override with ``OHHO_LIDAR_DDS_TOPIC``)."""
     return os.environ.get("OHHO_LIDAR_DDS_TOPIC", DEFAULT_LIDAR_DDS_TOPIC)
 
 

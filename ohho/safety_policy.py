@@ -303,8 +303,8 @@ class GroundPolicy(SafetyPolicy):
 
     A stale command zeros velocity. E-stop stops the base and damps only when
     the robot is already lying down (or the profile sets ``estop_damp``).
-    OmniBot's numbers come from its safety profile; ``sim`` keeps the
-    conservative profile used for any robot that has no built-in profile.
+    A mobile manipulator's numbers come from its plugin profile; ``sim`` keeps
+    the conservative profile used for any robot that has no built-in profile.
     """
 
     name = "ground"
@@ -362,11 +362,10 @@ class ArmPolicy(SafetyPolicy):
 
 
 class LeggedPolicy(SafetyPolicy):
-    """Quadruped. Unitree Go2 keeps its built-in profile.
+    """Quadruped. The built-in profile keeps the sport allowlist and axis caps.
 
-    The sport allowlist, orientation requirement and axis caps come from that
-    profile. A stale command zeros velocity. E-stop calls the transport stop
-    (StopMove on Go2) and damps only when the body is already down.
+    A stale command zeros velocity. E-stop calls the transport stop and damps
+    only when the body is already down.
     """
 
     name = "legged"
@@ -395,8 +394,8 @@ class LeggedPolicy(SafetyPolicy):
 class GroundArmPolicy(SafetyPolicy):
     """Mobile manipulator: ground rules for the base, arm rules for joints.
 
-    Both halves share one profile, so OmniBot's velocity caps and joint limits
-    stay a single safety profile. The policy name is ``ground+arm``.
+    Both halves share one profile, so velocity caps and joint limits stay a
+    single safety profile. The policy name is ``ground+arm``.
     """
 
     name = "ground+arm"

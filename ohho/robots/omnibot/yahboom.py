@@ -5,8 +5,8 @@ decodes the board's velocity/IMU telemetry into the unified ``Telemetry`` shape.
 pyserial is imported lazily (the `[serial]` extra) so importing this module costs
 nothing; a fake serial object can be injected for tests.
 
-Note: the SO-101 arm on OmniBot is a *separate* Feetech bus, not the base board —
-so ``send_joint_command`` here is a no-op. Arm control is a future adapter.
+Note: the SO-101 arm is a separate Feetech bus. ``send_joint_command`` here is a
+no-op; the composite transport commands the arm.
 """
 
 from __future__ import annotations
@@ -16,18 +16,19 @@ import threading
 import time
 from typing import Callable, Optional
 
-from ..loop_timer import LoopStats, LoopTimer
-from ..registry import RobotSpec
-from ._link_resilience import (
+from ohho.adapters._link_resilience import (
     DEFAULT_RECONNECT_INTERVAL_S,
     DEFAULT_TELEMETRY_TIMEOUT_S,
     LinkResilience,
     MonotonicFn,
 )
-from ..schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
-from ..transport import BaseTransport
-from . import _yahboom_proto as proto
-from .errors import AdapterUnavailable
+from ohho.adapters.errors import AdapterUnavailable
+from ohho.loop_timer import LoopStats, LoopTimer
+from ohho.registry import RobotSpec
+from ohho.schema import ConnectionState, Odometry, Telemetry, TransportStatus, Velocity
+from ohho.transport import BaseTransport
+
+from . import proto
 
 # A serial-like object: write(bytes)->int, read(n)->bytes, close()->None.
 SerialFactory = Callable[[], object]

@@ -10,7 +10,24 @@ from typing import Any, List, Optional
 from .agent import Agent, ScriptedBrain
 from .robot import Robot
 
-_EVAL_PATH = Path(__file__).resolve().parent.parent / "evals" / "go2_sim_goals.yaml"
+
+def _default_eval_path() -> Path:
+    from .plugins import plugin_text
+
+    named = plugin_text("sim_eval_path")
+    if named:
+        return Path(named)
+    return Path(__file__).resolve().parent.parent / "evals" / "sim_goals.yaml"
+
+
+def _default_robot_id() -> str:
+    from .registry import list_specs
+    from .robot_spec import RobotClass
+
+    for spec in list_specs():
+        if spec.robot_class is RobotClass.QUADRUPED:
+            return spec.id
+    return "sim"
 
 
 @dataclass(frozen=True)
@@ -101,8 +118,8 @@ def _parse_simple_yaml(text: str) -> dict[str, Any]:
     return root
 
 
-def load_go2_sim_eval(path: Optional[Path] = None) -> SimEvalSpec:
-    p = path or _EVAL_PATH
+def load_sim_eval(path: Optional[Path] = None) -> SimEvalSpec:
+    p = path or _default_eval_path()
     doc = _parse_simple_yaml(p.read_text(encoding="utf-8"))
     goals = tuple(
         SimGoal(
@@ -115,7 +132,7 @@ def load_go2_sim_eval(path: Optional[Path] = None) -> SimEvalSpec:
         for g in doc.get("goals", [])
     )
     return SimEvalSpec(
-        robot_id=str(doc.get("robot_id", "unitree-go2")),
+        robot_id=str(doc.get("robot_id", _default_robot_id())),
         transport=str(doc.get("transport", "sim://")),
         max_steps=int(doc.get("max_steps", 20)),
         max_travel_m=float(doc.get("max_travel_m", 6.0)),
@@ -128,7 +145,7 @@ def _log_ok(log: List[str], needles: tuple[str, ...]) -> bool:
     return all(n in blob for n in needles)
 
 
-def run_scripted_go2_eval(
+def run_scripted_sim_eval(
     spec: SimEvalSpec,
     *,
     only_scripted_pass: bool = True,

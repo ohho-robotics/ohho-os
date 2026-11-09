@@ -19,7 +19,7 @@ class DatasetInfo:
     """Contents of ``meta/info.json``."""
 
     codebase_version: str = "2.0"
-    robot_type: str = "omnibot"
+    robot_type: str = ""
     repo_id: str = ""
     fps: float = 10.0
     total_episodes: int = 0
@@ -55,13 +55,15 @@ class DatasetReader:
 
     def _load_info(self) -> DatasetInfo:
         p = self.root / "meta" / "info.json"
+        from ..plugins import preferred_robot_id
+
         if not p.exists():
-            return DatasetInfo()
+            return DatasetInfo(robot_type=preferred_robot_id())
         with open(p, encoding="utf-8") as f:
             d = json.load(f)
         return DatasetInfo(
             codebase_version=d.get("codebase_version", "2.0"),
-            robot_type=d.get("robot_type", "omnibot"),
+            robot_type=d.get("robot_type") or preferred_robot_id(),
             repo_id=d.get("repo_id", ""),
             fps=d.get("fps", 10.0),
             total_episodes=d.get("total_episodes", 0),
