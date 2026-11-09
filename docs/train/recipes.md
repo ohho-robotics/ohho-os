@@ -41,6 +41,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
+| `distillation` | Optional. Teacher reference, loss, mix weight, and temperature. See [Knowledge distillation](distillation.md). Absent means ordinary training. |
 | `output.dir` | Directory for the checkpoint, `metrics.json`, and `run_manifest.json`. |
 
 `dataset.version_id` is not resolved in this build. A family that has a trainer, and a recipe that sets only `version_id`, exits `4` before training.
@@ -60,6 +61,8 @@ Relative paths are resolved from the process working directory.
 9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
 
 A failure in steps 1–6 does not call the trainer, does not emit `train_start`, and does not write a manifest. Schema validation happens before the availability check, so an invalid field on an unavailable family is exit `1`, not exit `3`.
+
+When the recipe includes `distillation`, the runner checks that the family is an imitation-learning student before the availability check. `ppo` and any other non-IL family exit `1`. `diffusion`, `smolvla`, and `openvla` are IL families and still exit `3` in this build, before the teacher is resolved. An available IL family (`act`, or a plugin whose metadata sets `imitation` to true) then resolves the teacher. A teacher this build cannot load, and a registry model with no client installed, exit `1`. No fallback teacher is loaded. Details are in [Knowledge distillation](distillation.md).
 
 ## `--set`
 

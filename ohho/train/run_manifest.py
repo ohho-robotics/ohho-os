@@ -211,11 +211,12 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
+    lineage: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON object, with keys in console-summary order."""
         gpu = None if self.gpu is None else self.gpu.to_dict()
-        return {
+        payload = {
             "schema": self.schema,
             "status": self.status,
             "started_at": self.started_at,
@@ -247,6 +248,9 @@ class RunManifest:
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
         }
+        if self.lineage is not None:
+            payload["lineage"] = json.loads(json.dumps(self.lineage))
+        return payload
 
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> RunManifest:
@@ -318,6 +322,7 @@ class RunManifest:
                 "eval_hooks": [str(item) for item in hooks["eval_hooks"]],
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
+            lineage=_copy_lineage(document.get("lineage")),
         )
 
 
@@ -344,6 +349,7 @@ class RunCapture:
     gpu: GpuRecord | None
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
+    lineage: dict[str, Any] | None = None
 
 
 def schema_path() -> Path:
@@ -386,6 +392,54 @@ def validate_run_manifest(document: Any) -> list[str]:
             errors.append("$.error: is required when the run failed or was interrupted")
     errors.extend(_precision_errors(document))
     return errors
+
+
+_LINEAGE_CONTRIBUTORS: list[
+    Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
+] = []
+
+
+def register_lineage_contributor(
+    contributor: Callable[[Mapping[str, Any]], Mapping[str, Any] | None],
+) -> None:
+    """Register a function that adds keys to a run's optional ``lineage``.
+
+    Each compression method registers its own contributor and returns only
+    the keys it owns, or ``None`` when the recipe does not use that method.
+    Contributors run in registration order. The manifest omits ``lineage``
+    when every contributor returns nothing.
+    """
+    if contributor not in _LINEAGE_CONTRIBUTORS:
+        _LINEAGE_CONTRIBUTORS.append(contributor)
+
+
+def _collect_lineage(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    for contributor in _LINEAGE_CONTRIBUTORS:
+        part = contributor(recipe)
+        if not isinstance(part, Mapping) or not part:
+            continue
+        for key, value in part.items():
+            merged[str(key)] = value
+    if not merged:
+        return None
+    return json.loads(json.dumps(merged))
+
+
+def _copy_lineage(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or not value:
+        return None
+    return json.loads(json.dumps(value))
+
+
+def _lineage_line(document: Mapping[str, Any]) -> str | None:
+    lineage = document.get("lineage")
+    if not isinstance(lineage, Mapping):
+        return None
+    teacher = lineage.get("teacher")
+    if not isinstance(teacher, Mapping) or "version" not in teacher:
+        return None
+    return f"lineage.teacher.version: {_format_value(teacher.get('version'))}"
 
 
 def set_run_store(store: RunStore | Callable[[Mapping[str, Any]], None] | None) -> None:
@@ -586,6 +640,7 @@ def capture_run(
         gpu=None if gpu is None else GpuRecord(**gpu),
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
+        lineage=_collect_lineage(recipe),
     )
 
 
@@ -660,6 +715,7 @@ def manifest_from_capture(
             normalize_throughput(throughput_steps_per_s),
             normalize_peak(peak_memory_bytes),
         ),
+        lineage=_copy_lineage(capture.lineage),
     )
 
 
@@ -771,6 +827,13 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"base_weights.revision: {_format_value(weights.get('revision'))}",
             f"base_weights.hash: {_format_value(weights.get('hash'))}",
             f"base_weights.loaded: {_format_value(weights.get('loaded'))}",
+        ]
+    )
+    lineage_line = _lineage_line(document)
+    if lineage_line is not None:
+        lines.append(lineage_line)
+    lines.extend(
+        [
             "container_image_digest: "
             + _format_value(document.get("container_image_digest")),
             "library_versions: "

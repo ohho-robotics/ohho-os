@@ -158,6 +158,13 @@ def apply_defaults(recipe: dict[str, Any]) -> dict[str, Any]:
     filled.setdefault("hyperparameters", {})
     filled.setdefault("compression_hooks", [])
     filled.setdefault("eval_hooks", [])
+    block = filled.get("distillation")
+    if isinstance(block, dict):
+        block.setdefault("loss", "action_regression")
+        block.setdefault("feature_matching", False)
+        block.setdefault("feature_weight", 1.0)
+        block.setdefault("mix_weight", 0.5)
+        block.setdefault("temperature", 1.0)
     return filled
 
 

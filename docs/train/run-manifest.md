@@ -73,7 +73,9 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 
 `precision` is the recipe value the device check accepted (`fp32`, `fp16`, `bf16`, or `fp8`). `loss_scaling` is true only for fp16, where the step uses GradScaler. `precision_backend` is `fp32`, `torch.amp` (fp16 and bf16), or `transformer_engine` (fp8). `precision_metrics` has one key per precision. The precision that ran holds `throughput_steps_per_s` and `peak_memory_bytes`. The others are null. While the run is still going, and when the trainer did not write those keys, the numbers are null. Throughput is training steps per second over the step loop. On CUDA, peak memory is `max_memory_allocated` in bytes after the loop starts. On CPU and MPS it is the process resident set sampled during the loop, which includes the interpreter. Details are in [Mixed precision](precision.md).
 
-The JSON document also carries `recipe_path`, `overrides`, `checkpoint_dir`, `metrics_path`, `declared_hooks`, and `git.root`. Those are available to a details panel. They are not summary fields. `--json` prints them with the summary.
+The JSON document also carries `recipe_path`, `overrides`, `checkpoint_dir`, `metrics_path`, `declared_hooks`, `git.root`, and, when a run recorded a parent, `lineage`. Those are available to a details panel. They are not summary fields, except `lineage.teacher.version`, which `ohho run show` prints when a distillation run set it. `--json` prints them with the summary.
+
+`lineage` is omitted when the run has no parent. A distillation run sets `lineage.teacher` to `{version, source, model, checkpoint}`. `version` is the registry model version, the explicit checkpoint version, or `sha256:` plus the sha256 of the teacher `policy.pt`. `source` is `registry` or `checkpoint`. `model` is null for a local checkpoint reference. Other compression methods may add their own keys beside `teacher`.
 
 ## Database hook
 
