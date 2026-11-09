@@ -976,6 +976,12 @@ def _cmd_train(args) -> int:
     return execute(args.recipe, getattr(args, "set", None))
 
 
+def _cmd_run(args) -> int:
+    from .train.run_manifest import show_run
+
+    return show_run(args.run_dir, as_json=bool(getattr(args, "json", False)))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -1590,6 +1596,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="override a dotted field before validation (repeatable)",
     )
     train.set_defaults(func=_cmd_train)
+
+    run = sub.add_parser(
+        "run",
+        help="show an ohho.run/v1 training manifest",
+    )
+    run_sub = run.add_subparsers(dest="run_command", required=True)
+    show = run_sub.add_parser(
+        "show",
+        help="print the manifest stored in a run directory",
+    )
+    show.add_argument(
+        "run_dir",
+        help="run directory that contains run_manifest.json",
+    )
+    show.add_argument(
+        "--json",
+        action="store_true",
+        help="print the manifest as JSON",
+    )
+    show.set_defaults(func=_cmd_run)
 
     return p
 
