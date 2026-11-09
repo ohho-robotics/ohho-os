@@ -970,6 +970,12 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_train(args) -> int:
+    from .train.run_cli import execute
+
+    return execute(args.recipe, getattr(args, "set", None))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -1570,6 +1576,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
+
+    train = sub.add_parser(
+        "train",
+        help="train from an ohho.recipe/v1 file",
+    )
+    train.add_argument("recipe", help="path to a recipe file (.yaml or .json)")
+    train.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="k=v",
+        help="override a dotted field before validation (repeatable)",
+    )
+    train.set_defaults(func=_cmd_train)
 
     return p
 

@@ -65,6 +65,12 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
 
+## Training recipes
+
+| Command | Description |
+|---------|-------------|
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+
 ## Simulation services
 
 | Command | Description |

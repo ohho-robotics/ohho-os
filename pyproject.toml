@@ -86,11 +86,18 @@ builtin = "ohho.robots.builtin:plugin"
 omnibot = "ohho.robots.omnibot:plugin"
 unitree = "ohho.robots.unitree:plugin"
 
+[project.entry-points."ohho.recipes"]
+act = "ohho.train.builtin_recipes:ACT"
+diffusion = "ohho.train.builtin_recipes:DIFFUSION"
+smolvla = "ohho.train.builtin_recipes:SMOLVLA"
+openvla = "ohho.train.builtin_recipes:OPENVLA"
+ppo = "ohho.train.builtin_recipes:PPO"
+
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "train/schema/*.json", "train/examples/*.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
