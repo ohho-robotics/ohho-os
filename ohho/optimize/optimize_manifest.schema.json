@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/optimize-manifest.v1.json",
   "title": "OptimizeManifest",
-  "description": "One ohho optimize run: the target profile, the flags that were applied, package versions, and sha256 of each output file.",
+  "description": "One ohho optimize run: the model sha256, target profile, precision, flags, calibration-cache sha256, toolchain versions, host GPU, build duration, and sha256 of each output file.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,12 @@
     "versions",
     "inputs",
     "outputs",
-    "session_providers"
+    "session_providers",
+    "model_sha256",
+    "calibration_cache_sha256",
+    "host",
+    "build_duration_s",
+    "cache"
   ],
   "properties": {
     "schema": {"const": "ohho.optimize_manifest.v1"},
@@ -83,12 +88,15 @@
     "versions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["torch", "onnx", "onnxruntime", "tensorrt"],
+      "required": ["torch", "onnx", "onnxruntime", "tensorrt", "cuda", "driver", "jetpack"],
       "properties": {
         "torch": {"type": ["string", "null"]},
         "onnx": {"type": ["string", "null"]},
         "onnxruntime": {"type": ["string", "null"]},
-        "tensorrt": {"type": ["string", "null"]}
+        "tensorrt": {"type": ["string", "null"]},
+        "cuda": {"type": ["string", "null"]},
+        "driver": {"type": ["string", "null"]},
+        "jetpack": {"type": ["string", "null"]}
       }
     },
     "inputs": {
@@ -151,6 +159,33 @@
     "session_providers": {
       "type": "array",
       "items": {"type": "string"}
+    },
+    "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "calibration_cache_sha256": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      ]
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gpu_name", "gpu_architecture"],
+      "properties": {
+        "gpu_name": {"type": ["string", "null"]},
+        "gpu_architecture": {"type": ["string", "null"]}
+      }
+    },
+    "build_duration_s": {"type": "number", "minimum": 0},
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "hit", "source"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "hit": {"type": "boolean"},
+        "source": {"type": "string", "enum": ["miss", "local", "registry"]}
+      }
     }
   }
 }

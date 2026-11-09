@@ -127,10 +127,45 @@ when OHH-430 is installed. The manifest records `backend` and
 
 The output directory gets `manifest.json`. The schema id is
 `ohho.optimize_manifest.v1` (`ohho/optimize/optimize_manifest.schema.json`).
-The document records the model, the target, the precision, the execution
-provider, the flags, the torch / ONNX / ONNX Runtime / TensorRT versions, the
-request inputs, the session providers that were actually enabled, and the
-sha256, size, backend name, and backend version of each output.
+The document records the model sha256, the target profile, the precision,
+every applied flag, the calibration-cache sha256, the request inputs, the
+session providers that were actually enabled, and the sha256, size, backend
+name, and backend version of each output. It also records the build duration
+and the host GPU (device name and compute capability `major.minor`).
+
+Toolchain versions on that manifest are torch, ONNX, ONNX Runtime, TensorRT,
+CUDA, the driver, and JetPack. CUDA comes from `torch.version.cuda`. The
+driver comes from `nvidia-smi`. JetPack is the L4T release parsed from
+`/etc/nv_tegra_release` when that file exists. A probe that cannot see a
+piece stores null.
+
+## Reproducible builds
+
+A second `ohho optimize` with the same model bytes, target profile,
+precision, flags, and toolchain versions copies the previous artifacts and
+skips export, calibration, and the engine build. The cache key is the sha256
+of those values. The local cache lives at `~/.ohho/optimize-cache`, or at
+`OHHO_OPTIMIZE_CACHE` when that variable is set. `--no-cache` rebuilds and
+replaces the cache entry.
+
+```bash
+ohho optimize --explain build/fp16
+ohho optimize --explain build/fp16/model.engine
+ohho optimize --model policy.pt --target x86-cuda --precision fp16 --tensorrt --out build/fp16 --no-cache
+```
+
+`--explain ARTIFACT` prints the `manifest.json` beside a build directory, an
+artifact in that directory, or the manifest file itself.
+
+An engine is refused when this host's GPU architecture or TensorRT version
+differs from the manifest. The check runs when a cached engine is restored
+and when `require_engine_host` opens an engine file. Pass `--no-cache` to
+build a new engine for the current host.
+
+`RegistryCache` (`find`, `publish`) is the hook for a console registry.
+`optimize(..., registry=client)` asks it after a local miss and passes it
+the build directory after a local store. This package does not call a
+registry of its own.
 
 ## GPU follow-up
 

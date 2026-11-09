@@ -17,6 +17,15 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Reproducible optimize builds (OHH-469)** — `manifest.json` records the
+  model sha256, the calibration-cache sha256, toolchain versions (torch,
+  ONNX, ONNX Runtime, TensorRT, CUDA, driver, and JetPack when detectable),
+  the host GPU, and the build duration. A local cache keyed by that model
+  sha256, the target, the precision, the flags, and the toolchain versions
+  skips a repeat build. `--no-cache` rebuilds. `--explain ARTIFACT` prints
+  the manifest. An engine is refused when the host GPU architecture or
+  TensorRT version differs from the manifest. `RegistryCache` is the hook
+  for a console registry.
 - **Quantizer plugins (OHH-468)** — `ohho.quantizers` entry points for ORT
   static INT8 (QDQ on `x86-cpu` and `rpi5-cpu`), TensorRT FP8 (Ada and Hopper
   only), AWQ and GPTQ INT4, and bitsandbytes NF4. `--precision int4-awq`,

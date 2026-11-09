@@ -31,6 +31,9 @@ def register_optimize(subparsers: Any) -> None:
             "--target INT4_PROFILE --out build/awq\n"
             "  ohho optimize --model reference-act --target x86-cpu "
             "--precision int8 --out build/int8\n"
+            "  ohho optimize --explain build/fp16\n"
+            "  ohho optimize --model policy.pt --target x86-cuda --precision fp16 "
+            "--tensorrt --out build/fp16 --no-cache\n"
             "\n"
             "TensorRT, the CUDA execution provider, AWQ, GPTQ, bitsandbytes, "
             "and FP8 fail fast when they are not installed. That is a GPU follow-up. "
@@ -38,13 +41,10 @@ def register_optimize(subparsers: Any) -> None:
             "is ORT static INT8. int4-bnb is a bitsandbytes NF4 research baseline."
         ),
     )
-    parser.add_argument("--model", required=True, help="checkpoint path or registry id")
-    parser.add_argument(
-        "--target", required=True, help="target profile id or profile file"
-    )
+    parser.add_argument("--model", help="checkpoint path or registry id")
+    parser.add_argument("--target", help="target profile id or profile file")
     parser.add_argument(
         "--precision",
-        required=True,
         choices=PRECISION_FLAGS,
         help=(
             "fp32, fp16, int8 (ORT static on CPU; TensorRT with --tensorrt), "
@@ -96,15 +96,47 @@ def register_optimize(subparsers: Any) -> None:
         default=None,
         help="dotted module path, or a role: vision, actor, encoder, lm",
     )
-    parser.add_argument("--out", required=True, help="output directory")
+    parser.add_argument("--out", help="output directory")
     parser.add_argument(
         "--json", action="store_true", help="print the manifest as JSON"
+    )
+    parser.add_argument(
+        "--explain",
+        metavar="ARTIFACT",
+        help="print the manifest beside a build directory or artifact and exit",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "rebuild even when the local cache already has this model, "
+            "target, flags, and toolchain"
+        ),
     )
     parser.set_defaults(func=run_optimize)
 
 
 def run_optimize(args: argparse.Namespace) -> int:
     """Run one optimize request. Validation and capability errors exit 2."""
+    if args.explain:
+        return _explain(args)
+    missing = [
+        flag
+        for flag, value in (
+            ("--model", args.model),
+            ("--target", args.target),
+            ("--precision", args.precision),
+            ("--out", args.out),
+        )
+        if not value
+    ]
+    if missing:
+        joined = ", ".join(missing)
+        print(
+            f"error: {joined} {'is' if len(missing) == 1 else 'are'} required.",
+            file=sys.stderr,
+        )
+        return 2
     request = OptimizeRequest(
         model=args.model,
         target=args.target,
@@ -126,7 +158,7 @@ def run_optimize(args: argparse.Namespace) -> int:
     try:
         from ohho.optimize.engine import optimize
 
-        document = optimize(request)
+        document = optimize(request, no_cache=bool(args.no_cache))
     except OptimizeError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}))
@@ -142,4 +174,20 @@ def run_optimize(args: argparse.Namespace) -> int:
     for item in document["outputs"]:
         print(f"  {item['role']}: {item['path']}")
     print("  manifest: manifest.json")
+    return 0
+
+
+def _explain(args: argparse.Namespace) -> int:
+    """Print the manifest beside ``--explain`` and exit."""
+    try:
+        from ohho.optimize.manifest import explain_artifact
+
+        document = explain_artifact(args.explain)
+    except OptimizeError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(document, indent=2))
     return 0

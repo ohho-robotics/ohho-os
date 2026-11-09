@@ -6,10 +6,21 @@ import hashlib
 import importlib.util
 import logging
 import shutil
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from ohho.optimize.cache import (
+    LocalBuildCache,
+    RegistryCache,
+    cache_key,
+    default_cache_dir,
+    file_sha256,
+    read_cached_manifest,
+    restore_build,
+    source_model_sha256,
+)
 from ohho.optimize.calibrator import (
     CalibrationCache,
     EmptyBatchSource,
@@ -32,15 +43,28 @@ from ohho.optimize.exporters import (
 from ohho.optimize.manifest import (
     build_manifest,
     file_record,
-    package_versions,
     write_manifest,
 )
 from ohho.optimize.models import load_model
 from ohho.optimize.ort_session import build_session
 from ohho.optimize.plan import OptimizePlan, OptimizeRequest, build_plan
-from ohho.optimize.qdq import MISSING_CALIBRATION, onnx_has_qdq, quantization_mode
+from ohho.optimize.qdq import (
+    MISSING_CALIBRATION,
+    onnx_has_qdq,
+    quantization_mode,
+    trt_version_text,
+)
 from ohho.optimize.quant import probe_quant
 from ohho.optimize.tensorrt import build_engine, cuda_device_available, probe_tensorrt
+from ohho.optimize.toolchain import (
+    HostGpu,
+    Toolchain,
+    artifact_has_engine,
+    injected_tensorrt_version,
+    require_engine_host,
+    resolve_host,
+    resolve_toolchain,
+)
 from ohho.targets.providers import installed_execution_providers
 
 logger = logging.getLogger("ohho.optimize")
@@ -56,23 +80,75 @@ class OptimizeBackends:
 
     ``trt_module`` replaces the TensorRT import. ``available_providers``
     replaces the ONNX Runtime provider probe. ``cuda`` overrides the CUDA
-    device probe. ``None`` means probe the real machine.
+    device probe. ``toolchain`` and ``host`` replace the version and GPU
+    probes. ``None`` means probe the real machine.
     """
 
     trt_module: Any = None
     ort_module: Any = None
     available_providers: tuple[str, ...] | None = None
     cuda: bool | None = None
+    toolchain: Toolchain | None = None
+    host: HostGpu | None = None
 
 
 def optimize(
-    request: OptimizeRequest, *, backends: OptimizeBackends | None = None
+    request: OptimizeRequest,
+    *,
+    backends: OptimizeBackends | None = None,
+    no_cache: bool = False,
+    cache_dir: str | Path | None = None,
+    registry: RegistryCache | None = None,
 ) -> dict[str, Any]:
-    """Validate, export, and write ``manifest.json``. Returns the document."""
-    plan = build_plan(request)
+    """Validate, export, and write ``manifest.json``. Returns the document.
+
+    A local cache hit copies the previous artifacts and skips the build.
+    ``no_cache`` forces the build and still stores the result. ``registry``
+    is consulted after a local miss and receives the build after a local
+    store. An engine restored from the cache is refused when this host's
+    GPU architecture differs from the manifest.
+    """
     standins = backends or OptimizeBackends()
+    plan = build_plan(request, tensorrt_version=injected_tensorrt_version(standins))
     _assert_ready(plan, standins)
+    toolchain = resolve_toolchain(standins)
+    host = resolve_host(standins)
+    target = {
+        "id": plan.profile.id,
+        "arch": plan.profile.arch,
+        "accelerator": plan.profile.accelerator,
+    }
+    quantization, trt_module = _quantization(plan, standins)
+    if toolchain.tensorrt is None and trt_module is not None:
+        text = trt_version_text(trt_module)
+        if text:
+            toolchain = replace(toolchain, tensorrt=text)
+    flags = _applied_flags(plan, quantization)
+    model_sha256 = source_model_sha256(request.model)
+    versions = toolchain.as_dict()
+    key = cache_key(
+        model_sha256=model_sha256,
+        target=target,
+        precision=plan.precision,
+        flags=flags,
+        versions=versions,
+    )
     out = Path(request.out_dir)
+    local = LocalBuildCache(cache_dir if cache_dir is not None else default_cache_dir())
+    _separate(out, local.root)
+    if not no_cache:
+        cached = _reuse_cache(
+            local,
+            key,
+            registry,
+            out,
+            toolchain=toolchain,
+            host=host,
+        )
+        if cached is not None:
+            return cached
+
+    started = time.perf_counter()
     out.mkdir(parents=True, exist_ok=True)
     loaded = load_model(request.model, submodule=request.submodule)
     loaded = _prefer_lm(loaded, plan.quant)
@@ -106,18 +182,15 @@ def optimize(
             export_torchscript(loaded, ts_path)
             outputs.append(file_record(ts_path, "torchscript", out))
 
-    quantization: str | None = None
     if plan.build_tensorrt and plan.quant != "fp8":
         if not wrote_onnx:
             raise OptimizeError("TensorRT needs an ONNX graph to parse.")
         engine_path = out / "model.engine"
-        trt_module = standins.trt_module
         calibrator = None
         activation_scale = None
         if plan.precision == "INT8":
-            if trt_module is None:
-                trt_module = _load_tensorrt()
-            quantization = quantization_mode(trt_module)
+            if not quantization:
+                raise OptimizeError("INT8 TensorRT did not choose a quantization mode.")
             calibrator, activation_scale = _int8_inputs(
                 plan, loaded, onnx_path, trt_module, standins, quantization
             )
@@ -151,6 +224,8 @@ def optimize(
         )
         session_providers = [str(item) for item in session.get_providers()]
 
+    duration = time.perf_counter() - started
+    calibration_sha = _calibration_sha256(request.calib_cache)
     document = build_manifest(
         model={
             "ref": loaded.ref,
@@ -158,28 +233,10 @@ def optimize(
             "submodule": loaded.submodule,
             "source": loaded.source,
         },
-        target={
-            "id": plan.profile.id,
-            "arch": plan.profile.arch,
-            "accelerator": plan.profile.accelerator,
-        },
+        target=target,
         precision=plan.precision,
         execution_provider=plan.provider,
-        flags={
-            "onnx": wrote_onnx,
-            "tensorrt": plan.build_tensorrt,
-            "quant": plan.quant,
-            "ort_ep": request.ort_ep,
-            "workspace_gb": request.workspace_gb,
-            "workspace_bytes": plan.workspace_bytes,
-            "max_batch": request.max_batch,
-            "dynamic_batch": request.dynamic_batch,
-            "calib_batch": plan.calib_batch,
-            "calib_max_images": request.calib_max_images,
-            "quantization": quantization,
-            "opset": ONNX_OPSET if wrote_onnx else None,
-            "submodule": request.submodule,
-        },
+        flags=flags,
         inputs={
             "model": request.model,
             "target": request.target,
@@ -199,13 +256,136 @@ def optimize(
         },
         outputs=outputs,
         session_providers=session_providers,
-        versions=package_versions(),
+        versions=versions,
+        model_sha256=model_sha256,
+        calibration_cache_sha256=calibration_sha,
+        host=host.as_dict(),
+        build_duration_s=duration,
+        cache={"key": key, "hit": False, "source": "miss"},
     )
     from ohho.optimize.publish import run_parity
 
     run_parity(document, out)
     write_manifest(out, document)
+    _store_cache(local, key, out, registry)
     return document
+
+
+def _quantization(plan: OptimizePlan, standins: OptimizeBackends):
+    """Return ``(mode, tensorrt module)`` for an INT8 engine, else ``(None, module)``."""
+    module = standins.trt_module
+    if plan.precision != "INT8" or not plan.build_tensorrt or plan.quant == "fp8":
+        return None, module
+    if module is None:
+        module = _load_tensorrt()
+    mode = quantization_mode(module)
+    return mode, module
+
+
+def _applied_flags(plan: OptimizePlan, quantization: str | None) -> dict[str, Any]:
+    """Flags that go into the manifest and the cache key."""
+    request = plan.request
+    wrote_onnx = plan.export_onnx
+    return {
+        "onnx": wrote_onnx,
+        "tensorrt": plan.build_tensorrt,
+        "quant": plan.quant,
+        "ort_ep": request.ort_ep,
+        "workspace_gb": request.workspace_gb,
+        "workspace_bytes": plan.workspace_bytes,
+        "max_batch": request.max_batch,
+        "dynamic_batch": request.dynamic_batch,
+        "calib_batch": plan.calib_batch,
+        "calib_max_images": request.calib_max_images,
+        "quantization": quantization,
+        "opset": ONNX_OPSET if wrote_onnx else None,
+        "submodule": request.submodule,
+    }
+
+
+def _calibration_sha256(path: str | None) -> str | None:
+    if not path:
+        return None
+    return file_sha256(path)
+
+
+def _reuse_cache(
+    local: LocalBuildCache,
+    key: str,
+    registry: RegistryCache | None,
+    out: Path,
+    *,
+    toolchain,
+    host: HostGpu,
+) -> dict[str, Any] | None:
+    directory, source_name = _find_cached(local, key, registry)
+    if directory is None:
+        return None
+    document = read_cached_manifest(directory)
+    if document is None:
+        return None
+    if artifact_has_engine(document):
+        require_engine_host(directory, toolchain=toolchain, host=host)
+    if source_name == "registry":
+        local.store(key, directory)
+    logger.info("Reusing optimize build %s from the %s cache.", key, source_name)
+    return restore_build(directory, out, cache_source=source_name)
+
+
+def _find_cached(
+    local: LocalBuildCache, key: str, registry: RegistryCache | None
+) -> tuple[Path | None, str]:
+    local_dir = local.find(key)
+    if local_dir is not None and read_cached_manifest(local_dir) is not None:
+        return local_dir, "local"
+    if local_dir is not None:
+        logger.info("Ignoring invalid optimize cache entry %s.", key)
+    if registry is None:
+        return None, ""
+    remote = registry.find(key)
+    if not remote:
+        return None, ""
+    path = Path(remote)
+    if read_cached_manifest(path) is None:
+        return None, ""
+    return path, "registry"
+
+
+def _store_cache(
+    local: LocalBuildCache,
+    key: str,
+    out: Path,
+    registry: RegistryCache | None,
+) -> None:
+    try:
+        stored = local.store(key, out)
+    except OSError as exc:
+        logger.info("Could not store optimize cache %s: %s", key, exc)
+        return
+    if registry is not None:
+        registry.publish(key, str(stored))
+
+
+def _separate(out: Path, cache_root: Path) -> None:
+    try:
+        out_res = out.resolve()
+        root_res = cache_root.resolve()
+    except OSError:
+        return
+    if out_res == root_res or _inside(root_res, out_res) or _inside(out_res, root_res):
+        raise OptimizeError(
+            "The optimize cache directory must be separate from the output directory."
+        )
+
+
+def _inside(parent: Path, child: Path) -> bool:
+    if parent == child:
+        return False
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _prefer_lm(loaded, quant: str | None):

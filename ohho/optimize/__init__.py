@@ -10,12 +10,13 @@ from ohho.optimize.calibrator import load_calibration_source, make_entropy_calib
 from ohho.optimize.engine import OptimizeBackends, optimize
 from ohho.optimize.errors import OptimizeCapabilityError, OptimizeError
 from ohho.optimize.exporters import export_onnx, export_torchscript, register_exporter
-from ohho.optimize.manifest import SCHEMA_ID, schema_text
+from ohho.optimize.manifest import SCHEMA_ID, explain_artifact, schema_text
 from ohho.optimize.models import list_models, load_model, register_model
 from ohho.optimize.ort_session import build_session
 from ohho.optimize.plan import OptimizeRequest, build_plan
 from ohho.optimize.quant import probe_quant, quantize
 from ohho.optimize.tensorrt import build_engine
+from ohho.optimize.toolchain import require_engine_host
 
 __all__ = [
     "SCHEMA_ID",
@@ -26,6 +27,7 @@ __all__ = [
     "build_engine",
     "build_plan",
     "build_session",
+    "explain_artifact",
     "export_onnx",
     "export_torchscript",
     "list_models",
@@ -37,5 +39,6 @@ __all__ = [
     "quantize",
     "register_exporter",
     "register_model",
+    "require_engine_host",
     "schema_text",
 ]

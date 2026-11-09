@@ -27,6 +27,11 @@ _REQUIRED = (
     "inputs",
     "outputs",
     "session_providers",
+    "model_sha256",
+    "calibration_cache_sha256",
+    "host",
+    "build_duration_s",
+    "cache",
 )
 _FLAG_KEYS = (
     "onnx",
@@ -45,7 +50,18 @@ _FLAG_KEYS = (
 )
 _MODEL_KEYS = ("ref", "kind", "submodule", "source")
 _TARGET_KEYS = ("id", "arch", "accelerator")
-_VERSION_KEYS = ("torch", "onnx", "onnxruntime", "tensorrt")
+_VERSION_KEYS = (
+    "torch",
+    "onnx",
+    "onnxruntime",
+    "tensorrt",
+    "cuda",
+    "driver",
+    "jetpack",
+)
+_HOST_KEYS = ("gpu_name", "gpu_architecture")
+_CACHE_KEYS = ("key", "hit", "source")
+_CACHE_SOURCES = frozenset({"miss", "local", "registry"})
 _INPUT_KEYS = (
     "model",
     "target",
@@ -92,7 +108,11 @@ def schema_text() -> str:
 
 
 def package_versions() -> dict[str, str | None]:
-    """Installed torch, ONNX, ONNX Runtime, and TensorRT versions, or null."""
+    """Installed torch, ONNX, ONNX Runtime, and TensorRT versions, or null.
+
+    CUDA, the driver, and JetPack are probed separately and stored on the
+    same manifest ``versions`` object.
+    """
     found: dict[str, str | None] = {}
     for key, dist in _DISTS.items():
         try:
@@ -180,12 +200,21 @@ def build_manifest(
     inputs: dict[str, Any],
     outputs: list[dict[str, Any]],
     session_providers: list[str],
+    model_sha256: str,
+    calibration_cache_sha256: str | None,
+    host: dict[str, Any],
+    build_duration_s: float,
+    cache: dict[str, Any],
     versions: dict[str, str | None] | None = None,
     created: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a manifest document. ``created`` defaults to the current UTC time."""
     from ohho import __version__
 
+    if versions is None:
+        from ohho.optimize.toolchain import detect_toolchain
+
+        versions = detect_toolchain().as_dict()
     document = {
         "schema": SCHEMA_ID,
         "ohho_version": __version__,
@@ -196,10 +225,15 @@ def build_manifest(
         "precision": precision,
         "execution_provider": execution_provider,
         "flags": flags,
-        "versions": versions if versions is not None else package_versions(),
+        "versions": versions,
         "inputs": inputs,
         "outputs": outputs,
         "session_providers": session_providers,
+        "model_sha256": model_sha256,
+        "calibration_cache_sha256": calibration_cache_sha256,
+        "host": host,
+        "build_duration_s": build_duration_s,
+        "cache": cache,
     }
     problems = manifest_problems(document)
     if problems:
@@ -215,6 +249,38 @@ def write_manifest(out_dir: str | Path, document: dict[str, Any]) -> Path:
     path = Path(out_dir) / "manifest.json"
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def manifest_beside(artifact: str | Path) -> tuple[Path, dict[str, Any]]:
+    """Load the ``manifest.json`` next to a build directory or an artifact file."""
+    path = Path(artifact)
+    if path.is_dir():
+        manifest = path / "manifest.json"
+    elif path.name == "manifest.json":
+        manifest = path
+    else:
+        manifest = path.parent / "manifest.json"
+    if not manifest.is_file():
+        raise OptimizeError(
+            f"No manifest.json beside {path}. Pass a build directory, an "
+            "artifact in that directory, or manifest.json."
+        )
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise OptimizeError(f"{manifest} is not valid JSON: {exc}") from exc
+    problems = manifest_problems(document)
+    if problems:
+        raise OptimizeError("manifest is invalid: " + "; ".join(problems))
+    if not isinstance(document, dict):
+        raise OptimizeError(f"{manifest} is not an object.")
+    return manifest, document
+
+
+def explain_artifact(artifact: str | Path) -> dict[str, Any]:
+    """Return the manifest stored beside ``artifact``."""
+    _path, document = manifest_beside(artifact)
+    return document
 
 
 def manifest_problems(document: object) -> list[str]:
@@ -292,7 +358,54 @@ def manifest_problems(document: object) -> list[str]:
             or flags.get("workspace_bytes") < 0
         ):
             problems.append("flags.workspace_bytes must be a non-negative integer")
+    versions = document.get("versions")
+    if isinstance(versions, dict):
+        for key in _VERSION_KEYS:
+            value = versions.get(key)
+            if value is not None and not isinstance(value, str):
+                problems.append(f"versions.{key} must be a string or null")
+    _sha256_field(document.get("model_sha256"), "model_sha256", problems)
+    if document.get("calibration_cache_sha256") is not None:
+        _sha256_field(
+            document.get("calibration_cache_sha256"),
+            "calibration_cache_sha256",
+            problems,
+        )
+    _object_keys(document.get("host"), _HOST_KEYS, "host", problems)
+    host = document.get("host")
+    if isinstance(host, dict):
+        for key in _HOST_KEYS:
+            value = host.get(key)
+            if value is not None and not isinstance(value, str):
+                problems.append(f"host.{key} must be a string or null")
+    duration = document.get("build_duration_s")
+    if isinstance(duration, bool) or type(duration) not in (int, float) or duration < 0:
+        problems.append("build_duration_s must be a non-negative number")
+    _object_keys(document.get("cache"), _CACHE_KEYS, "cache", problems)
+    cache = document.get("cache")
+    if isinstance(cache, dict):
+        _sha256_field(cache.get("key"), "cache.key", problems)
+        hit = cache.get("hit")
+        source = cache.get("source")
+        if type(hit) is not bool:
+            problems.append("cache.hit must be a boolean")
+        elif hit and source not in {"local", "registry"}:
+            problems.append(
+                "cache.source must be local or registry when cache.hit is true"
+            )
+        elif hit is False and source != "miss":
+            problems.append("cache.source must be miss when cache.hit is false")
+        elif source not in _CACHE_SOURCES:
+            problems.append("cache.source must be miss, local, or registry")
     return problems
+
+
+def _sha256_field(value: object, label: str, problems: list[str]) -> None:
+    if not isinstance(value, str) or len(value) != 64:
+        problems.append(f"{label} must be 64 hex characters")
+        return
+    if any(character not in "0123456789abcdef" for character in value):
+        problems.append(f"{label} must be lowercase hex")
 
 
 def _object_keys(
