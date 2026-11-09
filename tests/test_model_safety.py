@@ -8,7 +8,9 @@ import os
 import pickle
 import stat
 import struct
+import sys
 import tempfile
+import types
 import unittest
 import zipfile
 from collections import OrderedDict
@@ -264,6 +266,7 @@ class TestSafeLoaders(unittest.TestCase):
         self.assertIn("weights_only=True", str(caught.exception))
 
     def test_act_loader_refuses_a_malicious_checkpoint(self) -> None:
+        import ohho.train.act as act_mod
         from ohho.train.act import load_act_checkpoint
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -274,11 +277,17 @@ class TestSafeLoaders(unittest.TestCase):
             def _boom(*_args: object, **_kwargs: object) -> None:
                 raise AssertionError("checkpoint was unpickled")
 
-            if _has_torch():
-                context = patch("torch.load", _boom)
+            # act.py is a module, not a package. Patching the dotted name
+            # ohho.train.act.torch.load imports a submodule that does not
+            # exist when torch failed to import. Bind the loader the function
+            # actually calls, or a stand-in when that name was never bound.
+            if act_mod.TORCH_AVAILABLE:
+                blocked = patch.object(act_mod.torch, "load", _boom)
             else:
-                context = patch("ohho.train.act.torch.load", _boom, create=True)
-            with context:
+                stand_in = types.ModuleType("torch")
+                setattr(stand_in, "load", _boom)
+                blocked = patch.object(act_mod, "torch", stand_in, create=True)
+            with blocked:
                 with self.assertRaises(UnsafeModelFile) as caught:
                     load_act_checkpoint(str(root), device="cpu")
             self.assertIn("builtins.eval", str(caught.exception))
@@ -355,10 +364,26 @@ class TestSafeLoaders(unittest.TestCase):
         def _boom(*_args: object, **_kwargs: object) -> None:
             raise AssertionError("torch.jit.load was called")
 
-        with patch.dict(os.environ, {"OHHO_MANAGED_WORKER": "1"}):
-            with patch("torch.jit.load", _boom):
-                with self.assertRaises(UnsafeModelFile) as caught:
-                    policy.load()
+        try:
+            import torch as torch_mod
+        except ImportError:
+            torch_mod = None
+        if torch_mod is not None:
+            blocked = patch.object(torch_mod.jit, "load", _boom)
+        else:
+            # No torch install: put a stand-in where policy.load() would
+            # import it. The managed-worker refusal must still happen first.
+            fake_jit = types.ModuleType("torch.jit")
+            setattr(fake_jit, "load", _boom)
+            fake_torch = types.ModuleType("torch")
+            setattr(fake_torch, "jit", fake_jit)
+            blocked = patch.dict(
+                sys.modules, {"torch": fake_torch, "torch.jit": fake_jit}
+            )
+
+        with patch.dict(os.environ, {"OHHO_MANAGED_WORKER": "1"}), blocked:
+            with self.assertRaises(UnsafeModelFile) as caught:
+                policy.load()
         self.assertIn("TorchScript", str(caught.exception))
 
 
