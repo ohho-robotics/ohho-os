@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -90,6 +91,8 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _init_repo(root: Path) -> None:
+    if shutil.which("git") is None:
+        raise unittest.SkipTest("git is not installed")
     root.mkdir(parents=True, exist_ok=True)
     created = _git(root, "init", "-b", "main")
     if created.returncode != 0:
