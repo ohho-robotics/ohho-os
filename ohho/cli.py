@@ -970,6 +970,12 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_job(args) -> int:
+    from .serve.job.command import main as job_command
+
+    return job_command(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -1570,6 +1576,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
+
+    job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
+    job_sub = job.add_subparsers(dest="job_command", required=True)
+    for name, help_text in (
+        ("validate", "validate a job spec and record schema_version"),
+        ("run", "run a job spec locally"),
+    ):
+        jp = job_sub.add_parser(name, help=help_text)
+        jp.add_argument(
+            "spec",
+            metavar="SPEC",
+            help="path to a job spec (.yaml or .json)",
+        )
+        jp.add_argument(
+            "--json",
+            action="store_true",
+            help="print a JSON result on stdout",
+        )
+        jp.set_defaults(func=_cmd_job)
 
     return p
 
