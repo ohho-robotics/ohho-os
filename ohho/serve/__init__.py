@@ -62,7 +62,7 @@ def build_app(
         auto_load: load the model on startup vs. lazy via ``/load_model``.
         mock_model: if True, inject a no-op model that returns zero actions
             (for the record→train→serve sim loop, no GPU needed).
-        robot_id: when set to a base-only robot (e.g. ``unitree-go2``), ``/predict``
+        robot_id: when set to a base-only robot, ``/predict``
             uses the base-velocity action schema (see ``BASE_ACTION_SCHEMA_VERSION``).
 
     Returns:
@@ -142,7 +142,9 @@ def build_app(
             if path and _is_act_checkpoint(path):
                 cls_name = "act"
             elif _use_base_action:
-                cls_name = "go2"
+                from ..plugins import default_base_model_name
+
+                cls_name = default_base_model_name()
 
         use_mock = mock_model or mock
         if use_mock:
@@ -159,7 +161,9 @@ def build_app(
             except TypeError:
                 _model.load_model(path)
         app.state.model = _model
-        if _is_go2_model(_model):
+        from ..plugins import is_contributed_model
+
+        if is_contributed_model(_model):
             _use_base_action = True
         return {
             "status": "loaded",
@@ -284,15 +288,11 @@ def _resolve_model_class(dotted: str):
         from .act import ACTModel
 
         return ACTModel
-    if dotted in (
-        "go2",
-        "go2_base",
-        "Go2PolicyModel",
-        "ohho.serve.go2.Go2PolicyModel",
-    ):
-        from .go2 import Go2PolicyModel
+    from ..plugins import contributed_model_class
 
-        return Go2PolicyModel
+    found = contributed_model_class(dotted)
+    if found is not None:
+        return found
     parts = dotted.rsplit(".", 1)
     if len(parts) != 2:
         raise ValueError(f"invalid model class path: {dotted}")
@@ -334,31 +334,26 @@ class _MockModel:
         return {"vector": [0.0] * 9, "instruction": instruction, "mock": True}
 
 
-def _is_go2_model(model: Any) -> bool:
-    from .go2 import Go2PolicyModel
-
-    return isinstance(model, Go2PolicyModel)
-
-
 def _make_mock_model(device: str, model_class: str, robot_id: str):
     if _base_action_contract(robot_id, model_class):
-        from .go2 import Go2PolicyModel
+        from ..plugins import default_base_model_name
 
-        m = Go2PolicyModel(device=device)
+        cls = _resolve_model_class(model_class or default_base_model_name())
+        try:
+            m = cls(device=device)
+        except TypeError:
+            m = cls()
         m.load_model("mock")
-        m.config.update({"mock": True, "policy": "go2_mock", "default_vx": 0.2})
+        m.config.update({"mock": True, "policy": "mock", "default_vx": 0.2})
         m._mock = True
         return m
     return _MockModel(device)
 
 
 def _base_action_contract(robot_id: str, model_class: str) -> bool:
-    if model_class in (
-        "go2",
-        "go2_base",
-        "Go2PolicyModel",
-        "ohho.serve.go2.Go2PolicyModel",
-    ):
+    from ..plugins import model_uses_base_action
+
+    if model_class and model_uses_base_action(model_class):
         return True
     if not robot_id:
         return False

@@ -10,7 +10,7 @@ Clients command the robot by sending JSON messages over the WebSocket connection
 
 | Field | Type | Description |
 |---|---|---|
-| `velocity` | `object` | Target velocity with linear (`x`, `y`, and for aircraft `z`) and angular (`z`) components. |
+| `velocity` | `object` | Target velocity. Twist style `linear.x` / `linear.y` / `angular.z`, or Connect fields `linearX` / `linearY` / `angularZ`. Aircraft also use `linear.z` in `frame`. |
 | `frame` | `string` | Aircraft setpoint frame: `BODY_FRD` (teleop), `LOCAL_NED`, or `LOCAL_ENU`. Ground sessions ignore it. |
 | `joints` | `object` | Mapping of joint names to target angles in radians (e.g. `{"arm_shoulder_pan": 0.5}`). |
 | `deadman` | `boolean` | Deadman safety switch. Omitted means false. |
@@ -19,10 +19,13 @@ Clients command the robot by sending JSON messages over the WebSocket connection
 | `flight` | `object` | Aircraft request. Ignored for a robot without the `aerial` capability. |
 
 **Safety Invariants:**
-- If `deadman` is false, or no client message arrives for 300 ms, the commanded velocity is zero.
+- `deadman` must be JSON `true`. A missing field, `false`, or any other value commands zero velocity immediately.
+- If no client message arrives for 300 ms, the commanded velocity is zero. That watchdog is independent of the telemetry rate.
+- If the WebSocket drops and no client remains, velocity is zero immediately (and always within 300 ms).
 - On an aircraft that zero is a single offboard velocity, then the server **stops the setpoint stream**. It does not keep publishing the last non-zero command, and it does not land. On PX4 the silence trips the offboard-loss failsafe (`COM_OBL_RC_ACT`). A zero setpoint left streaming would be hover, which is not what this window does.
-- `estop` latches until a message with `estop: false` arrives. While latched, no setpoint is published. The server calls `emergency_stop`. In the in-process drone sim that lands the aircraft and then disarms on the ground.
+- `estop` latches until a message with `estop: false` arrives. While latched, commanded velocity remains zero regardless of `deadman` or `velocity` inputs, and no setpoint is published. The server calls `emergency_stop`. In the in-process drone sim that lands the aircraft and then disarms on the ground.
 - `takeoff` and `arm` on `--backend robot` with a non-sim URI require the SafetyGate phrase and `OHHO_ARM_HARDWARE=1` already set in the server process by a person. The WebSocket payload cannot set that variable and cannot arm the gate (`Robot.arm`). `backend=sim`, and `backend=robot` with `sim://`, may take off without the phrase.
+- A server message includes `camera` (base64) only when a front-camera frame has arrived. Otherwise it includes `no_camera: true` and no `camera` field.
 
 Example client message:
 ```json
@@ -86,8 +89,6 @@ ohho sim-serve --backend sim --port 8790
 ```
 Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
 
-Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
-
 The default port is **8790**. Port 8765 is the Foxglove bridge in OmniBot (`robot.launch.py`, `simulation.launch.py`); sim-serve does not bind it unless you pass `--port 8765` yourself.
 
 ### 2. Live robot
@@ -100,7 +101,7 @@ Connects through `Robot.connect` with the given transport URI. Hardware links us
 ```bash
 ohho sim-serve --backend ros2 --rosbridge ws://localhost:9090
 ```
-Forwards velocity to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the `[ros2]` extra.
+Forwards velocity to `/cmd_vel`, joint targets to `/arm/joint_commands`, and e-stop to `/emergency_stop`. It reads `/odom`, `/joint_states` (and `/arm/joint_states`), and `/camera/front/image_raw` (plus the compressed image on that prefix). Depends on the `[ros2]` extra. Protocol tests use an in-process fake rosbridge and do not launch Gazebo. `linear.z` is forwarded on the Twist; a loss still publishes a zero Twist because this backend has no offboard stream.
 
 > **Note:** Gazebo itself is launched from the OmniBot repo, not from this package.
 
@@ -109,7 +110,7 @@ Forwards velocity to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the 
 ohho sim-serve --backend isaac
 ohho sim-serve --backend mujoco
 ```
-Both exit non-zero and print `not built`.
+Both exit non-zero, print `not built`, and the Python entry point returns `not-implemented`. Neither imports Isaac Sim or MuJoCo.
 
 ---
 
@@ -118,7 +119,7 @@ Both exit non-zero and print `not built`.
 Use the in-process aircraft with the existing sim backend:
 
 ```bash
-ohho sim-serve --backend sim --robot px4-sitl --port 8765
+ohho sim-serve --backend sim --robot px4-sitl --port 8790
 ```
 
 `px4-sitl` and `crazyflie-sim` select the kinematic `drone-sim` stub. The server calls `step(dt)` on that stub. Nothing here flies a real aircraft.

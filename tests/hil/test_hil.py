@@ -56,7 +56,7 @@ class TestHilOmniBotBase(unittest.TestCase):
     """Drive the real OmniBot base over Yahboom serial."""
 
     def test_drive_and_read(self):
-        from ohho.adapters.yahboom import YahboomTransport
+        from ohho.robots.omnibot.yahboom import YahboomTransport
         from ohho.registry import get_spec
         from ohho.schema import Velocity
 
@@ -105,7 +105,7 @@ class TestHilOmniBotComposite(unittest.TestCase):
     def test_composite_drive_and_arm(self):
         from ohho.adapters.composite import CompositeTransport
         from ohho.adapters.feetech import FeetechTransport
-        from ohho.adapters.yahboom import YahboomTransport
+        from ohho.robots.omnibot.yahboom import YahboomTransport
         from ohho.registry import get_spec
         from ohho.schema import Velocity
 
@@ -136,7 +136,7 @@ class TestHilUnitreeGo2(unittest.TestCase):
     """Read the real Unitree Go2 over DDS and send zero velocity."""
 
     def test_drive_and_read(self):
-        from ohho.adapters.unitree import UnitreeDdsTransport
+        from ohho.robots.unitree.dds import UnitreeDdsTransport
         from ohho.registry import get_spec
         from ohho.schema import Velocity
 
