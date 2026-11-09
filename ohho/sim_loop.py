@@ -24,8 +24,16 @@ from .robot import Robot
 from .runtime import NativeRuntime
 
 
+def _robot_id(robot_id: str | None) -> str:
+    if robot_id:
+        return robot_id
+    from .plugins import preferred_robot_id
+
+    return preferred_robot_id()
+
+
 def record_sim_episodes(
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     num_episodes: int = 5,
     steps_per_episode: int = 20,
     fps: float = 10.0,
@@ -33,6 +41,7 @@ def record_sim_episodes(
     output_dir: str = "./sim_loop_output/dataset",
 ) -> str:
     """Record simulated teleoperation episodes and save a LeRobot v2 dataset."""
+    robot_id = _robot_id(robot_id)
     spec = get_spec(robot_id)
     tp = SimTransport(spec)
     tp.connect()
@@ -122,6 +131,14 @@ def validate_schema(dataset_dir: str) -> bool:
     return True
 
 
+def _lerobot_revision_from_info(info: Dict[str, Any]) -> str:
+    """Revision tag for LeRobotDataset — matches ``meta/info.json`` codebase_version."""
+    raw = str(info.get("codebase_version", "v2.1"))
+    if raw and raw[0].isdigit():
+        return f"v{raw}"
+    return raw
+
+
 def _dataset_repo_id(dataset_dir: Path) -> str:
     """Read ``meta/info.json`` repo_id. Fall back to the directory name."""
     info_path = dataset_dir / "meta" / "info.json"
@@ -159,6 +176,10 @@ def validate_lerobot_dataset(dataset_dir: str, mock: bool = False) -> bool:
 
     In lerobot 0.3.x ``root`` is the dataset directory itself. Loading is forced
     offline so a missing file cannot fall through to the Hugging Face Hub.
+
+    Loads from disk only: uses ``repo_id`` and codebase revision from ``meta/info.json``
+    and sets ``HF_HUB_OFFLINE=1`` so a local validation failure cannot fall through to
+    the Hub (which would 401 for bogus repo ids like the output folder name ``dataset``).
 
     In non-mock mode (mock=False), if lerobot is missing, or LeRobotDataset raises,
     or 0 frames are loaded, an exception is raised so the run exits non-zero.
@@ -203,11 +224,23 @@ def _load_lerobot_dataset(dataset_dir: str, mock: bool) -> bool:
         ) from e
 
     p = Path(dataset_dir).expanduser()
+    info_path = p / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"meta/info.json missing in {dataset_dir}")
+
+    with open(info_path, encoding="utf-8") as f:
+        info = json.load(f)
     repo_id = _dataset_repo_id(p)
+    revision = _lerobot_revision_from_info(info)
     try:
         # root is the dataset directory (lerobot 0.3.x). Do not retry with the
         # parent: that misses the local files and queries the Hub as repo_id.
-        ds = LeRobotDataset(repo_id=repo_id, root=str(p), download_videos=False)
+        ds = LeRobotDataset(
+            repo_id=repo_id,
+            root=str(p),
+            revision=revision,
+            download_videos=False,
+        )
         if len(ds) > 0:
             return True
         raise ValueError(f"LeRobotDataset loaded 0 frames from {dataset_dir}")
@@ -251,11 +284,12 @@ def compute_percentiles(values: List[float]) -> Tuple[float, float]:
 
 def evaluate_policy_sim(
     client: Any,
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     eval_steps: int = 50,
     instruction: str = "simulated reach and grasp demonstration",
 ) -> Tuple[int, List[float]]:
     """Execute closed-loop policy steps on simulated robot and measure serve latency."""
+    robot_id = _robot_id(robot_id)
     spec = get_spec(robot_id)
     tp = SimTransport(spec)
     tp.connect()
@@ -368,7 +402,7 @@ def format_summary(results: Dict[str, Any]) -> str:
 
 
 def run_sim_loop(
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     episodes: int = 5,
     steps_per_episode: int = 20,
     train_steps: int = 200,
@@ -380,6 +414,7 @@ def run_sim_loop(
     lr: float = 1e-4,
 ) -> Dict[str, Any]:
     """Execute end-to-end CPU sim loop: Record -> Validate -> Train -> Serve -> Evaluate."""
+    robot_id = _robot_id(robot_id)
     root = Path(output_dir).expanduser()
     dataset_dir = root / "dataset"
     checkpoint_dir = root / "checkpoint"
@@ -506,7 +541,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Run nightly CPU sim loop: Record -> Validate -> Train ACT -> Serve -> Drive sim",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--robot", default="omnibot", help="robot spec ID to simulate")
+    parser.add_argument("--robot", default=None, help="robot spec id to simulate")
     parser.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )

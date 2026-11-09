@@ -1,6 +1,6 @@
 # Simulation WebSocket Server (`sim-serve`)
 
-`ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`) or connects to ROS 2 through rosbridge.
+`ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`), a live robot via `Robot.connect` (`--backend robot`), or ROS 2 through rosbridge.
 
 ## Protocol & Message Schema
 
@@ -10,14 +10,18 @@ Clients command the robot by sending JSON messages over the WebSocket connection
 
 | Field | Type | Description |
 |---|---|---|
-| `velocity` | `object` | Target velocity with linear (`x`, `y`) and angular (`z`) components. |
+| `velocity` | `object` | Target velocity. Twist style `linear.x` / `linear.y` / `angular.z`, or Connect fields `linearX` / `linearY` / `angularZ`. |
 | `joints` | `object` | Mapping of joint names to target angles in radians (e.g. `{"arm_shoulder_pan": 0.5}`). |
 | `deadman` | `boolean` | Deadman safety switch. |
 | `estop` | `boolean` | Emergency stop latch request. |
+| `mode` | `string` | Optional legged posture command: `stand`, `lie_down`, or `recover`. |
 
 **Safety Invariants:**
-- If `deadman` is false, or no client message arrives for 300 ms, the commanded velocity is zero.
+- `deadman` must be JSON `true`. A missing field, `false`, or any other value commands zero velocity immediately.
+- If no client message arrives for 300 ms, the commanded velocity is zero. That watchdog is independent of the telemetry rate.
+- If the WebSocket drops and no client remains, velocity is zero immediately (and always within 300 ms).
 - `estop` latches until a message with `estop: false` arrives. While latched, commanded velocity remains zero regardless of `deadman` or `velocity` inputs.
+- A server message includes `camera` (base64) only when a front-camera frame has arrived. Otherwise it includes `no_camera: true` and no `camera` field.
 
 Example client message:
 ```json
@@ -40,15 +44,19 @@ The server periodically broadcasts robot telemetry to all connected clients:
 
 | Field | Type | Description |
 |---|---|---|
+| `protocolVersion` | `string` | OhhO wire protocol semver (`ohho.PROTOCOL_VERSION`, see `schemas/manifest.json`). |
 | `odom` | `object` | Current pose containing `{"x": float, "y": float, "yaw": float}`. |
 | `joints` | `object` | Present joint positions `{"<name>": float, ...}`. |
-| `backend` | `string` | Active backend identifier (`"sim"` or `"ros2"`). |
+| `backend` | `string` | Active backend identifier (`"sim"`, `"ros2"`, or `"robot"`). |
+| `posture` | `string` | Optional human-readable posture when reported by the robot. |
+| `battery` | `number` | Optional state of charge (0–1) when reported. |
 | `camera` | `string` | Base64-encoded JPEG image frame (optional). |
 | `no_camera` | `boolean` | Set to `true` when no camera feed is attached. |
 
 Example server message:
 ```json
 {
+  "protocolVersion": "1.0.0",
   "odom": {
     "x": 0.125,
     "y": 0.0,
@@ -68,21 +76,31 @@ Example server message:
 
 ### 1. In-process simulation
 ```bash
-ohho sim-serve --backend sim --port 8765
+ohho sim-serve --backend sim --port 8790
 ```
 Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
 
-### 2. ROS 2 bridge
+Serves the existing in-process `sim://` robot on that WebSocket, with no ROS.
+
+The default port is **8790**. Port 8765 is the Foxglove bridge in OmniBot (`robot.launch.py`, `simulation.launch.py`); sim-serve does not bind it unless you pass `--port 8765` yourself.
+
+### 2. Live robot
+```bash
+ohho sim-serve --backend robot --robot unitree-go2 --transport 'dds://lo?domain=1'
+```
+Connects through `Robot.connect` with the given transport URI. Hardware links use `SafetyGate` and stay disarmed until an operator arms them. A loopback or simulated link (`dds://lo` on a domain other than 0, or `sim://`) is armed automatically so teleop can drive the sim.
+
+### 3. ROS 2 bridge
 ```bash
 ohho sim-serve --backend ros2 --rosbridge ws://localhost:9090
 ```
-Forwards velocity to `/cmd_vel` and reads `/odom` via rosbridge. Depends on the `[ros2]` extra.
+Forwards velocity to `/cmd_vel`, joint targets to `/arm/joint_commands`, and e-stop to `/emergency_stop`. It reads `/odom`, `/joint_states` (and `/arm/joint_states`), and `/camera/front/image_raw` (plus the compressed image on that prefix). Depends on the `[ros2]` extra. Protocol tests use an in-process fake rosbridge and do not launch Gazebo.
 
 > **Note:** Gazebo itself is launched from the OmniBot repo, not from this package.
 
-### 3. Unsupported backends
+### 4. Unsupported backends
 ```bash
 ohho sim-serve --backend isaac
 ohho sim-serve --backend mujoco
 ```
-Both exit non-zero and print `not built`.
+Both exit non-zero, print `not built`, and the Python entry point returns `not-implemented`. Neither imports Isaac Sim or MuJoCo.

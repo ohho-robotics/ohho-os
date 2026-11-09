@@ -102,10 +102,25 @@ def run_drive(
     if o0 is None:
         raise RuntimeError("no odometry snapshot before drive")
     period = 1.0 / max(rate_hz, 1.0)
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        bot.drive(vx=vx, vy=vy, w=w)
-        time.sleep(period)
+    tp = bot.transport
+    step_fn = getattr(tp, "step", None)
+    stepped = bot.simulated and callable(step_fn)
+    stop_sim = getattr(tp, "stop_sim", None)
+    start_sim = getattr(tp, "start_sim", None)
+    if stepped and callable(stop_sim):
+        stop_sim()
+    if stepped:
+        steps = max(1, int(round(seconds / period)))
+        for _ in range(steps):
+            bot.drive(vx=vx, vy=vy, w=w)
+            step_fn(period)
+    else:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            bot.drive(vx=vx, vy=vy, w=w)
+            time.sleep(period)
+    if stepped and callable(start_sim):
+        start_sim()
     bot.stop()
     time.sleep(settle_s)
     t1 = bot.telemetry()
@@ -128,7 +143,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "(change --transport only; runtime defaults per transport)."
         )
     )
-    p.add_argument("--robot", default="omnibot", help="robot spec id")
+    p.add_argument("--robot", default=None, help="robot spec id")
     p.add_argument(
         "--transport",
         default="sim://",
@@ -167,6 +182,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
+    if not args.robot:
+        from .plugins import preferred_robot_id
+
+        args.robot = preferred_robot_id()
     runtime = args.runtime or default_runtime_for_transport(args.transport)
     print(
         f"demo_drive: robot={args.robot} transport={args.transport} runtime={runtime} "

@@ -1,0 +1,217 @@
+{
+  "schema_version": "1.0.0",
+  "eval_id": "OHH-134-sim-demo-go2-mujoco",
+  "timestamp": "2026-10-14T07:00:00Z",
+  "robot": {
+    "id": "unitree-go2",
+    "name": "Unitree Go2",
+    "category": "legged",
+    "capabilities": [
+      "base.drive",
+      "base.holonomic_drive",
+      "perception.rgb",
+      "perception.depth",
+      "perception.scan",
+      "legged.pose"
+    ]
+  },
+  "sim_backend": {
+    "engine": "mujoco",
+    "shim": "sport_shim",
+    "domain": 1,
+    "interface": "lo"
+  },
+  "transport": {
+    "uri": "dds://lo?domain=1",
+    "protocol": "dds",
+    "gated": true
+  },
+  "simulation_only": true,
+  "hardware_tested": false,
+  "disclaimer": "SIMULATION ONLY: Tested in MuJoCo simulation via local DDS loopback (domain 1, interface lo). Not tested on physical robot hardware. Real hardware bring-up is Vision until Go2 EDU is available and an operator is present (OHH-135).",
+  "shots": [
+    {
+      "shot_index": 1,
+      "id": "doctor",
+      "name": "System Readiness & Doctor Check",
+      "target_duration_s": 10.0,
+      "actual_duration_s": 10.0,
+      "status": "PASS",
+      "overlay_text": "[OHHO OS v1.1.3] [SIMULATION ONLY - NOT TESTED ON HARDWARE] Shot 1: System Readiness",
+      "events": [
+        {
+          "type": "cli_command",
+          "description": "Ran 'ohho doctor' to probe runtimes, adapters, and agent brain availability"
+        },
+        {
+          "type": "spec_verification",
+          "description": "Verified unitree-go2 spec registered with capabilities: base.drive, base.holonomic_drive, legged.pose",
+          "details": {
+            "robot_id": "unitree-go2",
+            "category": "legged",
+            "max_lin": 1.5,
+            "max_ang": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "shot_index": 2,
+      "id": "sim_shim_start",
+      "name": "MuJoCo Sim & Sport Shim Connection",
+      "target_duration_s": 12.0,
+      "actual_duration_s": 12.0,
+      "status": "PASS",
+      "overlay_text": "[SIMULATION ONLY -- DOMAIN 1 LOOPBACK] [HARDWARE MOTION: DISARMED] Shot 2: Sim Connection",
+      "events": [
+        {
+          "type": "transport_connect",
+          "description": "Connected over dds://lo?domain=1 to local MuJoCo sport shim",
+          "details": {
+            "uri": "dds://lo?domain=1",
+            "state": "connected",
+            "gated": true,
+            "armed": false
+          }
+        },
+        {
+          "type": "safety_gate_arming",
+          "description": "Armed robot over loopback non-zero domain without hardware consent requirement",
+          "details": {
+            "interface": "lo",
+            "domain": 1,
+            "armed": true
+          }
+        }
+      ]
+    },
+    {
+      "shot_index": 3,
+      "id": "typed_goal",
+      "name": "Natural Language Typed Goal",
+      "target_duration_s": 12.0,
+      "actual_duration_s": 12.0,
+      "status": "PASS",
+      "overlay_text": "Goal: \"Stand up, drive forward 0.3 m, then stop and lie down.\" [AGENT HARNESS] Shot 3: Typed Goal",
+      "events": [
+        {
+          "type": "user_input",
+          "description": "User typed goal: 'Stand up, drive forward 0.3 m, then stop and lie down.'"
+        },
+        {
+          "type": "agent_plan",
+          "description": "Agent parsed natural language goal into quadruped tool invocation sequence",
+          "details": {
+            "planned_tools": ["stand_up", "drive", "stop", "lie_down"]
+          }
+        }
+      ]
+    },
+    {
+      "shot_index": 4,
+      "id": "tool_call_log",
+      "name": "Tool-Call Stream & MuJoCo Motion",
+      "target_duration_s": 20.0,
+      "actual_duration_s": 20.0,
+      "status": "PASS",
+      "overlay_text": "[TOOL CALLS & MOTION] stand_up() -> drive(0.2) -> stop() -> lie_down() Shot 4: Tool Execution",
+      "events": [
+        {
+          "type": "tool_invocation",
+          "description": "Invoked tool: stand_up()",
+          "details": { "tool": "stand_up", "posture_after": "standing" }
+        },
+        {
+          "type": "tool_invocation",
+          "description": "Invoked tool: drive(vx=0.2, vy=0.0, w=0.0)",
+          "details": {
+            "tool": "drive",
+            "vx": 0.2,
+            "target_distance_m": 0.3,
+            "odometry_delta_x": 0.3
+          }
+        },
+        {
+          "type": "tool_invocation",
+          "description": "Invoked tool: stop()",
+          "details": { "tool": "stop", "final_odom_x": 0.3 }
+        },
+        {
+          "type": "tool_invocation",
+          "description": "Invoked tool: lie_down()",
+          "details": { "tool": "lie_down", "posture_after": "lying" }
+        }
+      ]
+    },
+    {
+      "shot_index": 5,
+      "id": "safety_gate_demo",
+      "name": "SafetyGate Clamp, Rejection & E-Stop",
+      "target_duration_s": 18.0,
+      "actual_duration_s": 18.0,
+      "status": "PASS",
+      "overlay_text": "[SAFETYGATE DEMO: 2.0 m/s CLAMPED TO 0.5 m/s | BACKFLIP DENIED | E-STOP LATCHED] Shot 5: Safety Invariants",
+      "events": [
+        {
+          "type": "velocity_clamp",
+          "description": "Commanded vx=2.0 m/s clamped to 0.5 m/s profile limit",
+          "details": {
+            "requested_vx": 2.0,
+            "applied_vx": 0.5,
+            "ceiling_vx": 0.5
+          }
+        },
+        {
+          "type": "action_denial",
+          "description": "Command 'backflip' refused by SafetyGate allowlist policy",
+          "details": {
+            "action": "backflip",
+            "result": "denied",
+            "reason": "prohibited_action"
+          }
+        },
+        {
+          "type": "estop_trigger",
+          "description": "Emergency stop latched and velocity immediately zeroed",
+          "details": {
+            "estop_latched": true,
+            "zero_velocity_enforced": true
+          }
+        }
+      ]
+    },
+    {
+      "shot_index": 6,
+      "id": "end_card",
+      "name": "End-Card Honest Disclaimer & Links",
+      "target_duration_s": 13.0,
+      "actual_duration_s": 13.0,
+      "status": "PASS",
+      "overlay_text": "[SIMULATION ONLY -- NOT TESTED ON PHYSICAL HARDWARE] [github.com/ohho-robotics/ohho-os] Shot 6: End-Card",
+      "events": [
+        {
+          "type": "end_card_display",
+          "description": "Rendered full-screen honest simulation disclaimer end-card",
+          "details": {
+            "simulation_only": true,
+            "hardware_tested": false,
+            "gated_on": "OHH-135",
+            "github_url": "https://github.com/ohho-robotics/ohho-os",
+            "quadruped_url": "https://github.com/ohho-robotics/ohho-quadruped"
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_shots": 6,
+    "passed_shots": 6,
+    "failed_shots": 0,
+    "total_duration_s": 85.0,
+    "safety_clamp_verified": true,
+    "prohibited_action_refused": true,
+    "estop_latched": true,
+    "simulation_only_banner_verified": true,
+    "overall_result": "PASS"
+  }
+}

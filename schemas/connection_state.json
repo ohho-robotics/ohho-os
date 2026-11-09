@@ -1,0 +1,14 @@
+{
+  "$id": "https://ohho-robotics.com/schemas/ConnectionState.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "enum": [
+    "idle",
+    "connecting",
+    "connected",
+    "reconnecting",
+    "error",
+    "disconnected"
+  ],
+  "title": "ConnectionState",
+  "type": "string"
+}

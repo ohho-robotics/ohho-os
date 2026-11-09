@@ -1,0 +1,3 @@
+[mcp_servers.ohho]
+command = "/opt/ohho/bin/ohho"
+args = ["mcp", "serve"]

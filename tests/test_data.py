@@ -94,12 +94,24 @@ class TestRecorder(unittest.TestCase):
         rec.discard_episode()
 
     def test_state_dim_base_only(self):
+        bot = _bot("sim")
+        rec = Recorder(bot, fps=10.0)
+        rec.start_episode(task="drive")
+        frame = rec.capture_frame()
+        # sim base-only → 3-D state
+        self.assertEqual(len(frame.observation_state), 3)
+        self.assertEqual(len(frame.action), 3)
+        rec.stop_episode()
+
+    def test_state_dim_legged_go2(self):
         bot = _bot("unitree-go2")
         rec = Recorder(bot, fps=10.0)
         rec.start_episode(task="walk")
         frame = rec.capture_frame()
-        # Go2 has no arm → 3-D state
-        self.assertEqual(len(frame.observation_state), 3)
+        # Go2 legged → 31-D state (3 base vel + 3 rpy + 12 q + 12 dq + 1 posture_id)
+        # and 4-D action (3 base vel + 1 mode_id)
+        self.assertEqual(len(frame.observation_state), 31)
+        self.assertEqual(len(frame.action), 4)
         rec.stop_episode()
 
 
@@ -186,11 +198,91 @@ class TestWriterReader(unittest.TestCase):
             self.assertIn("observation.state", stats)
             self.assertIn("action", stats)
 
+    def test_episodes_stats_vector_shapes(self):
+        bot = _bot("omnibot")
+        rec = Recorder(bot, repo_id="local/test", fps=10.0)
+        rec.start_episode(task="move")
+        for _ in range(4):
+            bot.drive(vx=0.1)
+            rec.capture_frame()
+        rec.stop_episode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = rec.save(tmp)
+            reader = DatasetReader(path)
+            state_dim = reader.state_dim
+            action_dim = reader.action_dim
+            stats_path = os.path.join(path, "meta", "episodes_stats.jsonl")
+            with open(stats_path, encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+            self.assertEqual(len(rows), 1)
+            ep_stats = rows[0]["stats"]
+            self.assertEqual(ep_stats["observation.state"]["count"], [4])
+            for key, dim in (
+                ("observation.state", state_dim),
+                ("action", action_dim),
+            ):
+                feat = ep_stats[key]
+                for stat_key in ("min", "max", "mean", "std"):
+                    val = feat[stat_key]
+                    self.assertIsInstance(val, list)
+                    self.assertEqual(len(val), dim)
+                    self.assertFalse(any(isinstance(x, list) for x in val))
+
 
 def _has_fastapi() -> bool:
     import importlib.util
 
     return importlib.util.find_spec("fastapi") is not None
+
+
+def _has_lerobot() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("lerobot") is not None
+
+
+@unittest.skipUnless(_has_lerobot(), "lerobot not installed — [train] extra")
+class TestFeatureStatsLayout(unittest.TestCase):
+    """``_feature_stats`` must match lerobot 0.3.3 ``compute_episode_stats`` shapes."""
+
+    def test_vector_and_scalar_shapes(self):
+        import numpy as np
+
+        from lerobot.datasets.compute_stats import compute_episode_stats
+        from ohho.data.writer import _feature_stats
+
+        vector_rows = [[0.0, 1.0, 2.0], [1.0, 2.0, 3.0], [0.5, 1.5, 2.5]]
+        vector = _feature_stats(vector_rows)
+        for key in ("min", "max", "mean", "std"):
+            self.assertEqual(len(vector[key]), 3)
+
+        scalar_rows = [[1.0], [3.0], [2.0]]
+        scalar = _feature_stats(scalar_rows)
+        self.assertEqual(scalar["min"], [1.0])
+        self.assertEqual(scalar["max"], [3.0])
+        self.assertEqual(scalar["count"], [3])
+        for key in ("min", "max", "mean", "std"):
+            self.assertEqual(len(scalar[key]), 1)
+
+        features = {
+            "observation.state": {"dtype": "float32", "shape": (3,)},
+            "action": {"dtype": "float32", "shape": (1,)},
+        }
+        episode_data = {
+            "observation.state": np.array(vector_rows, dtype=np.float32),
+            "action": np.array([r[0] for r in scalar_rows], dtype=np.float32),
+        }
+        ref = compute_episode_stats(episode_data, features)
+        for key, rows in (
+            ("observation.state", vector_rows),
+            ("action", scalar_rows),
+        ):
+            ours = _feature_stats(rows if key == "observation.state" else scalar_rows)
+            for stat_key in ("min", "max", "mean", "std", "count"):
+                ref_arr = ref[key][stat_key]
+                ours_val = ours[stat_key]
+                self.assertEqual(list(ref_arr.reshape(-1)), ours_val)
 
 
 @unittest.skipUnless(_has_fastapi(), "fastapi not installed — [serve] extra")

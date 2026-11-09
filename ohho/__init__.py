@@ -3,13 +3,14 @@
 Public surface:
 
     from ohho import Robot, connect
-    bot = Robot.connect("omnibot")
+    bot = Robot.connect("sim")
 """
 
 from __future__ import annotations
 
-__version__ = "1.1.3"
+__version__ = "1.2.0"
 
+from .protocol import PROTOCOL_VERSION
 from .schema import (
     ConnectionState,
     JointReading,
@@ -24,6 +25,7 @@ from .registry import RobotSpec, get_spec, list_specs, register
 
 __all__ = [
     "__version__",
+    "PROTOCOL_VERSION",
     "Robot",
     "connect",
     "RobotSpec",

@@ -2,14 +2,14 @@
 
 Ported from the web Connect layer (website/lib/connect/types.ts). A transport
 opens a link to a robot and exposes a uniform surface: drive, command joints,
-e-stop, and read/stream telemetry. Adapters (sim, Unitree DDS, DJI MAVLink, …)
+e-stop, and read/stream telemetry. Adapters (sim, DDS, MAVLink, …)
 each implement this so every higher layer is protocol-agnostic.
 """
 
 from __future__ import annotations
 
 import abc
-from typing import Callable
+from typing import Callable, Optional
 
 from .schema import Telemetry, TransportStatus, Velocity
 
@@ -51,6 +51,10 @@ class Transport(abc.ABC):
 
     @abc.abstractmethod
     def on_status(self, cb: Callable[[TransportStatus], None]) -> Unsubscribe: ...
+
+    def get_camera_frame(self) -> Optional[bytes]:
+        """Fetch a single camera frame as bytes (JPEG/PNG), or None if unsupported."""
+        return None
 
 
 class BaseTransport(Transport):
@@ -99,3 +103,6 @@ class BaseTransport(Transport):
                 cb(s)
             except Exception:
                 pass
+
+    def send_mode(self, name: str, **params: float) -> None:
+        """Optional high-level legged posture / sport-mode hook (no-op by default)."""

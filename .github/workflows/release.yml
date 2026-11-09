@@ -1,7 +1,8 @@
 name: Release
 
 # Publishes ohho-os to PyPI when a v* tag is pushed.
-# Authentication is trusted publishing only: the pypi environment plus
+# workflow_dispatch builds and uploads to TestPyPI only (dry run).
+# Authentication is trusted publishing only: the pypi/testpypi environment plus
 # id-token: write. This file does not set a PyPI API token.
 # pyproject.toml sets license = "Apache-2.0" (OHH-18).
 
@@ -9,12 +10,13 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   publish:
     name: Build and publish
     runs-on: ubuntu-latest
-    environment: pypi
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
     permissions:
       id-token: write
       contents: read
@@ -28,6 +30,7 @@ jobs:
           python -m pip install trove-classifiers tomli
           python scripts/check_classifiers.py
       - name: Require tag version to match pyproject
+        if: github.event_name == 'push'
         run: |
           python - <<'PY'
           import os
@@ -49,6 +52,14 @@ jobs:
               )
               sys.exit(1)
           PY
+      - name: Export JSON schemas
+        run: python scripts/export_json_schemas.py
+      - name: Upload protocol JSON schemas
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohho-protocol-schemas-${{ github.ref_name }}
+          path: schemas/
+          if-no-files-found: error
       - name: Build sdist and wheel
         run: |
           python -m pip install build twine
@@ -56,11 +67,18 @@ jobs:
       - name: twine check
         run: twine check dist/*
       - name: Publish to PyPI
+        if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
 
   install-from-pypi:
     name: pip install on ${{ matrix.os }}
     needs: publish
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

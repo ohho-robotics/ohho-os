@@ -6,6 +6,13 @@ built-in plugin (see :mod:`ohho.plugins`). Users add their own with
 what a robot *is* — its class, capabilities, degrees of freedom, limits and
 which adapter speaks its native protocol — not how it does any of it.
 
+``max_lin`` is the horizontal speed cap (m/s) and ``max_ang`` is the yaw-rate
+cap (rad/s). Aerial specs also set ``max_climb`` (m/s) and ``gps_fix`` on
+``AerialLimits``; :class:`RobotSpec` exposes them as read-only properties.
+``requires_hardware_arming`` is true when a non-loopback URI needs a human
+present. ``flight_ready`` is false on every built-in spec; nothing here sets
+it true.
+
 ``category`` is the legacy free string. ``robot_class`` is the closed enum.
 The additive fields and the category table live in ``ohho.robot_spec``. The
 rule is ``docs/architecture/robot-plugins.md``.
@@ -23,6 +30,7 @@ from . import capabilities as caps
 from .capability_params import reject_unknown_capabilities
 from .robot_spec import (
     BUILTIN_SOURCE,
+    CI_SCENARIOS,
     GENERIC_CAPABILITIES,
     AerialLimits,
     CiSim,
@@ -216,73 +224,7 @@ class RobotSpec:
         return False if limits is None else limits.flight_ready
 
 
-# Poses the built-in quadruped adapter already forwards
-# (``ohho/adapters/unitree.py`` sport methods). ``euler`` and ``stop_move`` are
-# commands, not poses, so they are not listed. This is not a safety allowlist.
-_QUADRUPED_POSES = (
-    "stand_up",
-    "stand_down",
-    "balance_stand",
-    "recovery_stand",
-    "sit",
-    "rise_sit",
-    "damp",
-)
-
-# OmniBot's SO-101 arm joints (kept in sync with the ROS arm driver defaults).
-_OMNIBOT_ARM = (
-    "arm_shoulder_pan",
-    "arm_shoulder_lift",
-    "arm_elbow_flex",
-    "arm_wrist_flex",
-    "arm_wrist_roll",
-    "arm_gripper",
-)
-
 _BUILTINS: dict[str, RobotSpec] = {
-    "omnibot": RobotSpec(
-        id="omnibot",
-        name="OmniBot",
-        category="mobile-manipulator",
-        capabilities=(
-            caps.BASE_DRIVE,
-            caps.BASE_HOLONOMIC,
-            caps.PERCEPTION_RGB,
-            caps.PERCEPTION_DEPTH,
-            caps.PERCEPTION_SCAN,
-            caps.MANIPULATION,
-        ),
-        adapter="yahboom-serial",
-        dof_base=3,
-        dof_arm=6,
-        max_lin=0.2,
-        max_ang=1.0,
-        joint_names=_OMNIBOT_ARM,
-        joint_groups={"arm": _OMNIBOT_ARM},
-        robot_class=RobotClass.MOBILE_MANIPULATOR,
-        source=BUILTIN_SOURCE,
-    ),
-    "unitree-go2": RobotSpec(
-        id="unitree-go2",
-        name="Unitree Go2",
-        category="legged",
-        capabilities=(
-            caps.BASE_DRIVE,
-            caps.BASE_HOLONOMIC,
-            caps.PERCEPTION_RGB,
-            caps.PERCEPTION_DEPTH,
-            caps.PERCEPTION_SCAN,
-            caps.LEGGED_POSE,
-        ),
-        adapter="unitree-dds",
-        dof_base=3,
-        dof_arm=0,
-        max_lin=1.5,
-        max_ang=2.0,
-        robot_class=RobotClass.QUADRUPED,
-        source=BUILTIN_SOURCE,
-        capability_params={caps.LEGGED_POSE: {"poses": list(_QUADRUPED_POSES)}},
-    ),
     "sim": RobotSpec(
         id="sim",
         name="Generic Sim Bot",
@@ -295,6 +237,73 @@ _BUILTINS: dict[str, RobotSpec] = {
         max_ang=2.0,
         robot_class=RobotClass.MOBILE_BASE,
         source=BUILTIN_SOURCE,
+        ci_sim=CiSim(
+            enabled=True,
+            scenario=CI_SCENARIOS[RobotClass.MOBILE_BASE],
+        ),
+    ),
+    # Ohho caps, not PX4 MPC_XY_VEL_MAX. Default transport is sim:// (drone-sim).
+    # px4-x500 is spec only: nothing connects. Its arming flag is for a
+    # non-loopback URI (px4+dds://, mavlink+serial://) when that exists.
+    "px4-sitl": RobotSpec(
+        id="px4-sitl",
+        name="PX4 SITL",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="sim",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="3d",
+            requires_hardware_arming=False,
+            experimental=True,
+            flight_ready=False,
+        ),
+    ),
+    "crazyflie-sim": RobotSpec(
+        id="crazyflie-sim",
+        name="Crazyflie sim",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="sim",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="none",
+            requires_hardware_arming=False,
+            experimental=True,
+            flight_ready=False,
+        ),
+    ),
+    "px4-x500": RobotSpec(
+        id="px4-x500",
+        name="PX4 X500",
+        category="aerial",
+        capabilities=(caps.AERIAL, caps.BASE_DRIVE, caps.BASE_HOLONOMIC),
+        adapter="px4-dds",
+        dof_base=3,
+        dof_arm=0,
+        max_lin=2.0,
+        max_ang=0.8,
+        robot_class=RobotClass.AERIAL,
+        source=BUILTIN_SOURCE,
+        limits=AerialLimits(
+            max_climb=1.0,
+            gps_fix="3d",
+            requires_hardware_arming=True,
+            experimental=True,
+            flight_ready=False,
+        ),
     ),
 }
 
@@ -340,6 +349,7 @@ def register(spec: RobotSpec) -> RobotSpec:
     by a second copy of the built-in table. Plugin specs are loaded first so
     a later ``register`` replaces one id without hiding the others.
     """
+    _ensure_plugins()
     reject_unknown_capabilities(spec.capabilities, spec.capability_params)
     _ensure_plugins()
     _REGISTRY[spec.id] = spec
@@ -427,6 +437,9 @@ def spec_from_dict(d: dict) -> RobotSpec:
         max_ang=max_ang,
         joint_names=tuple(d.get("joint_names", ())),
         joint_groups=d.get("joint_groups"),
+        # Aerial max_climb, gps_fix, arming, experimental, and flight_ready
+        # are read from the manifest into AerialLimits. A flat manifest cannot
+        # set flight_ready true.
         limits=limits_from_manifest(raw_limits, robot_class, max_lin, max_ang, d),
         assets=assets_from_dict(d.get("assets")),
         ci_sim=ci_sim_from_dict(d.get("ci_sim")),
