@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ohho.targets.errors import TargetProfileError
-from ohho.targets.providers import TRT_PROVIDER
+from ohho.targets.providers import CPU_PROVIDER, TRT_PROVIDER
 from ohho.targets.schema import (
     TargetProfile,
     check_combination,
@@ -23,8 +23,31 @@ from ohho.targets.schema import (
 
 from ohho.optimize.errors import OptimizeError
 
-_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "fp8"})
+_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "fp8", "ort-int8"})
+_WEIGHT = frozenset({"awq", "gptq", "bitsandbytes"})
 _VERSION = re.compile(r"^(\d+\.\d+\.\d+)")
+PRECISION_FLAGS = (
+    "fp32",
+    "fp16",
+    "int8",
+    "fp8",
+    "int4",
+    "int4-awq",
+    "int4-gptq",
+    "int4-bnb",
+    "nf4",
+)
+_PRECISION_ALIASES = {
+    "fp32": ("FP32", None),
+    "fp16": ("FP16", None),
+    "int8": ("INT8", None),
+    "fp8": ("FP8", "fp8"),
+    "int4": ("INT4", None),
+    "int4-awq": ("INT4", "awq"),
+    "int4-gptq": ("INT4", "gptq"),
+    "int4-bnb": ("INT4", "bitsandbytes"),
+    "nf4": ("INT4", "bitsandbytes"),
+}
 
 
 @dataclass(frozen=True)
@@ -95,8 +118,29 @@ def resolve_target(ref: str) -> TargetProfile:
         raise OptimizeError(str(exc)) from exc
 
 
+def resolve_precision(value: str) -> tuple[str, str | None]:
+    """Map a ``--precision`` flag to a canonical precision and a backend.
+
+    ``int4-awq`` is INT4 plus the AWQ backend. ``fp32`` leaves the backend
+    unset. The canonical token is what :func:`check_combination` accepts.
+    """
+    key = value.strip().lower()
+    try:
+        precision, quant = _PRECISION_ALIASES[key]
+    except KeyError:
+        known = ", ".join(PRECISION_FLAGS)
+        raise OptimizeError(
+            f"Unknown precision {value!r}. Expected one of: {known}."
+        ) from None
+    return precision, quant
+
+
 def build_plan(request: OptimizeRequest) -> OptimizePlan:
-    """Accept the request or raise :class:`OptimizeError`."""
+    """Accept the request or raise :class:`OptimizeError`.
+
+    The target profile is checked before a model is loaded and before a
+    quantizer runs. FP8 on a GPU that is not Ada or Hopper fails here.
+    """
     _require_text(request.model, "--model")
     _require_text(request.out_dir, "--out")
     if request.max_batch < 1:
@@ -108,14 +152,21 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
         raise OptimizeError(
             f"Unknown quantizer {request.quant!r}. Expected one of: {known}."
         )
+    canonical, implied = resolve_precision(request.precision)
+    quant = _resolve_quant(request.quant, implied, request.precision)
+    tensorrt = request.tensorrt or quant == "fp8"
     if request.tensorrt and request.ort_ep not in (None, "tensorrt"):
         raise OptimizeError(
             "--tensorrt builds a TensorRT engine, so --ort-ep must be "
             "tensorrt or omitted."
         )
+    if quant == "fp8" and request.ort_ep not in (None, "tensorrt"):
+        raise OptimizeError(
+            "FP8 builds a TensorRT engine, so --ort-ep must be tensorrt or omitted."
+        )
 
     profile = resolve_target(request.target)
-    provider_text = _provider_text(request, profile)
+    provider_text = _provider_text(request, profile, tensorrt=tensorrt)
     version = ""
     if provider_text.strip().lower() in {"tensorrt", "trt"} or (
         provider_text.strip() == TRT_PROVIDER
@@ -124,14 +175,31 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
     try:
         precision, provider = check_combination(
             profile,
-            request.precision,
+            canonical,
             provider_text,
             tensorrt_version=version,
         )
     except TargetProfileError as exc:
-        raise OptimizeError(str(exc)) from exc
+        text = str(exc)
+        if canonical == "FP8" and "Hopper" not in text:
+            text = f"{text} TensorRT FP8 needs an Ada or Hopper GPU."
+        raise OptimizeError(text) from exc
 
-    if request.tensorrt and TRT_PROVIDER not in profile.execution_providers:
+    if (
+        precision == "INT8"
+        and quant is None
+        and not request.tensorrt
+        and profile.accelerator == "none"
+        and CPU_PROVIDER in profile.execution_providers
+    ):
+        quant = "ort-int8"
+
+    if quant in {"fp8", "ort-int8"}:
+        ok, reason = _quantizer_supports(quant, profile)
+        if not ok:
+            raise OptimizeError(reason)
+
+    if tensorrt and TRT_PROVIDER not in profile.execution_providers:
         raise OptimizeError(
             f"TensorRT is not valid on {profile.id}. Execution providers: "
             f"{', '.join(profile.execution_providers)}."
@@ -139,15 +207,12 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
 
     workspace_bytes = _workspace_bytes(request, profile)
     _reject_calibration_on_other_precisions(request, precision)
-    _reject_unapplied_precision(request, profile, precision)
+    _reject_unapplied_precision(request, profile, precision, quant)
     calib_batch = _calib_batch(request, precision)
 
-    quant_only = request.quant is not None and not request.onnx and not request.tensorrt
-    export_onnx = not quant_only
-    build_tensorrt = request.tensorrt
-    build_session = export_onnx and not (request.tensorrt and request.ort_ep is None)
-    if request.ort_ep and export_onnx:
-        build_session = True
+    export_onnx = _export_onnx(request, quant)
+    build_tensorrt = tensorrt
+    build_session = _build_session(request, quant, export_onnx, build_tensorrt)
 
     return OptimizePlan(
         request=request,
@@ -157,10 +222,48 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
         export_onnx=export_onnx,
         build_tensorrt=build_tensorrt,
         build_session=build_session,
-        quant=request.quant,
+        quant=quant,
         workspace_bytes=workspace_bytes,
         calib_batch=calib_batch,
     )
+
+
+def _resolve_quant(explicit: str | None, implied: str | None, flag: str) -> str | None:
+    if implied and explicit and implied != explicit:
+        raise OptimizeError(
+            f"--precision {flag} selects {implied}, which conflicts with --quant {explicit}."
+        )
+    if implied:
+        return implied
+    return explicit
+
+
+def _quantizer_supports(name: str, profile) -> tuple[bool, str]:
+    from ohho.optimize.quantizers import get_quantizer
+
+    return get_quantizer(name).supports(profile, None)
+
+
+def _export_onnx(request: OptimizeRequest, quant: str | None) -> bool:
+    if quant in _WEIGHT and not request.onnx and not request.tensorrt:
+        return False
+    if quant in {"fp8", "ort-int8"}:
+        return bool(request.onnx)
+    return True
+
+
+def _build_session(
+    request: OptimizeRequest,
+    quant: str | None,
+    export_onnx: bool,
+    build_tensorrt: bool,
+) -> bool:
+    if quant == "ort-int8":
+        return True
+    build = export_onnx and not (build_tensorrt and request.ort_ep is None)
+    if request.ort_ep and export_onnx:
+        return True
+    return build
 
 
 def _require_text(value: str, flag: str) -> None:
@@ -168,10 +271,12 @@ def _require_text(value: str, flag: str) -> None:
         raise OptimizeError(f"{flag} is required.")
 
 
-def _provider_text(request: OptimizeRequest, profile: TargetProfile) -> str:
+def _provider_text(
+    request: OptimizeRequest, profile: TargetProfile, *, tensorrt: bool = False
+) -> str:
     if request.ort_ep:
         return request.ort_ep
-    if request.tensorrt:
+    if tensorrt or request.tensorrt:
         return "tensorrt"
     return profile.execution_providers[0]
 
@@ -223,6 +328,7 @@ def _reject_unapplied_precision(
     request: OptimizeRequest,
     profile: TargetProfile,
     precision: str,
+    quant: str | None,
 ) -> None:
     if precision == "FP32":
         return
@@ -235,9 +341,8 @@ def _reject_unapplied_precision(
             f"it does not build an FP16 engine for {profile.id}."
         )
     if precision == "FP8":
-        if request.tensorrt or request.quant == "fp8":
-            if request.tensorrt:
-                _require_positive_workspace(request, profile)
+        if request.tensorrt or quant == "fp8":
+            _require_positive_workspace(request, profile)
             return
         raise OptimizeError(
             "FP8 needs --tensorrt, or the fp8 weight quantizer. "
@@ -248,19 +353,20 @@ def _reject_unapplied_precision(
         if request.tensorrt:
             _require_positive_workspace(request, profile)
             return
-        if request.quant in {"awq", "gptq", "bitsandbytes"}:
+        if quant in {"awq", "gptq", "bitsandbytes", "ort-int8"}:
             return
         raise OptimizeError(
             "INT8 needs --tensorrt with --calib-data on a TensorRT target, "
             "or --quant awq, --quant gptq, or the bitsandbytes backend. "
+            "On x86-cpu and rpi5, --precision int8 runs ORT static INT8. "
             f"A plain ONNX export for {profile.id} stays FP32."
         )
     if precision == "INT4":
-        if request.quant in {"awq", "gptq", "bitsandbytes"}:
+        if quant in {"awq", "gptq", "bitsandbytes"}:
             return
         raise OptimizeError(
-            "INT4 needs --quant awq or --quant gptq "
-            "(bitsandbytes is available to the Python API)."
+            "INT4 needs --quant awq or --quant gptq, or --precision "
+            "int4-awq, int4-gptq, or int4-bnb."
         )
 
 

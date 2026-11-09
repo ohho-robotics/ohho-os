@@ -60,9 +60,18 @@ _INPUT_KEYS = (
     "calib_batch",
     "submodule",
 )
-_OUTPUT_KEYS = ("role", "path", "sha256", "bytes")
+_OUTPUT_KEYS = ("role", "path", "sha256", "bytes", "backend", "backend_version")
 _ROLES = frozenset(
-    {"onnx", "torchscript", "engine", "awq", "gptq", "bitsandbytes", "fp8"}
+    {
+        "onnx",
+        "torchscript",
+        "engine",
+        "awq",
+        "gptq",
+        "bitsandbytes",
+        "fp8",
+        "ort-int8",
+    }
 )
 _DISTS = {
     "torch": "torch",
@@ -90,23 +99,55 @@ def package_versions() -> dict[str, str | None]:
     return found
 
 
-def file_record(path: Path, role: str, out_dir: Path) -> dict[str, Any]:
+def file_record(
+    path: Path,
+    role: str,
+    out_dir: Path,
+    *,
+    backend: str | None = None,
+    backend_version: str | None = None,
+) -> dict[str, Any]:
     """sha256 and size of one output, with a path relative to ``out_dir``.
 
     A directory is hashed as the sorted relative paths and file bytes joined
-    together. ``bytes`` is the sum of those file sizes.
+    together. ``bytes`` is the sum of those file sizes. ``backend`` and
+    ``backend_version`` name the tool that wrote the file.
     """
     payload, size = _payload(path)
     try:
         rel = path.resolve().relative_to(out_dir.resolve()).as_posix()
     except ValueError:
         rel = path.name
+    default_name, default_version = _backend_identity(role)
     return {
         "role": role,
         "path": rel,
         "sha256": hashlib.sha256(payload).hexdigest(),
         "bytes": size,
+        "backend": backend or default_name,
+        "backend_version": backend_version or default_version,
     }
+
+
+def _backend_identity(role: str) -> tuple[str, str]:
+    if role == "onnx":
+        return "onnx", _dist_version("onnx")
+    if role == "torchscript":
+        return "torch", _dist_version("torch")
+    if role == "engine":
+        return "tensorrt", _dist_version("tensorrt")
+    if role == "ort-int8":
+        return "ort-int8", _dist_version("onnxruntime")
+    if role == "fp8":
+        return "fp8", _dist_version("tensorrt")
+    return role, "unknown"
+
+
+def _dist_version(dist: str) -> str:
+    try:
+        return version(dist)
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _payload(path: Path) -> tuple[bytes, int]:
@@ -208,6 +249,14 @@ def manifest_problems(document: object) -> list[str]:
             if isinstance(item, dict):
                 if item.get("role") not in _ROLES:
                     problems.append(f"outputs[{index}].role is not a known role")
+                backend_name = item.get("backend")
+                if not isinstance(backend_name, str) or not backend_name:
+                    problems.append(f"outputs[{index}].backend must be a string")
+                backend_version = item.get("backend_version")
+                if not isinstance(backend_version, str) or not backend_version:
+                    problems.append(
+                        f"outputs[{index}].backend_version must be a string"
+                    )
                 digest = item.get("sha256")
                 if not isinstance(digest, str) or len(digest) != 64:
                     problems.append(

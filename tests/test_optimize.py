@@ -225,6 +225,7 @@ class _Builder:
         self.api = api
         self.platform_has_fast_fp16 = api.fast_fp16
         self.platform_has_fast_int8 = api.fast_int8
+        self.platform_has_fp8 = api.fast_fp8
         self.network = _Network(api.input_shape)
         self.config = _Config()
 
@@ -257,11 +258,13 @@ class FakeTensorRT:
         *,
         fast_fp16: bool = True,
         fast_int8: bool = True,
+        fast_fp8: bool | None = None,
         invoke_calibrator: bool = True,
         input_shape: tuple[int, ...] = (-1, 4),
     ) -> None:
         self.fast_fp16 = fast_fp16
         self.fast_int8 = fast_int8
+        self.fast_fp8 = fast_fp8
         self.invoke_calibrator = invoke_calibrator
         self.input_shape = input_shape
         self.last_config = None
@@ -281,7 +284,7 @@ class FakeTensorRT:
 class TestImportAndSchema(unittest.TestCase):
     def test_modules_do_not_import_heavy_packages_at_import(self) -> None:
         package = ROOT / "ohho" / "optimize"
-        for path in package.glob("*.py"):
+        for path in package.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in tree.body:
                 names: list[str] = []
@@ -384,9 +387,18 @@ class TestPlanFailFast(unittest.TestCase):
             build_plan(_request(target="x86-cuda", precision="fp16", ort_ep="cuda"))
         self.assertIn("--tensorrt", str(caught.exception))
 
-    def test_int8_on_cpu_without_a_quantizer_fails_fast(self) -> None:
+    def test_int8_on_cpu_selects_ort_static(self) -> None:
+        plan = build_plan(_request(target="x86-cpu", precision="int8"))
+        self.assertEqual(plan.precision, "INT8")
+        self.assertEqual(plan.quant, "ort-int8")
+        self.assertTrue(plan.build_session)
+        self.assertFalse(plan.build_tensorrt)
+        rpi = build_plan(_request(target="rpi5-cpu", precision="int8"))
+        self.assertEqual(rpi.quant, "ort-int8")
+
+    def test_int8_on_a_gpu_profile_without_a_quantizer_fails_fast(self) -> None:
         with self.assertRaises(OptimizeError) as caught:
-            build_plan(_request(target="x86-cpu", precision="int8"))
+            build_plan(_request(target="x86-cuda", precision="int8"))
         self.assertIn("--quant", str(caught.exception))
 
     def test_int8_tensorrt_requires_calibration_data(self) -> None:

@@ -87,6 +87,13 @@ builtin = "ohho.robots.builtin:plugin"
 omnibot = "ohho.robots.omnibot:plugin"
 unitree = "ohho.robots.unitree:plugin"
 
+[project.entry-points."ohho.quantizers"]
+awq = "ohho.optimize.quantizers.awq:backend"
+gptq = "ohho.optimize.quantizers.gptq:backend"
+bitsandbytes = "ohho.optimize.quantizers.bitsandbytes:backend"
+fp8 = "ohho.optimize.quantizers.fp8:backend"
+ort-int8 = "ohho.optimize.quantizers.ort_int8:backend"
+
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 

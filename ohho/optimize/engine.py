@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,7 @@ from ohho.optimize.manifest import (
 from ohho.optimize.models import load_model
 from ohho.optimize.ort_session import build_session
 from ohho.optimize.plan import OptimizePlan, OptimizeRequest, build_plan
-from ohho.optimize.quant import probe_quant, quantize
+from ohho.optimize.quant import probe_quant
 from ohho.optimize.tensorrt import build_engine, cuda_device_available, probe_tensorrt
 from ohho.targets.providers import installed_execution_providers
 
@@ -64,11 +64,20 @@ def optimize(
     out = Path(request.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     loaded = load_model(request.model, submodule=request.submodule)
+    loaded = _prefer_lm(loaded, plan.quant)
     outputs: list[dict[str, Any]] = []
-    quant_path: Path | None = None
+    quant_artifact = None
     if plan.quant:
-        quant_path = quantize(loaded, plan.quant, out, plan.precision)
-        outputs.append(file_record(quant_path, plan.quant, out))
+        quant_artifact = _run_quantizer(plan, loaded, out, standins)
+        outputs.append(
+            file_record(
+                quant_artifact.path,
+                quant_artifact.role,
+                out,
+                backend=quant_artifact.backend,
+                backend_version=quant_artifact.version,
+            )
+        )
 
     onnx_path = out / "model.onnx"
     wrote_onnx = False
@@ -86,7 +95,7 @@ def optimize(
             export_torchscript(loaded, ts_path)
             outputs.append(file_record(ts_path, "torchscript", out))
 
-    if plan.build_tensorrt:
+    if plan.build_tensorrt and plan.quant != "fp8":
         if not wrote_onnx:
             raise OptimizeError("TensorRT needs an ONNX graph to parse.")
         engine_path = out / "model.engine"
@@ -110,10 +119,15 @@ def optimize(
 
     session_providers: list[str] = []
     if plan.build_session:
-        if not wrote_onnx:
+        session_path = onnx_path
+        if plan.quant == "ort-int8":
+            if quant_artifact is None:
+                raise OptimizeError("ORT static INT8 did not write a model.")
+            session_path = quant_artifact.path
+        elif not wrote_onnx:
             raise OptimizeError("An ONNX Runtime session needs an ONNX file.")
         session = build_session(
-            onnx_path,
+            session_path,
             provider=plan.provider,
             available=standins.available_providers,
             ort_module=standins.ort_module,
@@ -167,8 +181,43 @@ def optimize(
         session_providers=session_providers,
         versions=package_versions(),
     )
+    from ohho.optimize.publish import run_parity
+
+    run_parity(document, out)
     write_manifest(out, document)
     return document
+
+
+def _prefer_lm(loaded, quant: str | None):
+    """Quantize the SmolVLA text backbone when the checkpoint is that policy."""
+    if quant not in {"awq", "gptq"} or loaded.submodule:
+        return loaded
+    if loaded.kind != "smolvla":
+        return loaded
+    return replace(loaded, submodule="lm")
+
+
+def _run_quantizer(plan: OptimizePlan, loaded, out: Path, standins: OptimizeBackends):
+    from ohho.optimize.quantizers import get_quantizer
+    from ohho.optimize.quantizers.base import QuantCalibration
+
+    plugin = get_quantizer(plan.quant or "")
+    ok, reason = plugin.supports(plan.profile, loaded)
+    if not ok:
+        raise OptimizeError(reason)
+    calib = QuantCalibration(
+        out_dir=out,
+        precision=plan.precision,
+        data=plan.request.calib_data,
+        examples=None,
+        batch=plan.request.calib_batch,
+        cache=plan.request.calib_cache,
+        workspace_bytes=plan.workspace_bytes,
+        max_batch=plan.request.max_batch,
+        dynamic_batch=plan.request.dynamic_batch,
+        trt_module=standins.trt_module,
+    )
+    return plugin.quantize(loaded, calib)
 
 
 def _assert_ready(plan: OptimizePlan, standins: OptimizeBackends) -> None:
@@ -197,7 +246,7 @@ def _assert_ready(plan: OptimizePlan, standins: OptimizeBackends) -> None:
                 "TensorRT is installed but no CUDA device is available. "
                 "Engine builds are a GPU follow-up."
             )
-    if plan.quant:
+    if plan.quant in {"awq", "gptq", "bitsandbytes"}:
         ok, detail = probe_quant(plan.quant)
         if not ok:
             raise OptimizeCapabilityError(detail)
