@@ -29,6 +29,15 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   proposes trials from completed objectives, stores an
   `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
+  `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
+  `ohho sweep start --backend native` (the default) stores a local run and
+  prints no W&B URL. `--backend wandb` creates the sweep through the W&B
+  API when `WANDB_API_KEY` is set and prints the URL that client returns.
+  Each agent trial runs `python -m ohho.train.sweep_agent`, one OhhO train
+  job. `wandb` is an optional extra and is imported only on that path.
+  Patience-based `early_stopping` is not sent as Hyperband `early_terminate`
+  (OHH-520). Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);

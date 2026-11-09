@@ -382,6 +382,61 @@ assert stopped.ask()[0].index == 1
 The Connect console Resume button is a separate surface. This package
 exposes the run and `ohho sweep resume`.
 
+## Optional W&B backend
+
+`ohho sweep start` uses the native backend unless `--backend` says
+otherwise. Native writes the run file and prints no W&B URL.
+
+```bash
+ohho sweep start sweep.yaml --id push-lr
+ohho sweep start sweep.yaml --backend wandb --wandb-project ohho-train
+```
+
+`--backend auto` uses W&B only when `WANDB_API_KEY` is set, `WANDB_MODE`
+is not `disabled` or `offline`, and the `wandb` package imports. Otherwise
+it uses the native backend.
+`--backend wandb` needs that key and a project (`--wandb-project` or
+`WANDB_PROJECT`). The `wandb` package is optional (`pip install
+'ohho-os[wandb]'`) and is imported only when a launch is about to call the
+API.
+
+The W&B path returns the absolute URL the W&B client returned. This package
+does not build a sweep URL. A missing key, a missing project, or a client
+that does not return an absolute URL stops with no URL.
+
+`ohho.train.sweep_wandb.to_wandb_sweep_config` maps a validated spec:
+
+| ohho.sweep/v1 | W&B config |
+| --- | --- |
+| `grid` | `method: grid` |
+| `random` | `method: random` |
+| `tpe`, `bayesian` | `method: bayes` (W&B's search, not the built-in TPE) |
+| `multi` | `method: bayes`, with the primary objective as the only metric |
+| primary objective, or the only objective | `metric.name` and `metric.goal` |
+| categorical, `values`, or `n` | `parameters.<path>.values`, the same levels the native expander uses |
+| `int` low/high with step 1, on random or bayes | `int_uniform` |
+| `int` low/high with another step, or any grid int range | those levels as `values` |
+| continuous `float` | `uniform` |
+| continuous `log_uniform` | `log_uniform_values` (bounds are the spec's low and high) |
+| scalar recipe fields | constant `value` |
+| agent | `python -m ohho.train.sweep_agent`, with W&B's `${args}` |
+
+`when` and `constraints` are not represented. W&B samples every parameter
+and does not drop combinations. `budget.max_trials` is reported as
+`agent_count` and is not a W&B field. `budget.max_gpu_hours`,
+`parallelism`, and the sweep seed are not sent. `strategy: multi` without a
+primary objective is not created, because W&B bayes would need a metric the
+spec does not name.
+
+`early_stopping` is not mapped. TODO(OHH-520): that module owns early
+stopping. The sweep field is patience, min_delta, and mode. W&B
+`early_terminate` is Hyperband, and those numbers are not a Hyperband
+schedule, so the config omits `early_terminate`.
+
+The agent does not import wandb. It turns `--path=value` into one
+`ohho.train.finetune` call. A trial that asks for CUDA, TensorRT, or
+another non-CPU device fails before training. This agent runs CPU jobs.
+
 ## YAML subset
 
 Spaces only. Indent nested blocks deeper than the line that introduces
