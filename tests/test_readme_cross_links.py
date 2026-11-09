@@ -11,7 +11,9 @@ README = ROOT / "README.md"
 
 ENGINE = re.compile(r"https://github\.com/ohho-robotics/ohho-os")
 CLIENT = re.compile(r"https://github\.com/ohho-robotics/ohho-sdk")
-BAD_ENGINE_CI = re.compile(r"github\.com/ohho-robotics/ohho-sdk/actions/workflows/ci\.yml")
+BAD_ENGINE_CI = re.compile(
+    r"github\.com/ohho-robotics/ohho-sdk/actions/workflows/ci\.yml"
+)
 
 
 class TestReadmeCrossLinks(unittest.TestCase):

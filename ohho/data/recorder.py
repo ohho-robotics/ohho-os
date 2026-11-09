@@ -65,7 +65,7 @@ class Episode:
         return bool(self.images)
 
 
-GO2_LEG_JOINTS = (
+LEG_JOINTS = (
     "fl_hip",
     "fl_thigh",
     "fl_calf",
@@ -80,7 +80,7 @@ GO2_LEG_JOINTS = (
     "rr_calf",
 )
 
-GO2_STATE_NAMES = [
+LEGGED_STATE_NAMES = [
     "base_vx",
     "base_vy",
     "base_omega",
@@ -114,14 +114,14 @@ GO2_STATE_NAMES = [
     "posture_id",
 ]
 
-GO2_ACTION_NAMES = [
+LEGGED_ACTION_NAMES = [
     "base_vx",
     "base_vy",
     "base_omega",
     "mode_id",
 ]
 
-OMNIBOT_STATE_NAMES = [
+MOBILE_MANIPULATOR_STATE_NAMES = [
     "arm_shoulder_pan",
     "arm_shoulder_lift",
     "arm_elbow_flex",
@@ -133,7 +133,7 @@ OMNIBOT_STATE_NAMES = [
     "base_omega",
 ]
 
-OMNIBOT_ACTION_NAMES = [
+MOBILE_MANIPULATOR_ACTION_NAMES = [
     "arm_shoulder_pan",
     "arm_shoulder_lift",
     "arm_elbow_flex",
@@ -174,11 +174,13 @@ MODE_TO_ID: Dict[str, float] = {
 
 
 def _is_legged(robot: Robot) -> bool:
-    """Return True if the robot is legged (e.g. Unitree Go2)."""
+    """Return True when the robot is a legged platform."""
+    robot_class = getattr(robot.spec, "robot_class", None)
+    kind = getattr(robot_class, "value", robot_class)
     return (
         robot.has(caps.LEGGED_POSE)
         or getattr(robot.spec, "category", "") == "legged"
-        or getattr(robot.spec, "id", "") == "unitree-go2"
+        or kind == "quadruped"
     )
 
 
@@ -209,8 +211,8 @@ def _telemetry_to_state(robot: Robot) -> List[float]:
         dq = [0.0] * 12
         if t.joints:
             j_map = {j.name.lower(): j for j in t.joints}
-            if any(name in j_map for name in GO2_LEG_JOINTS):
-                for idx, name in enumerate(GO2_LEG_JOINTS):
+            if any(name in j_map for name in LEG_JOINTS):
+                for idx, name in enumerate(LEG_JOINTS):
                     if name in j_map:
                         q[idx] = float(j_map[name].position)
                         if j_map[name].velocity is not None:
@@ -609,7 +611,11 @@ class Recorder:
         """
         from .writer import write_dataset
 
-        robot_id = getattr(getattr(self.robot, "spec", None), "id", "omnibot")
+        robot_id = getattr(getattr(self.robot, "spec", None), "id", "") or ""
+        if not robot_id:
+            from ..plugins import preferred_robot_id
+
+            robot_id = preferred_robot_id()
         return write_dataset(
             self._episodes,
             path,

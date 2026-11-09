@@ -18,12 +18,12 @@ from unittest import mock
 from ohho.adapters.mavlink_drone import MavlinkDroneTransport, RecordingLink
 from ohho.aerial import Frame
 from ohho.registry import RobotSpec, get_spec
+from ohho.robots.unitree.policy import GO2_PROFILE
 from ohho.safety import (
     ARM_ENV,
     CI_SIM_ARMING_ENV,
     CI_SITL_ENV,
     DRONE_PROFILE,
-    GO2_PROFILE,
     AuditLog,
     SafetyGate,
     ci_sim_arming_reason,

@@ -3,8 +3,8 @@ import threading
 import time
 import unittest
 
-from ohho.adapters import _yahboom_proto as proto
-from ohho.adapters.yahboom import YahboomTransport
+from ohho.robots.omnibot import proto
+from ohho.robots.omnibot.yahboom import YahboomTransport
 from ohho.registry import get_spec
 from ohho.schema import ConnectionState, Velocity
 

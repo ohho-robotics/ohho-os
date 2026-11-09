@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from typing import Optional
 
 from . import __version__
+from . import capabilities as caps
 from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .adapters.errors import AdapterUnavailable
 from .agent import Agent
 from .hardware import resolve_device
+from .plugins import plugin_environment_lines, plugin_text, uri_is_hardware
 from .registry import UnknownRobot, list_specs
-from .adapters.unitree import dds_uri_is_hardware
 from .robot import Robot
 from .runtime import available_runtimes
 from .safety import SafetyGate
@@ -36,7 +38,6 @@ def _cmd_doctor(args) -> int:
             online=bool(getattr(args, "online", False)),
         )
     import importlib.util
-    import os
 
     from .brains import harness_available
 
@@ -78,45 +79,37 @@ def _cmd_doctor(args) -> int:
         "  hil         : dry-run by default; hardware needs OHHO_HIL=1, "
         "an explicit port, --preflight-ok, and a TTY (`ohho hil --mock` for CI)"
     )
-    sdk = (
-        "importable"
-        if have("unitree_sdk2py")
-        else "missing  (add [unitree] + GitHub SDK)"
-    )
-    print(f"  unitree_sdk : {sdk}")
-    cdds = _cyclonedds_doctor_line()
-    print(f"  cyclonedds  : {cdds}")
-    home = os.environ.get("CYCLONEDDS_HOME", "")
-    uri = os.environ.get("CYCLONEDDS_URI", "")
-    print(f"  CYCLONEDDS  : HOME={home or '(unset)'}  URI={uri or '(unset)'}")
-    print("  dds         : sim-only (domain 1 / lo) until hardware is armed")
+    for line in plugin_environment_lines():
+        print(line)
     return 0
 
 
-def _cyclonedds_doctor_line() -> str:
-    import importlib.util
-
-    if importlib.util.find_spec("cyclonedds") is None:
-        return "missing  (pip install 'ohho-os[unitree]')"
-    try:
-        from importlib.metadata import version
-
-        ver = version("cyclonedds")
-    except Exception:
-        return "installed (version unknown)"
-    warn = ""
-    if not ver.startswith("0.10."):
-        warn = "  (warn: prefer 0.10.x for unitree_sdk2py)"
-    return f"{ver}{warn}"
-
-
 def _cmd_list(args) -> int:
-    if getattr(args, "plugins", False):
+    plugins_flag = getattr(args, "plugins", False)
+    json_flag = getattr(args, "json", False)
+    ci_sim_flag = getattr(args, "ci_sim", False)
+    if plugins_flag and (json_flag or ci_sim_flag):
+        print(
+            "error: --plugins cannot be combined with --json or --ci-sim",
+            file=sys.stderr,
+        )
+        return 2
+    if plugins_flag:
         from .plugins import format_plugin_report
 
         # Register clean plugins first so ``ohho list`` and ``--plugins`` agree.
         list_specs()
         print(format_plugin_report())
+        return 0
+    if json_flag or ci_sim_flag:
+        if not (json_flag and ci_sim_flag):
+            print("error: pass both --json and --ci-sim", file=sys.stderr)
+            return 2
+        from .plugins import ci_sim_matrix_rows
+
+        # One line, no trailing spaces, so the workflow can put it in
+        # ``GITHUB_OUTPUT`` and ``fromJson`` it as the matrix.
+        print(json.dumps(ci_sim_matrix_rows(), separators=(",", ":")))
         return 0
     for s in list_specs():
         caps = ", ".join(s.capabilities) or "—"
@@ -151,7 +144,7 @@ def _connect(args) -> Robot:
 
 def _hardware_dds_refused(bot: Robot, transport: Optional[str]) -> Optional[int]:
     """Exit code when drive/agent use hardware ``dds://`` without a successful arm."""
-    if not dds_uri_is_hardware(transport):
+    if not uri_is_hardware(transport):
         return None
     gate = bot.transport
     if isinstance(gate, SafetyGate) and not gate.armed:
@@ -164,8 +157,8 @@ def _hardware_dds_refused(bot: Robot, transport: Optional[str]) -> Optional[int]
     return None
 
 
-def _go2_pose(bot: Robot, action: str, sim_label: str) -> None:
-    """Stand or lie down on Go2 (OHH-118 API, SafetyGate command, or sim log)."""
+def _legged_pose(bot: Robot, action: str, sim_label: str) -> None:
+    """Stand or lie down when the spec has ``legged.pose``."""
     ohh118 = getattr(bot, "stand" if action == "stand_up" else "lie_down", None)
     if callable(ohh118):
         ohh118()
@@ -222,10 +215,13 @@ def _cmd_sim(args) -> int:
     print(
         f"simulating {bot.spec.name} — driving a pattern for {args.seconds:.0f}s (Ctrl-C to stop)"
     )
-    if bot.spec.id == "unitree-go2":
-        _go2_pose(bot, "stand_up", "stand up")
+    if bot.has(caps.LEGGED_POSE):
+        _legged_pose(bot, "stand_up", "stand up")
         time.sleep(0.3)
     try:
+        if bot.has(caps.HUMANOID_POSTURE):
+            bot.prepare()
+            bot.walk_mode()
         i = 0
         end = time.monotonic() + args.seconds
         while time.monotonic() < end:
@@ -251,8 +247,8 @@ def _cmd_sim(args) -> int:
         print("\nstopped.")
     finally:
         bot.stop()
-        if bot.spec.id == "unitree-go2":
-            _go2_pose(bot, "stand_down", "lie down")
+        if bot.has(caps.LEGGED_POSE):
+            _legged_pose(bot, "stand_down", "lie down")
             time.sleep(0.3)
         bot.disconnect()
     return 0
@@ -269,7 +265,7 @@ def _cmd_drive(args) -> int:
         bot.disconnect()
         return refused
     try:
-        legged_sim = bot.spec.id == "unitree-go2" and bot.simulated
+        legged_sim = bot.has(caps.LEGGED_POSE) and bot.simulated
         if legged_sim:
             bot.stand()
             time.sleep(0.05)
@@ -385,11 +381,13 @@ def _cmd_run_policy(args) -> int:
 
 
 def _cmd_sim_serve(args) -> int:
-    if args.backend in ("isaac", "mujoco"):
-        print("not built", file=sys.stderr)
-        return 1
+    from .sim_serve import SimServeUnavailable, backend_entry, serve_sim
 
-    from .sim_serve import SimServeUnavailable, serve_sim
+    if backend_entry(args.backend) == "not-implemented":
+        # Isaac Sim and MuJoCo have no runtime in this package.
+        print("not built", file=sys.stderr)
+        print("not-implemented", file=sys.stderr)
+        return 1
 
     try:
         serve_sim(
@@ -400,6 +398,8 @@ def _cmd_sim_serve(args) -> int:
             port=args.port,
             rosbridge=args.rosbridge,
             rate_hz=args.rate,
+            ssl_cert=args.ssl_cert,
+            ssl_key=args.ssl_key,
         )
     except SimServeUnavailable as e:
         print(f"error: {e}", file=sys.stderr)
@@ -568,20 +568,9 @@ def _cmd_nav(args) -> int:
 
 def _look_loopback_dds(transport: Optional[str]) -> bool:
     """True for a ``dds://`` URI on loopback with a non-zero domain."""
-    if transport is None:
-        return False
-    uri = transport.strip()
-    scheme, sep, rest = uri.partition("://")
-    if not sep or scheme.lower() != "dds":
-        return False
-    from .adapters.unitree import parse_dds_address
-    from .safety import _is_loopback
+    from .plugins import look_mock_allowed
 
-    try:
-        iface, domain = parse_dds_address(rest)
-    except ValueError:
-        return False
-    return domain != 0 and _is_loopback(iface)
+    return look_mock_allowed(transport)
 
 
 def _look_mock_transport_allowed(transport: Optional[str]) -> bool:
@@ -804,8 +793,16 @@ def _cmd_rules(args) -> int:
     )
 
 
+def _default_robot() -> str:
+    from .plugins import preferred_robot_id
+
+    return preferred_robot_id()
+
+
 def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--robot", default="omnibot", help="default robot id for tools")
+    parser.add_argument(
+        "--robot", default=_default_robot(), help="default robot id for tools"
+    )
     parser.add_argument(
         "--transport",
         default="",
@@ -895,7 +892,7 @@ def _add_robot_args(
     sp.add_argument(
         "--transport",
         default=transport_default,
-        help="transport URI (default in-process sim://); Go2: dds://<iface>?domain=<n>",
+        help="transport URI (default in-process sim://); quadruped: dds://<iface>?domain=<n>",
     )
     sp.add_argument("--runtime", default="auto", choices=["auto", "native", "ros2"])
     sp.add_argument(
@@ -919,7 +916,7 @@ def _cmd_verify(args) -> int:
     return run_verify_cli(
         sim=bool(getattr(args, "sim", False)),
         as_json=bool(getattr(args, "json", False)),
-        robot=getattr(args, "robot", "omnibot"),
+        robot=getattr(args, "robot", None) or _default_robot(),
         console=bool(getattr(args, "console", False)),
         transport=getattr(args, "transport", None),
     )
@@ -973,6 +970,18 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_bench(args) -> int:
+    from .bench.schema import BenchValidationError, validate_path
+
+    try:
+        validate_path(args.file)
+    except BenchValidationError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"valid ohho.bench/v1: {args.file}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ohho", description="OhhO OS — the open robot engine."
@@ -1017,8 +1026,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--robot",
-        default="omnibot",
-        help="robot id to simulate (default: omnibot)",
+        default=_default_robot(),
+        help="robot id to simulate",
     )
     verify.add_argument(
         "--console",
@@ -1033,6 +1042,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--plugins",
         action="store_true",
         help="show each robot plugin, its specs, and any load error",
+    )
+    listed.add_argument(
+        "--json",
+        action="store_true",
+        help="print one JSON line (only together with --ci-sim)",
+    )
+    listed.add_argument(
+        "--ci-sim",
+        action="store_true",
+        help="with --json, list specs that opt into the sim CI matrix",
     )
     listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
@@ -1069,7 +1088,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")
-    s.add_argument("--robot", default="omnibot")
+    s.add_argument("--robot", default=_default_robot())
     s.add_argument("--seconds", type=float, default=8.0)
     s.set_defaults(func=_cmd_sim)
 
@@ -1143,7 +1162,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ss.add_argument(
         "--robot",
-        default="omnibot",
+        default=_default_robot(),
         help="robot spec id (sim or robot backend)",
     )
     ss.add_argument(
@@ -1160,7 +1179,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PORT,
         help=(
             "WebSocket port (default: 8790). "
-            "Do not use 8765: that is OmniBot's Foxglove bridge"
+            "Do not use 8765: that port is a Foxglove bridge"
         ),
     )
     ss.add_argument(
@@ -1171,13 +1190,17 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument(
         "--rate", type=float, default=20.0, help="telemetry broadcast rate in Hz"
     )
+    ss.add_argument("--ssl-cert", default=None, help="SSL certificate PEM for wss://")
+    ss.add_argument("--ssl-key", default=None, help="SSL private key PEM for wss://")
     ss.set_defaults(func=_cmd_sim_serve)
 
     sl = sub.add_parser(
         "sim-loop",
         help="run nightly CPU sim loop (record -> validate -> train ACT -> serve -> drive sim)",
     )
-    sl.add_argument("--robot", default="omnibot", help="robot spec ID to simulate")
+    sl.add_argument(
+        "--robot", default=_default_robot(), help="robot spec ID to simulate"
+    )
     sl.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )
@@ -1216,12 +1239,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sd = sub.add_parser(
         "sim-demo",
-        help="run OHH-134 sim demo harness (typed goal -> agent -> Go2 in MuJoCo)",
+        help="run OHH-134 sim demo harness (typed goal -> agent -> quadruped in MuJoCo)",
     )
     sd.add_argument(
         "--robot",
-        default="unitree-go2",
-        help="robot id to evaluate (default: unitree-go2)",
+        default=plugin_text("sim_demo_robot_id") or "sim",
+        help="robot id to evaluate (default: the quadruped plugin)",
     )
     sd.add_argument(
         "--transport",
@@ -1338,7 +1361,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
-        "--robot", default="omnibot", help="robot to self-test (default: omnibot)"
+        "--robot",
+        default=_default_robot(),
+        help="robot to self-test",
     )
     st.add_argument(
         "--sim",
@@ -1356,7 +1381,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-stand",
         action="store_true",
         dest="allow_stand",
-        help="allow Go2 stand/lie cycle (legged robots only)",
+        help="allow stand/lie cycle (legged robots only)",
     )
     st.add_argument(
         "--transport",
@@ -1557,6 +1582,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
+
+    bench = sub.add_parser(
+        "bench",
+        help="validate ohho.bench/v1 benchmark results",
+    )
+    bench_sub = bench.add_subparsers(dest="bench_command", required=True)
+    bench_validate = bench_sub.add_parser(
+        "validate",
+        help="validate a result file against ohho.bench/v1",
+    )
+    bench_validate.add_argument("file", help="path to a JSON result")
+    bench_validate.set_defaults(func=_cmd_bench)
 
     return p
 

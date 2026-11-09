@@ -5,7 +5,7 @@ package sets it true. The rules below are a software guard in the Python
 process. They are not a clearance to arm an aircraft.
 
 `unitree-go2` and `omnibot` keep the profiles they already had. A drone does
-not reuse `GO2_ACTIONS`: that set has no `land`, so a landing would be
+not reuse the legged sport set (`SPORT_ACTIONS`): that set has no `land`, so a landing would be
 refused. The 0.6 rad tilt latch is the quadruped guard. It is off on the
 drone profile. `require_orientation` is off until a drone sim publishes a
 stable attitude.
