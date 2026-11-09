@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
+from .determinism import (
+    dataloader_kwargs,
+    deterministic_algorithms,
+    reseed_runtime,
+)
 from .il.progress import ValTracker, validation_due
 
 try:
@@ -51,6 +56,7 @@ if TORCH_AVAILABLE:
             dim_feedforward: int = 128,
             latent_dim: int = 16,
             kl_weight: float = 10.0,
+            nested_tensor: bool = True,
         ) -> None:
             super().__init__()
             self.state_dim = state_dim
@@ -70,9 +76,7 @@ if TORCH_AVAILABLE:
                 dim_feedforward=dim_feedforward,
                 batch_first=True,
             )
-            self.encoder = nn.TransformerEncoder(
-                encoder_layer, num_layers=num_encoder_layers
-            )
+            self.encoder = _encoder(encoder_layer, num_encoder_layers, nested_tensor)
             self.mu_head = nn.Linear(d_model, latent_dim)
             self.logvar_head = nn.Linear(d_model, latent_dim)
 
@@ -177,6 +181,8 @@ def train_act(
     early_stop_min_delta: float = 0.0,
     vision_backbone: str = "none",
     on_event: Any = None,
+    deterministic: bool = False,
+    seed: int | None = None,
     **kwargs: Any,
 ) -> str:
     """Train a TinyACTPolicy on a LeRobot v2.0 dataset on CPU."""
@@ -244,15 +250,86 @@ def train_act(
     tensor_s = torch.tensor(all_states, dtype=torch.float32)
     tensor_a = torch.tensor(all_action_chunks, dtype=torch.float32)
 
+    with deterministic_algorithms(torch, enabled=deterministic):
+        return _train_act_body(
+            out,
+            tensor_s,
+            tensor_a,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            device=device,
+            train_steps=train_steps,
+            batch_size=batch_size,
+            lr=lr,
+            chunk_size=chunk_size,
+            d_model=d_model,
+            nhead=nhead,
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
+            latent_dim=latent_dim,
+            kl_weight=kl_weight,
+            log_every=log_every,
+            val_every=val_every,
+            val_fraction=val_fraction,
+            early_stop_patience=early_stop_patience,
+            early_stop_min_delta=early_stop_min_delta,
+            vision_backbone=vision_backbone,
+            on_event=on_event,
+            deterministic=deterministic,
+            seed=seed,
+        )
+
+
+def _train_act_body(
+    out: Path,
+    tensor_s: Any,
+    tensor_a: Any,
+    *,
+    state_dim: int,
+    action_dim: int,
+    device: str,
+    train_steps: int,
+    batch_size: int,
+    lr: float,
+    chunk_size: int,
+    d_model: int,
+    nhead: int,
+    num_encoder_layers: int,
+    num_decoder_layers: int,
+    dim_feedforward: int,
+    latent_dim: int,
+    kl_weight: float,
+    log_every: int,
+    val_every: int | None,
+    val_fraction: float,
+    early_stop_patience: int,
+    early_stop_min_delta: float,
+    vision_backbone: str,
+    on_event: Any,
+    deterministic: bool,
+    seed: int | None,
+) -> str:
+    """Fit one ACT run. Caller holds the deterministic-algorithm scope."""
     train_s, train_a, val_s, val_a = _split_act_tensors(
         tensor_s, tensor_a, val_every, val_fraction
     )
     loader = DataLoader(
-        TensorDataset(train_s, train_a), batch_size=batch_size, shuffle=True
+        TensorDataset(train_s, train_a),
+        batch_size=batch_size,
+        **dataloader_kwargs(
+            torch, deterministic=deterministic, seed=seed, shuffle=True
+        ),
     )
     val_loader = DataLoader(
-        TensorDataset(val_s, val_a), batch_size=batch_size, shuffle=False
+        TensorDataset(val_s, val_a),
+        batch_size=batch_size,
+        **dataloader_kwargs(
+            torch, deterministic=deterministic, seed=seed, shuffle=False
+        ),
     )
+    if deterministic and seed is not None:
+        reseed_runtime(torch, seed)
 
     dev = torch.device(device)
     model = TinyACTPolicy(
@@ -266,6 +343,7 @@ def train_act(
         dim_feedforward=dim_feedforward,
         latent_dim=latent_dim,
         kl_weight=kl_weight,
+        nested_tensor=not deterministic,
     )
     model.to(dev)
     model.train()
@@ -351,6 +429,7 @@ def train_act(
         "completed_steps": completed_steps,
         "stopped_early": stopped_early,
         "vision_backbone": vision_backbone,
+        "deterministic": bool(deterministic),
         "val_every": val_every,
         "loss_curve": loss_curve,
         "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
@@ -364,6 +443,7 @@ def train_act(
             "train_steps": train_steps,
             "completed_steps": completed_steps,
             "stopped_early": stopped_early,
+            "deterministic": bool(deterministic),
         }
         if last_val is not None:
             metrics_body["validation_loss"] = last_val
@@ -371,6 +451,20 @@ def train_act(
         json.dump(metrics_body, f, indent=2)
 
     return str(out)
+
+
+def _encoder(layer: Any, num_layers: int, nested_tensor: bool) -> Any:
+    """Build the ACT encoder. Deterministic runs turn the nested-tensor path off."""
+    import torch.nn as nn
+
+    if nested_tensor:
+        return nn.TransformerEncoder(layer, num_layers=num_layers)
+    try:
+        return nn.TransformerEncoder(
+            layer, num_layers=num_layers, enable_nested_tensor=False
+        )
+    except TypeError:
+        return nn.TransformerEncoder(layer, num_layers=num_layers)
 
 
 def _split_act_tensors(

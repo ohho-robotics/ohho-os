@@ -128,6 +128,7 @@ class TestRecipeSchema(unittest.TestCase):
             "dataset",
             "hyperparameters",
             "precision",
+            "deterministic",
             "compression_hooks",
             "eval_hooks",
             "output",

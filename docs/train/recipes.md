@@ -39,6 +39,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
 | `precision` | `fp32` (default), `fp16`, or `bf16`. ACT runs `fp32` only. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
+| `deterministic` | `false` (default) or `true`. ACT and Diffusion Policy honor `true`: seeded batch order, DataLoader workers fixed at 0, and torch / cuDNN deterministic algorithms when those knobs exist. See [`determinism.md`](determinism.md). |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `output.dir` | Directory for the checkpoint, `metrics.json`, and `run_manifest.json`. |
@@ -53,7 +54,7 @@ Relative paths are resolved from the process working directory.
 2. Apply every `--set` override.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
-5. Family preflight (for ACT and diffusion: precision, hyperparameters, local dataset, device, torch).
+5. Family preflight (for ACT and diffusion: precision, hyperparameters, local dataset, device, torch). `deterministic: true` with no `hyperparameters.seed` records seed `0`. It is not a separate exit.
 6. On `train_start`, write `run_manifest.json` with `status: running`.
 7. Call the trainer.
 8. Finalise that file as `succeeded`, `failed`, or `interrupted`.

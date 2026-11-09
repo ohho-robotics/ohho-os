@@ -93,6 +93,11 @@
       "enum": ["cpu", "cuda", "mps", "auto"],
       "default": "cpu"
     },
+    "deterministic": {
+      "description": "When true, seed batch order, pin DataLoader workers, and request deterministic torch and cuDNN algorithms. Omitted means false.",
+      "type": "boolean",
+      "default": false
+    },
     "compression_hooks": {
       "type": "array",
       "items": {"$ref": "#/$defs/hook"}

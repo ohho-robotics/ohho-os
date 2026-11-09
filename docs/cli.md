@@ -71,6 +71,7 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 |---------|-------------|
 | `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
 | `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
+| `ohho run rerun <id> [--output DIR] [--json]` | Re-run that manifest's resolved recipe into a new directory and compare final metrics. `<id>` is the run directory or `run_manifest.json`. Exit 0 when the final metrics match exactly. See [`train/determinism.md`](train/determinism.md). |
 
 ## Simulation services
 

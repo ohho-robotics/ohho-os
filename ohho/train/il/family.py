@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..determinism import ensure_deterministic_seed
 from ..recipe_registry import TrainResult
 from ..recipe_schema import RecipeConfigError, TrainFailed
 from .data import DatasetRef, resolve_dataset
@@ -26,6 +27,8 @@ class PreparedRun:
     resolved: dict[str, Any]
     dataset: Path
     device: str
+    seed: int | None = None
+    deterministic: bool = False
 
 
 class DiffusionRecipe:
@@ -68,6 +71,8 @@ def prepare_il_run(
         _resolve_device,
     )
 
+    deterministic = recipe.get("deterministic") is True
+    seed = ensure_deterministic_seed(recipe)
     _check_precision(recipe, family_id)
     resolved = resolve_hyperparameters(family_id, _hyperparameters(recipe))
     _reject_untrained_backbone(str(resolved["vision_backbone"]))
@@ -77,7 +82,13 @@ def prepare_il_run(
     dataset = _local_dataset(ref)
     _emit_declared(recipe, emit, trainer_name=trainer_name)
     _apply_seed(torch_module, recipe, device)
-    return PreparedRun(resolved=resolved, dataset=dataset, device=device)
+    return PreparedRun(
+        resolved=resolved,
+        dataset=dataset,
+        device=device,
+        seed=seed,
+        deterministic=deterministic,
+    )
 
 
 def _hyperparameters(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -122,6 +133,7 @@ def _finish_diffusion(
             "device": prepared.device,
             "train_steps": train_steps,
             "val_every": int(prepared.resolved["val_every"]),
+            "deterministic": prepared.deterministic,
         }
     )
     try:
@@ -146,6 +158,8 @@ def _finish_diffusion(
             early_stop_patience=int(prepared.resolved["early_stop_patience"]),
             early_stop_min_delta=float(prepared.resolved["early_stop_min_delta"]),
             on_event=_family_event("diffusion", emit),
+            deterministic=prepared.deterministic,
+            seed=prepared.seed,
         )
     except TrainFailed:
         raise

@@ -82,6 +82,10 @@ The trainer reads LeRobot v2 layout through `DatasetReader`: `meta/info.json`, `
 
 Unknown keys and `hyperparameters.mock` are rejected before training. A value outside the range above is exit `1` and does not emit `train_start`.
 
+## Deterministic mode
+
+Set `deterministic: true` on the recipe, or pass `--set deterministic=true`. ACT and Diffusion Policy then seed batch order from `hyperparameters.seed` (or `0` when that seed is omitted), pin DataLoader workers at 0, and request deterministic torch and cuDNN algorithms when the installed torch has those knobs. `config.json` and `metrics.json` record `deterministic`. The published variance, the re-run command, and the within-noise tolerance are in [`determinism.md`](determinism.md).
+
 ## Validation stream and early stopping
 
 Stdout remains `ohho.train.progress/v1`, one JSON object per line. After each completed optimizer step that is a multiple of `val_every`, and after the final step when that step is not a multiple, the trainer emits:
