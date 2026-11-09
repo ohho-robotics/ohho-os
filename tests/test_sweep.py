@@ -56,7 +56,14 @@ class TestSchemaPackage(unittest.TestCase):
         self.assertIn("train/schemas/*.json", (_ROOT / "pyproject.toml").read_text())
 
     def test_examples_validate(self) -> None:
-        for name in ("grid_2x3x4.json", "conditional.json", "constrained.json"):
+        names = (
+            "grid_2x3x4.json",
+            "conditional.json",
+            "constrained.json",
+            "tpe.json",
+            "multi.json",
+        )
+        for name in names:
             doc = json.loads((_EXAMPLES / name).read_text(encoding="utf-8"))
             spec = validate_sweep(doc)
             self.assertEqual(spec.schema, SCHEMA_ID)

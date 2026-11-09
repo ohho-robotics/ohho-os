@@ -180,7 +180,7 @@ python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200
 
 The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run this pipeline on CPU-only runners, verify LeRobotDataset loading, and upload the trained checkpoint and dataset artifacts (first run pending).
 
-`ohho sweep plan` expands an `ohho.sweep/v1` spec into trial recipes and an estimated GPU-hour total. See [`docs/train/sweeps.md`](docs/train/sweeps.md).
+`ohho sweep plan` expands an `ohho.sweep/v1` spec (grid, random, TPE, or multi-objective) into trial recipes and an estimated GPU-hour total. Adaptive strategies plan a startup batch; `SweepSampler` proposes the rest and records a Pareto set. See [`docs/train/sweeps.md`](docs/train/sweeps.md).
 
 ## Simulation WebSocket Server (`sim-serve`)
 

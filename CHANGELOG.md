@@ -24,6 +24,11 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   `when` matches. Constraints drop invalid combinations. The plan prints the
   trial count and estimated GPU-hours, computed from per-trial values in the
   spec. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep samplers** — `grid`, `random`, built-in TPE (`strategy: tpe` and
+  `bayesian`), and multi-objective TPE (`strategy: multi`). `SweepSampler`
+  proposes trials from completed objectives, stores an
+  `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
