@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ohho.compression.qat import QatError, prepare_qat_recipe
 from .precision import PRECISIONS, prepare_precision
 from .recipe_registry import Emit, TrainResult, register
 from .recipe_schema import (
@@ -68,6 +69,7 @@ class ActRecipe:
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         plan = prepare_precision(recipe, family=self)
         kwargs = _act_kwargs(recipe)
+        _prepare_qat(recipe)
         dataset_path = _dataset_dir(recipe)
         torch = _load_torch()
         _emit_declared(recipe, emit)
@@ -93,6 +95,8 @@ class ActRecipe:
                 mock=False,
                 **kwargs,
             )
+        except QatError:
+            raise
         except Exception as exc:
             raise TrainFailed(f"ACT training failed: {exc}") from exc
         metrics = Path(checkpoint) / "metrics.json"
@@ -166,7 +170,18 @@ def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeConfigError(
             f"hyperparameters.d_model ({d_model}) must be divisible by nhead ({nhead})"
         )
+    block = recipe.get("qat")
+    if isinstance(block, dict):
+        kwargs["qat"] = block
     return kwargs
+
+
+def _prepare_qat(recipe: dict[str, Any]) -> None:
+    """Refuse a QAT block the ACT trainer cannot run. Absent block is a no-op."""
+    block = recipe.get("qat")
+    if not isinstance(block, dict):
+        return
+    prepare_qat_recipe(block, family_id="act")
 
 
 def _dataset_dir(recipe: dict[str, Any]) -> Path:

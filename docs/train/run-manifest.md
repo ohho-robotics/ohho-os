@@ -60,6 +60,7 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `gpu` | GPU | `gpu` |
 | `final_loss` | Final loss | `final_loss` |
 | `precision_metrics` | Precision metrics | `precision_metrics` |
+| `qat` | QAT | `qat` |
 | `error` | Error | `error` |
 | `resolved_config` | Resolved config | `resolved_config` |
 
@@ -72,6 +73,8 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 `library_versions` always includes `python` and `ohho` (the `ohho-os` version). `torch`, `numpy`, and `lerobot` are included when those distributions are installed. The version lookup uses package metadata.
 
 `precision` is the recipe value the device check accepted (`fp32`, `fp16`, `bf16`, or `fp8`). `loss_scaling` is true only for fp16, where the step uses GradScaler. `precision_backend` is `fp32`, `torch.amp` (fp16 and bf16), or `transformer_engine` (fp8). `precision_metrics` has one key per precision. The precision that ran holds `throughput_steps_per_s` and `peak_memory_bytes`. The others are null. While the run is still going, and when the trainer did not write those keys, the numbers are null. Throughput is training steps per second over the step loop. On CUDA, peak memory is `max_memory_allocated` in bytes after the loop starts. On CPU and MPS it is the process resident set sampled during the loop, which includes the interpreter. Details are in [Mixed precision](precision.md).
+
+`qat` is null when the recipe has no `qat` block. When the block is set, the field is the resolved settings: bit width, scope, granularity, symmetry, calibration length, fine-tune length, and `export_onnx`. Defaults are filled, including activation granularity and symmetry when the recipe omits them. Phase losses and the ONNX path are in `metrics.json`, not in this object. Details are in [Quantisation-aware training](qat.md). A manifest that omits `qat` is still valid.
 
 The JSON document also carries `recipe_path`, `overrides`, `checkpoint_dir`, `metrics_path`, `declared_hooks`, and `git.root`. Those are available to a details panel. They are not summary fields. `--json` prints them with the summary.
 

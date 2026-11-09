@@ -209,9 +209,54 @@
         "compression_hooks": {"type": "array", "items": {"type": "string"}},
         "eval_hooks": {"type": "array", "items": {"type": "string"}}
       }
+    },
+    "qat": {
+      "description": "Resolved quantisation-aware training settings from the recipe. Null when the recipe has no qat block. Not required, so a manifest written without this field stays valid.",
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/qat_settings"}
+      ]
     }
   },
   "$defs": {
+    "qat_settings": {
+      "description": "Bit width, granularity, symmetry, and phase lengths for one QAT run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "bit_width",
+        "scope",
+        "granularity",
+        "activation_granularity",
+        "symmetric",
+        "activation_symmetric",
+        "calibration_steps",
+        "finetune_steps",
+        "export_onnx"
+      ],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "bit_width": {"type": "integer", "enum": [8, 4]},
+        "scope": {
+          "type": "string",
+          "enum": ["weight_only", "weight_and_activation"]
+        },
+        "granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"]
+        },
+        "activation_granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"]
+        },
+        "symmetric": {"type": "boolean"},
+        "activation_symmetric": {"type": "boolean"},
+        "calibration_steps": {"type": "integer", "minimum": 0},
+        "finetune_steps": {"type": "integer", "minimum": 0},
+        "export_onnx": {"type": "boolean"}
+      }
+    },
     "precision_metric": {
       "description": "Throughput and peak memory for one precision, or null when that precision was not used.",
       "oneOf": [

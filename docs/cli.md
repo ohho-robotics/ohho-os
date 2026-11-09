@@ -69,7 +69,7 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). An optional `qat` block is described in [`train/qat.md`](train/qat.md). |
 | `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
 
 ## Simulation services

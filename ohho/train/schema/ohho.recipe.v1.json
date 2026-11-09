@@ -94,6 +94,34 @@
       "enum": ["cpu", "cuda", "mps", "auto"],
       "default": "cpu"
     },
+    "qat": {
+      "description": "Optional quantisation-aware training block. Absent means QAT does not run. bit_width (8 or 4), granularity (per_tensor or per_channel), calibration_steps, and finetune_steps are plain fields a sweep can set. scope is weight_only (default) or weight_and_activation. Weight-and-activation needs calibration_steps >= 1. symmetric defaults to true; activation_granularity and activation_symmetric default to the weight settings. export_onnx asks for a Q/DQ ONNX file. Family act cannot lower its transformer, so that flag is refused for act.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "default": true},
+        "bit_width": {"type": "integer", "enum": [8, 4], "default": 8},
+        "scope": {
+          "type": "string",
+          "enum": ["weight_only", "weight_and_activation"],
+          "default": "weight_only"
+        },
+        "granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"],
+          "default": "per_channel"
+        },
+        "activation_granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"]
+        },
+        "symmetric": {"type": "boolean", "default": true},
+        "activation_symmetric": {"type": "boolean"},
+        "calibration_steps": {"type": "integer", "minimum": 0, "default": 0},
+        "finetune_steps": {"type": "integer", "minimum": 0, "default": 0},
+        "export_onnx": {"type": "boolean", "default": false}
+      }
+    },
     "compression_hooks": {
       "type": "array",
       "items": {"$ref": "#/$defs/hook"}

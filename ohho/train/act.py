@@ -177,7 +177,10 @@ def train_act(
 
     ``precision`` is ``fp32``, ``fp16`` (CUDA GradScaler), ``bf16``, or
     ``fp8`` (Transformer Engine). The check runs before the step loop.
+    ``qat``, when passed, runs quantisation-aware calibration and fine-tune
+    after that loop. The saved ``policy.pt`` stays fp32 master weights.
     """
+    qat_block = kwargs.pop("qat", None)
     out = Path(output_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
 
@@ -205,6 +208,8 @@ def train_act(
             "loss_curve": loss_curve,
             "final_loss": loss_curve[-1][1],
         }
+        if qat_block is not None:
+            config["qat"] = _qat_report_without_running(qat_block)
         with open(out / "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         with open(out / "metrics.json", "w", encoding="utf-8") as f:
@@ -295,6 +300,15 @@ def train_act(
             if step >= train_steps:
                 break
     stats = session.end(step)
+    qat_report = _run_qat_phases(
+        model,
+        qat_block,
+        loader=loader,
+        device=dev,
+        lr=lr,
+        example=tensor_s[:1].to(dev),
+        output_dir=out,
+    )
 
     torch.save(model.state_dict(), out / "policy.pt")
 
@@ -319,25 +333,94 @@ def train_act(
         "loss_curve": loss_curve,
         "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
+    if qat_report is not None:
+        config["qat"] = qat_report
     with open(out / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+    metrics: dict[str, Any] = {
+        "loss_curve": loss_curve,
+        "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
+        "train_steps": train_steps,
+        "precision": plan.precision,
+        "loss_scaling": plan.loss_scaling,
+        "precision_backend": plan.backend,
+        "throughput_steps_per_s": stats["throughput_steps_per_s"],
+        "peak_memory_bytes": stats["peak_memory_bytes"],
+    }
+    if qat_report is not None:
+        metrics["qat"] = qat_report
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "loss_curve": loss_curve,
-                "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
-                "train_steps": train_steps,
-                "precision": plan.precision,
-                "loss_scaling": plan.loss_scaling,
-                "precision_backend": plan.backend,
-                "throughput_steps_per_s": stats["throughput_steps_per_s"],
-                "peak_memory_bytes": stats["peak_memory_bytes"],
-            },
-            f,
-            indent=2,
-        )
+        json.dump(metrics, f, indent=2)
 
     return str(out)
+
+
+class _BatchCycle:
+    """Walk a dataloader forever. QAT phases are short; the set is small."""
+
+    def __init__(self, loader: Any, device: Any) -> None:
+        self.loader = loader
+        self.device = device
+        self._iter = iter(loader)
+
+    def next(self) -> tuple[Any, Any]:
+        try:
+            state, action = next(self._iter)
+        except StopIteration:
+            self._iter = iter(self.loader)
+            state, action = next(self._iter)
+        return state.to(self.device), action.to(self.device)
+
+
+def _qat_report_without_running(block: Any) -> dict[str, Any]:
+    from ohho.compression.qat import spec_from_mapping
+
+    report = spec_from_mapping(block).to_dict()
+    report["finetune_loss"] = None
+    report["onnx_path"] = None
+    report["ran"] = False
+    return report
+
+
+def _run_qat_phases(
+    model: Any,
+    block: Any,
+    *,
+    loader: Any,
+    device: Any,
+    lr: float,
+    example: Any,
+    output_dir: Path,
+) -> dict[str, Any] | None:
+    """Calibrate and fine-tune when the recipe passed a ``qat`` block."""
+    if block is None:
+        return None
+    from ohho.compression.qat import apply_qat, spec_from_mapping
+
+    spec = spec_from_mapping(block)
+    cycle = _BatchCycle(loader, device)
+
+    def forward() -> None:
+        state, action = cycle.next()
+        model(state, action)
+
+    def loss_fn() -> Any:
+        state, action = cycle.next()
+        pred, mu, logvar = model(state, action)
+        assert mu is not None and logvar is not None
+        total, _l1, _kl = model.compute_loss(pred, action, mu, logvar)
+        return total
+
+    export_path = output_dir / "qdq.onnx" if spec.export_onnx else None
+    return apply_qat(
+        model,
+        spec,
+        calibration_forwards=forward,
+        loss_fn=loss_fn,
+        lr=lr,
+        export_path=export_path,
+        export_example=example,
+    )
 
 
 def load_act_checkpoint(
