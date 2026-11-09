@@ -9,7 +9,8 @@ name: Sim matrix
 #
 # CPU runners. The conformance kit opens sim backends only. When a plugin
 # pins meshes, they are fetched into .sim-assets/<plugin> at that commit and
-# cached. They are not vendored in this repository.
+# cached. They are not vendored in this repository. A failed row uploads
+# conformance-logs. Headless video is not rendered.
 
 on:
   push:
@@ -31,6 +32,14 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: python -m pip install -e .
+      - name: Install local robot plugins
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for project in plugins/*/pyproject.toml; do
+            python -m pip install -e "${project%/pyproject.toml}" --no-deps
+          done
       - name: Emit ci-sim matrix
         id: rows
         shell: bash
@@ -51,7 +60,7 @@ jobs:
     needs: discover
     if: needs.discover.outputs.count != '0'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: write
@@ -66,6 +75,14 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: python -m pip install -e .
+      - name: Install local robot plugins
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for project in plugins/*/pyproject.toml; do
+            python -m pip install -e "${project%/pyproject.toml}" --no-deps
+          done
       - name: Restore plugin assets
         id: plugin-assets
         if: matrix.asset_commit != '' && matrix.asset_repository != ''
@@ -84,6 +101,11 @@ jobs:
           ref: ${{ matrix.asset_commit }}
           path: .sim-assets/${{ matrix.plugin }}
           persist-credentials: false
+      - name: Materialise pinned plugin files
+        if: matrix.asset_commit != '' && matrix.asset_repository != ''
+        env:
+          MATRIX_PLUGIN: ${{ matrix.plugin }}
+        run: python -c "from ohho.plugins import materialise_ci_assets; materialise_ci_assets()"
       - name: Save plugin assets
         if: >-
           matrix.asset_commit != '' &&
@@ -93,6 +115,10 @@ jobs:
         with:
           path: .sim-assets/${{ matrix.plugin }}
           key: plugin-assets-${{ matrix.plugin }}-${{ matrix.asset_commit }}
+      - name: Install sim extras
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[humanoid-sim]"
       - name: Run class conformance
         shell: bash
         env:
@@ -102,11 +128,14 @@ jobs:
           MATRIX_SCENARIO: ${{ matrix.scenario }}
         run: |
           set -euo pipefail
+          mkdir -p conformance-logs
           start=$SECONDS
           set +e
-          python -m ohho.testing.conformance --robot "$MATRIX_ROBOT"
+          python -m ohho.testing.conformance --robot "$MATRIX_ROBOT" \
+            > "conformance-logs/${MATRIX_ROBOT}.log" 2>&1
           code=$?
           set -e
+          cat "conformance-logs/${MATRIX_ROBOT}.log"
           elapsed=$((SECONDS - start))
           ELAPSED="$elapsed" python - <<'PY'
           import os
@@ -123,3 +152,10 @@ jobs:
               handle.write(format_matrix_runtime(row, int(os.environ["ELAPSED"])))
           PY
           exit "$code"
+      - name: Upload conformance log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-${{ matrix.robot }}-${{ matrix.scenario }}
+          path: conformance-logs/
+          if-no-files-found: ignore

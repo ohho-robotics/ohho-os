@@ -233,9 +233,12 @@ A new plugin runs it like this:
 5. `quadruped` runs `quadruped_walk` on the kinematic backend. The sim starts
    lying; velocity is ignored until stand; sit and lie-down block drive; body
    euler is clamped to the safety limit (never widened); a stale command zeros
-   velocity and e-stop latches. `aerial` and `humanoid` stay in the kit
-   registry with no sim backend. That report is skipped, with the reason, and
-   is not a pass.
+   velocity and e-stop latches.
+6. `humanoid` runs `humanoid_walk` on `humanoid-mujoco`: prepare, walk 1 m,
+   turn 90 degrees, stop, e-stop while walking (hold prepare, do not damp
+   while upright), then an injected push that latches the fall and damps.
+   `aerial` stays in the kit registry with no sim backend. That report is
+   skipped, with the reason, and is not a pass.
 
 Every run also checks the telemetry schema, that MCP payloads carry `backend`
 and that MCP cannot arm (skipped with a reason until `ohho.mcp` exists), that

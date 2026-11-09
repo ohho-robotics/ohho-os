@@ -7,6 +7,7 @@ empty so discovery cannot collide with another plugin's schemes.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ohho.registry import RobotSpec
@@ -37,6 +38,23 @@ class BoosterPlugin:
         """Console descriptor stays with core. This plugin does not emit one."""
         del spec
         return None
+
+    def asset_source(self) -> Any:
+        """Pinned description repository. The checkpoint is fetched beside it."""
+        from ohho.plugins import AssetSource
+
+        from .assets import description_repository, load_manifest
+
+        pin = load_manifest()
+        return AssetSource(
+            repository=description_repository(pin), commit=str(pin["commit"])
+        )
+
+    def materialise_assets(self, dest: Path) -> None:
+        """Store the pinned checkpoint in the sim-matrix checkout."""
+        from .assets import materialise_checkout
+
+        materialise_checkout(Path(dest))
 
     def prepare_sim(self, spec: RobotSpec) -> None:
         """Bind the walk config for this spec. Fetches pinned files if needed.

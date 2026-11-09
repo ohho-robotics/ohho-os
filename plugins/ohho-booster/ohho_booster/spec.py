@@ -10,7 +10,7 @@ from __future__ import annotations
 from ohho import capabilities as caps
 from ohho.humanoid_sim import HUMANOID_MUJOCO_BACKEND
 from ohho.registry import RobotSpec
-from ohho.robot_spec import HumanoidLimits, RobotAssets, RobotClass
+from ohho.robot_spec import CiSim, HumanoidLimits, RobotAssets, RobotClass
 
 from .assets import load_manifest
 from .joints import JOINT_GROUPS, T2_JOINT_NAMES
@@ -79,4 +79,5 @@ def booster_t2_spec() -> RobotSpec:
             licence="BSD-3-Clause",
         ),
         source="booster",
+        ci_sim=CiSim(enabled=True, scenario="humanoid_walk"),
     )
