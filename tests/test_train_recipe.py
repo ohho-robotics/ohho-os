@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import tempfile
@@ -486,6 +487,10 @@ class TestActRun(unittest.TestCase):
             self.assertFalse(_events_of(events, "done"))
             self.assertFalse((out / "run_manifest.json").exists())
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("torch") is not None,
+        "needs torch (pip install 'ohho-os[train]')",
+    )
     def test_tiny_act_recipe_on_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
