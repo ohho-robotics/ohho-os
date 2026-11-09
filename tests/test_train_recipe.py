@@ -503,6 +503,10 @@ class TestActRun(unittest.TestCase):
             self.assertIn("boom", manifest["error"])
             self.assertIsNotNone(manifest["finished_at"])
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("torch") is not None,
+        "needs torch (pip install 'ohho-os[train]')",
+    )
     def test_tiny_act_recipe_on_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
