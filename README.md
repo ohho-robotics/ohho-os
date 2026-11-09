@@ -283,6 +283,14 @@ ohho selftest --robot omnibot --allow-spin
 
 See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, and the JSON schema.
 
+## Benchmark results (`ohho bench`)
+
+`ohho bench validate <file>` checks a Serve benchmark result against
+`ohho.bench/v1`. The schema ships with the package
+(`ohho/bench/schemas/bench.v1.json`). Rules for additive fields and for a
+future v2 converter are in
+[`docs/serve/bench-schema.md`](docs/serve/bench-schema.md).
+
 ## TypeScript
 
 The TypeScript SDK (`@ohho/schemas`, `@ohho/connect`, `@ohho/client`) lives in
