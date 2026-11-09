@@ -1595,9 +1595,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.command == "bench"
             and not getattr(args, "bench_command", None)
             and not getattr(args, "artifact", None)
+            and not getattr(args, "pipeline", False)
         ):
             parser.error(
-                "bench needs `validate FILE` or `--artifact PATH --target PROFILE`"
+                "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
+                "or `--pipeline`"
             )
         return args.func(args)
     except BrokenPipeError:
