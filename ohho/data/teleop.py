@@ -1,8 +1,8 @@
 """Teleoperation episode recorder for legged robots via sim-serve (OHH-129).
 
-Drives a Unitree Go2 in simulation via ``SimServe`` WebSocket commands,
-capturing 31-D legged observation states, 4-D actions (clamped + raw),
-and optional front-camera video frames.
+Drives the registered quadruped in simulation via ``SimServe`` WebSocket
+commands, capturing 31-D legged observation states, 4-D actions (clamped +
+raw), and optional front-camera video frames.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ async def _run_teleop_recording_async(
     num_episodes: int = 10,
     steps_per_episode: int = 20,
     fps: float = 10.0,
-    repo_id: str = "ohho-robotics/go2-sim-teleop-v0",
+    repo_id: str | None = None,
     task: str = "walk to the red box",
     with_video: bool = True,
     target_x: float = 2.0,
@@ -67,10 +67,21 @@ async def _run_teleop_recording_async(
     """Internal coroutine for recording teleop episodes via sim-serve WebSocket."""
     import websockets
 
-    # 1. Start SimServe for Go2 on random port
+    from ..plugins import plugin_text
+    from ..registry import list_specs
+    from ..robot_spec import RobotClass
+
+    if not repo_id:
+        repo_id = plugin_text("teleop_repo_id") or "ohho-robotics/legged-sim-teleop-v0"
+    robot_id = "sim"
+    for spec in list_specs():
+        if spec.robot_class is RobotClass.QUADRUPED:
+            robot_id = spec.id
+            break
+
     server = SimServe(
         backend="sim",
-        robot="unitree-go2",
+        robot=robot_id,
         host="127.0.0.1",
         port=0,
         rate_hz=fps,
@@ -152,18 +163,18 @@ async def _run_teleop_recording_async(
     return dataset_path, stats
 
 
-def record_go2_teleop_episodes(
+def record_legged_teleop_episodes(
     output_dir: str,
     num_episodes: int = 10,
     steps_per_episode: int = 20,
     fps: float = 10.0,
-    repo_id: str = "ohho-robotics/go2-sim-teleop-v0",
+    repo_id: str | None = None,
     task: str = "walk to the red box",
     with_video: bool = True,
     target_x: float = 2.0,
     target_y: float = 0.2,
 ) -> Tuple[str, Dict[str, Dict[str, float]]]:
-    """Record teleoperation episodes for Unitree Go2 in sim via sim-serve.
+    """Record teleoperation episodes for the quadruped in sim via sim-serve.
 
     Parameters:
         output_dir: directory to write the LeRobot v2.0 dataset.

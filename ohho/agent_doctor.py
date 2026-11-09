@@ -435,10 +435,14 @@ def _connect_sim(robot_id: str) -> Robot:
 
 
 def check_sim(
-    robot_id: str = "omnibot",
+    robot_id: str | None = None,
     connect: Optional[Callable[[str], Robot]] = None,
 ) -> Check:
     """Connect ``robot_id`` on ``sim://`` and read telemetry once. No motion."""
+    if not robot_id:
+        from .plugins import preferred_robot_id
+
+        robot_id = preferred_robot_id()
     opener = connect or _connect_sim
     bot: Optional[Robot] = None
     try:

@@ -2,7 +2,7 @@
 
 Ported from the web Connect layer (website/lib/connect/types.ts). A transport
 opens a link to a robot and exposes a uniform surface: drive, command joints,
-e-stop, and read/stream telemetry. Adapters (sim, Unitree DDS, DJI MAVLink, …)
+e-stop, and read/stream telemetry. Adapters (sim, DDS, MAVLink, …)
 each implement this so every higher layer is protocol-agnostic.
 """
 

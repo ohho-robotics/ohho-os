@@ -1,7 +1,7 @@
 import unittest
 
 from ohho.adapters.sim import SimTransport
-from ohho.adapters.unitree import (
+from ohho.robots.unitree.dds import (
     UnitreeDdsTransport,
     sport_mode_to_posture,
     sportstate_to_telemetry,
