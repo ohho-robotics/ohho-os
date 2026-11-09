@@ -97,6 +97,8 @@ ohho = [
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",
+  "bench/schemas/*.json",
+  "bench/examples/*.json",
 ]
 
 [tool.pytest.ini_options]
