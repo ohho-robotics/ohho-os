@@ -17,9 +17,11 @@ from ohho.train.sweep import (
     MAX_TRIALS,
     SCHEMA_ID,
     SweepError,
+    _assign,
     expand,
     format_plan,
     load_schema,
+    load_sweep,
     parse_sweep_text,
     plan_as_dict,
     validate_sweep,
@@ -232,6 +234,49 @@ class TestValidator(unittest.TestCase):
     def test_duplicate_json_key(self) -> None:
         with self.assertRaises(SweepError):
             parse_sweep_text('{"schema": "ohho.sweep/v1", "schema": "ohho.sweep/v1"}')
+
+    def test_integer_accepts_whole_floats_and_rejects_non_whole(self) -> None:
+        doc = {
+            "schema": SCHEMA_ID,
+            "seed": 42.0,
+            "parallelism": 2.0,
+            "dimensions": [
+                {
+                    "name": "batch",
+                    "type": "int",
+                    "low": 1.0,
+                    "high": 5.0,
+                    "n": 3.0,
+                },
+                {
+                    "name": "layers",
+                    "type": "int",
+                    "low": 2.0,
+                    "high": 8.0,
+                    "step": 2.0,
+                },
+            ],
+            "early_stopping": {"metric": "loss", "patience": 2.0},
+            "budget": {"max_trials": 10.0},
+        }
+        spec = validate_sweep(doc)
+        self.assertEqual(spec.seed, 42)
+        self.assertEqual(spec.parallelism, 2)
+        self.assertEqual(spec.dimensions[0].n, 3)
+        self.assertEqual(spec.dimensions[1].step, 2)
+        self.assertEqual(spec.early_stopping["patience"], 2)
+        self.assertEqual(spec.budget["max_trials"], 10)
+
+        for bad_key, bad_val in [
+            ("seed", 42.5),
+            ("parallelism", 2.2),
+        ]:
+            with self.subTest(key=bad_key, val=bad_val):
+                with self.assertRaises(SweepError):
+                    validate_sweep({"schema": SCHEMA_ID, bad_key: bad_val})
+
+        with self.assertRaises(SweepError):
+            validate_sweep({"schema": SCHEMA_ID, "seed": True})
 
 
 class TestExpander(unittest.TestCase):
@@ -719,6 +764,29 @@ class TestExpander(unittest.TestCase):
         )
         self.assertEqual([trial.overrides["batch"] for trial in plan.trials], [4, 8])
 
+    def test_assign_rejects_null_intermediate(self) -> None:
+        with self.assertRaises(SweepError):
+            expand(
+                {
+                    "schema": SCHEMA_ID,
+                    "recipe": {"model": {"lora": None}},
+                    "dimensions": [
+                        {
+                            "name": "rank",
+                            "path": "model.lora.rank",
+                            "type": "int",
+                            "values": [4, 8],
+                        }
+                    ],
+                }
+            )
+
+        root = {"model": {"lora": None}}
+        with self.assertRaises(SweepError):
+            _assign(root, "model.lora.rank", 8)
+        _assign(root, "model.lora", {"rank": 8})
+        self.assertEqual(root["model"]["lora"], {"rank": 8})
+
 
 class TestYaml(unittest.TestCase):
     def test_yaml_grid_matches_json_grid(self) -> None:
@@ -750,6 +818,15 @@ class TestYaml(unittest.TestCase):
         quoted = parse_sweep_text('schema: "ohho.sweep/v1"\nseed: 2\n')
         self.assertEqual(quoted["schema"], SCHEMA_ID)
         self.assertEqual(quoted["seed"], 2)
+
+    def test_json_file_with_bom(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sweep.json"
+            content = f'\ufeff{{"schema": "{SCHEMA_ID}", "seed": 7}}'
+            path.write_bytes(content.encode("utf-8"))
+            spec = load_sweep(path)
+            self.assertEqual(spec.schema, SCHEMA_ID)
+            self.assertEqual(spec.seed, 7)
 
 
 def load_and_expand_path(name: str):
