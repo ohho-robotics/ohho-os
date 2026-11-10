@@ -26,7 +26,9 @@ from ohho.bench.pipeline import (
     PipelineConfig,
     Ros2PublishSink,
     TinyCpuPolicy,
+    _digest_path,
     execute_pipeline,
+    load_lerobot,
 )
 from ohho.bench.report import render_markdown
 from ohho.cli import build_parser, main
@@ -367,6 +369,130 @@ class TestPipelineSources(unittest.TestCase):
             )
         self.assertEqual(document["pipeline"]["frame_origin"], "camera")
         self.assertEqual(document["pipeline"]["world"], "recorded")
+
+    def test_digest_path_streams_chunks_without_calling_read_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "dataset"
+            root.mkdir()
+            (root / "metadata.json").write_text("{}", encoding="utf-8")
+            large_file = root / "large.bin"
+            large_file.write_bytes(b"x" * (128 * 1024))
+
+            def forbid_read_bytes(self_path: Path) -> bytes:
+                raise AssertionError(f"read_bytes called on {self_path}")
+
+            with patch.object(Path, "read_bytes", forbid_read_bytes):
+                digest = _digest_path(root)
+            self.assertTrue(digest.startswith("sha256:"))
+
+            with patch.object(Path, "read_bytes", forbid_read_bytes):
+                file_digest = _digest_path(large_file)
+            self.assertTrue(file_digest.startswith("sha256:"))
+
+    def test_lerobot_load_respects_frame_limit_and_decodes_only_capped_frames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "dataset"
+            data = root / "data" / "chunk-000"
+            data.mkdir(parents=True)
+            (root / "meta").mkdir()
+            (root / "meta" / "info.json").write_text(
+                json.dumps(
+                    {
+                        "repo_id": "local/demo",
+                        "robot_type": "omnibot",
+                        "fps": 10,
+                        "total_episodes": 1,
+                        "total_frames": 10,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            image = _b64(2, 2, (1, 2, 3))
+            rows = []
+            for index in range(10):
+                rows.append(
+                    json.dumps(
+                        {
+                            "observation.state": [0.1, 0.2, 0.0],
+                            "action": [0.0, 0.0, 0.0],
+                            "timestamp": index / 10,
+                            "frame_index": index,
+                            "episode_index": 0,
+                            "task_index": 0,
+                            "next.done": index == 9,
+                            "observation.images.front": image,
+                        }
+                    )
+                )
+            (data / "episode_000000.jsonl").write_text(
+                "\n".join(rows) + "\n", encoding="utf-8"
+            )
+
+            stream = load_lerobot(root, episode=0, limit=3)
+            self.assertEqual(len(stream.frames), 3)
+
+            document = execute_pipeline(
+                PipelineConfig(
+                    source="lerobot",
+                    dataset=str(root),
+                    hz=10,
+                    warmup=1,
+                    iters=2,
+                    sink="inprocess",
+                ),
+                clock=VirtualClock(),
+                costs=_costs(),
+            )
+            self.assertEqual(document["pipeline"]["frames_presented"], 3)
+            self.assertEqual(document["pipeline"]["frames_published"], 3)
+
+    def test_lerobot_video_frames_passed_frame_cap_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "dataset"
+            data = root / "data" / "chunk-000"
+            data.mkdir(parents=True)
+            (root / "meta").mkdir()
+            (root / "meta" / "info.json").write_text(
+                json.dumps(
+                    {
+                        "repo_id": "local/demo",
+                        "robot_type": "omnibot",
+                        "fps": 10,
+                        "total_episodes": 1,
+                        "total_frames": 20,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rows = []
+            for index in range(20):
+                rows.append(
+                    json.dumps(
+                        {
+                            "observation.state": [0.1, 0.2, 0.0],
+                            "action": [0.0, 0.0, 0.0],
+                            "timestamp": index / 10,
+                            "frame_index": index,
+                            "episode_index": 0,
+                            "task_index": 0,
+                            "next.done": index == 19,
+                        }
+                    )
+                )
+            (data / "episode_000000.jsonl").write_text(
+                "\n".join(rows) + "\n", encoding="utf-8"
+            )
+
+            from ohho.bench.pipeline import RgbImage
+
+            fake_images = [RgbImage(2, 2, b"\x00" * 12) for _ in range(4)]
+            with patch(
+                "ohho.bench.pipeline._video_frames", return_value=fake_images
+            ) as mock_video:
+                stream = load_lerobot(root, episode=0, limit=4)
+                mock_video.assert_called_once()
+                self.assertEqual(mock_video.call_args[0][2], 4)
+                self.assertEqual(len(stream.frames), 4)
 
     def test_sim_loop_is_labelled_sim_and_publishes(self) -> None:
         sink = InProcessSink()

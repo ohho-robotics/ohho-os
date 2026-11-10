@@ -822,10 +822,15 @@ def _latency_report(samples: _Samples) -> dict[str, Any]:
     return stats
 
 
-def _wanted_frames(config: PipelineConfig, stream: CameraStream | None) -> int:
-    wanted = config.warmup + config.iters
+def _frame_cap(config: PipelineConfig) -> int:
+    cap = config.warmup + config.iters
     if config.frames is not None:
-        wanted = min(wanted, config.frames)
+        cap = min(cap, config.frames)
+    return cap
+
+
+def _wanted_frames(config: PipelineConfig, stream: CameraStream | None) -> int:
+    wanted = _frame_cap(config)
     if stream is not None:
         wanted = min(wanted, len(stream.frames))
     if wanted <= config.warmup:
@@ -838,6 +843,7 @@ def _wanted_frames(config: PipelineConfig, stream: CameraStream | None) -> int:
 
 
 def _load_stream(config: PipelineConfig) -> CameraStream:
+    limit = _frame_cap(config)
     if config.source == "fixture":
         if not config.fixture:
             raise BenchHarnessError("--source fixture needs --fixture PATH")
@@ -845,13 +851,13 @@ def _load_stream(config: PipelineConfig) -> CameraStream:
     if config.source == "lerobot":
         if not config.dataset:
             raise BenchHarnessError("--source lerobot needs --dataset PATH")
-        return load_lerobot(Path(config.dataset), config.episode)
+        return load_lerobot(Path(config.dataset), config.episode, limit=limit)
     if config.source == "rosbag":
         if not config.bag:
             raise BenchHarnessError("--source rosbag needs --bag PATH")
         return load_rosbag(Path(config.bag))
     kind, path = _hardware_recording(config)
-    stream = _load_kind(kind, Path(path), config.episode)
+    stream = _load_kind(kind, Path(path), config.episode, limit=limit)
     return replace(stream, world="hardware", source="hardware", recording=kind)
 
 
@@ -863,7 +869,9 @@ def load_fixture(path: Path) -> CameraStream:
     return _stream_from_document(data, source="fixture", label=str(path))
 
 
-def load_lerobot(path: Path, episode: int) -> CameraStream:
+def load_lerobot(
+    path: Path, episode: int, limit: int | None = None
+) -> CameraStream:
     """Load one LeRobot episode. A missing camera becomes a state raster."""
     if not path.is_dir():
         raise BenchHarnessError(f"dataset not found: {path}")
@@ -878,7 +886,7 @@ def load_lerobot(path: Path, episode: int) -> CameraStream:
         raise BenchHarnessError(f"cannot read dataset {path}: {exc}") from exc
     if not rows:
         raise BenchHarnessError(f"episode {episode} has no frames")
-    images, origin = _episode_images(path, reader, episode, rows)
+    images, origin = _episode_images(path, reader, episode, rows, limit=limit)
     frames = tuple(
         EncodedFrame(
             index=index,
@@ -968,15 +976,20 @@ def _stream_from_document(
 
 
 def _episode_images(
-    root: Path, reader: Any, episode: int, rows: Sequence[Any]
+    root: Path,
+    reader: Any,
+    episode: int,
+    rows: Sequence[Any],
+    limit: int | None = None,
 ) -> tuple[list[RgbImage], str]:
-    video = _video_frames(reader, episode, len(rows))
+    max_frames = len(rows) if (limit is None or limit < 1) else min(len(rows), limit)
+    video = _video_frames(reader, episode, max_frames)
     if video is not None:
-        if len(video) < len(rows):
+        if len(video) < max_frames:
             raise BenchHarnessError(
-                f"episode {episode} video has {len(video)} frames for {len(rows)} rows"
+                f"episode {episode} video has {len(video)} frames for {max_frames} rows"
             )
-        return video[: len(rows)], "camera"
+        return video[:max_frames], "camera"
     inline = _jsonl_images(root, episode)
     # The episode file exists for a state-only recording too. That is a missing
     # camera, not a camera with a hole in it. A hole is an image on some frames
@@ -986,9 +999,9 @@ def _episode_images(
             raise BenchHarnessError(
                 f"episode {episode} is missing observation.images.front on a frame"
             )
-        return [item for item in inline if item is not None], "camera"
+        return [item for item in inline[:max_frames] if item is not None], "camera"
     return [
-        _rasterize_state(list(row.observation_state)) for row in rows
+        _rasterize_state(list(row.observation_state)) for row in rows[:max_frames]
     ], "state-raster"
 
 
@@ -1235,11 +1248,13 @@ def _hardware_recording(config: PipelineConfig) -> tuple[str, str]:
     return found[0]
 
 
-def _load_kind(kind: str, path: Path, episode: int) -> CameraStream:
+def _load_kind(
+    kind: str, path: Path, episode: int, limit: int | None = None
+) -> CameraStream:
     if kind == "fixture":
         return load_fixture(path)
     if kind == "lerobot":
-        return load_lerobot(path, episode)
+        return load_lerobot(path, episode, limit=limit)
     return load_rosbag(path)
 
 
@@ -1469,16 +1484,25 @@ def _manifest(config: PipelineConfig, stream: CameraStream | None) -> str:
     return config.source
 
 
+_DIGEST_CHUNK_SIZE = 1 << 16
+
+
+def _hash_file(digest: Any, file: Path) -> None:
+    with file.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_DIGEST_CHUNK_SIZE), b""):
+            digest.update(chunk)
+
+
 def _digest_path(path: Path) -> str:
     digest = hashlib.sha256()
     if path.is_file():
-        digest.update(path.read_bytes())
+        _hash_file(digest, path)
     elif path.is_dir():
         files = sorted(item for item in path.rglob("*") if item.is_file())
         for file in files:
             digest.update(file.relative_to(path).as_posix().encode("utf-8"))
             digest.update(b"\0")
-            digest.update(file.read_bytes())
+            _hash_file(digest, file)
             digest.update(b"\0")
     else:
         digest.update(str(path).encode("utf-8"))
