@@ -1,0 +1,22 @@
+schema: ohho.recipe/v1
+name: diffusion-policy
+family: diffusion
+base_weights:
+  uri: local:diffusion-init
+  revision: unpinned
+dataset:
+  path: datasets/sim-loop
+hyperparameters:
+  num_epochs: 100
+  batch_size: 8
+  lr: 0.0001
+  horizon: 16
+precision: fp32
+device: cpu
+compression_hooks: []
+eval_hooks:
+  - name: sim_success
+    params:
+      episodes: 5
+output:
+  dir: checkpoints/diffusion

@@ -84,6 +84,46 @@ def render_markdown(document: dict[str, Any]) -> str:
                 max=_num(stage.get("max", 0)),
             )
         )
+    llm = document.get("llm")
+    if isinstance(llm, dict) and isinstance(llm.get("points"), list) and llm["points"]:
+        lines.append("")
+        lines.append("### Generate")
+        lines.append("")
+        lines.append("| Precision | Conc | Prompt | TTFT p95 | TPOT p95 | tokens/s |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        for point in llm["points"]:
+            lines.append(
+                "| {precision} | {concurrency} | {prompt} | {ttft} | {tpot} | {rate} |".format(
+                    precision=_cell(point.get("precision", "")),
+                    concurrency=point.get("concurrency", ""),
+                    prompt=point.get("prompt_tokens", ""),
+                    ttft=_num(point.get("ttft", {}).get("p95", 0)),
+                    tpot=_num(point.get("tpot", {}).get("p95", 0)),
+                    rate=_num(point.get("tokens_per_s", 0)),
+                )
+            )
+    pipeline = document.get("pipeline")
+    if isinstance(pipeline, dict):
+        lines.append("")
+        lines.append("### Pipeline")
+        lines.append("")
+        lines.append("| Field | Value |")
+        lines.append("| --- | --- |")
+        lines.append(f"| World | {_cell(pipeline.get('world', ''))} |")
+        lines.append(f"| Source | {_cell(pipeline.get('source', ''))} |")
+        lines.append(f"| Device | {_cell(pipeline.get('device', ''))} |")
+        lines.append(f"| Target Hz | {_num(pipeline.get('target_hz', 0))} |")
+        lines.append(f"| Achieved Hz | {_num(pipeline.get('achieved_hz', 0))} |")
+        lines.append(f"| Dropped frames | {pipeline.get('dropped_frames', '')} |")
+        sustained = "yes" if pipeline.get("rate_sustained") else "no"
+        lines.append(f"| Rate sustained | {sustained} |")
+        lines.append(f"| Jitter ms | {_num(pipeline.get('jitter_ms', 0))} |")
+        lines.append(
+            f"| Interval jitter ms | {_num(pipeline.get('interval_jitter_ms', 0))} |"
+        )
+        lines.append(
+            f"| Live robot | {'yes' if pipeline.get('live_robot') else 'no'} |"
+        )
     batches = document.get("batches")
     if isinstance(batches, list) and batches:
         lines.append("")
@@ -219,6 +259,23 @@ def render_prometheus(document: dict[str, Any]) -> str:
             "ohho_bench_gate_passed"
             f'{{target="{profile}",workload="{workload}"}} '
             f"{1 if gates.get('passed') else 0}"
+        )
+    pipeline = document.get("pipeline")
+    if isinstance(pipeline, dict):
+        lines.append(
+            "ohho_bench_pipeline_dropped_frames"
+            f'{{target="{profile}",workload="{workload}"}} '
+            f"{int(pipeline.get('dropped_frames', 0))}"
+        )
+        lines.append(
+            "ohho_bench_pipeline_rate_sustained"
+            f'{{target="{profile}",workload="{workload}"}} '
+            f"{1 if pipeline.get('rate_sustained') else 0}"
+        )
+        lines.append(
+            "ohho_bench_pipeline_jitter_ms"
+            f'{{target="{profile}",workload="{workload}"}} '
+            f"{float(pipeline.get('jitter_ms', 0))}"
         )
     lines.append("")
     return "\n".join(lines)

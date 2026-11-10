@@ -223,3 +223,128 @@ document = execute(
 A custom runner implements `preprocess`, `h2d`, `inference`, `d2h`, and
 `postprocess`. Pass it as `execute(config, runner=runner)`. That is the
 surface another package can call.
+
+## Generate mode
+
+`--mode generate` measures an autoregressive model: a language model, a
+vision-language model, or action tokens. It does not take `--artifact`.
+`--target` is still the hardware profile. `--workload` is `llm`, `vlm`, or
+`vla` (an omitted workload is `llm`).
+
+```bash
+ohho bench --mode generate --target x86-cpu --workload llm \
+  --concurrency 1,4,16 --prompt-tokens 16,64 \
+  --precision fp16,bf16,bnb-int4,awq,gptq \
+  --slo ttft_p95<=50ms,tpot_p95<=20ms --json out.json
+
+ohho bench --mode generate --target x86-cpu --workload vlm \
+  --image-sizes 224,448 --json out.json
+```
+
+Each cell records:
+
+| Field | Meaning |
+|---|---|
+| TTFT | Time to the first output token. mean, median, and p95. |
+| TPOT | Time per later output token. mean, median, and p95. |
+| end-to-end | First token plus the following tokens. This is the top-level latency. |
+| tokens/s per request | Output tokens divided by that request's end-to-end time. |
+| tokens/s | All output tokens divided by the wall time of the cell. |
+
+The default sweep is concurrency `1,4,16` and prompt lengths `16,64`.
+Concurrency is the batching axis: several requests share the generator.
+Static `--batch` stays on inference mode. A `vlm` or `vla` run also records
+an image size (`224` unless `--image-sizes` is set). `llm` rejects a
+non-zero image size. A cell runs at least as many requests as its
+concurrency, so the level is saturated. Higher concurrency raises TTFT and
+TPOT and still raises aggregate tokens/s on the stand-in.
+
+`--slo ttft_p95<=50ms` and `--slo tpot_p95<=20ms` read `llm.ttft.p95` and
+`llm.tpot.p95`. A comma in one `--slo` is two gates. A failed gate exits 1
+after the JSON is written. End-to-end gates such as `p95<=200ms` still apply
+to the primary latency.
+
+### Backends
+
+| `--backend` | When |
+|---|---|
+| `stand-in` (default) | Deterministic CPU generator. No extra packages. |
+| `transformers` | Hugging Face causal LM. Needs `torch` and `transformers`, which are not base dependencies. |
+| `vllm`, `sglang`, `tensorrt-llm` | External engines from the serving adapters. Only on a target whose accelerator is `dgpu` or `orin_gpu`. |
+
+The stand-in advances a virtual clock (`environment.timing_source` is
+`virtual`). FP16, BF16, and FP32 share greedy action tokens. `bnb-int4`,
+`awq`, and `gptq` disagree on every fourth token. Agreement is top-1
+action-token match against the FP16 sequence. `ohho.parity` supplies that
+score when it is installed; otherwise the fraction is computed locally.
+`peak_vram_mb` for the stand-in is the weight buffer it allocates
+(`vram_source` is `stand-in-weights`): FP16 and BF16 are larger than the
+4-bit buffers. That number is not a GPU probe.
+
+`llm.points` is every cell. `llm.precisions` is the comparison at concurrency
+1 (or the smallest concurrency), the shortest prompt, and the smallest image.
+The required `llm` fields stay the primary cell, so an older reader still
+sees TTFT, inter-token latency, and tokens/s. TPOT is also copied to
+`llm.inter_token`.
+
+On CPU CI the stand-in is the measured path. The transformers import and the
+external engines are not loaded unless that backend is selected. A 4-bit
+transformers load needs a CUDA device. GPU runs are outside CI.
+
+## Pipeline (`--pipeline`)
+
+`ohho bench --pipeline` times a camera frame through seven stages and writes
+the same [`ohho.bench/v1`](bench-schema.md) document plus a `pipeline` object
+whose `version` is `ohho.bench.pipeline/v1`.
+
+```bash
+ohho bench --pipeline --hz 30 --json out.json
+ohho bench --pipeline --fixture stream.json --sink inprocess --warmup 0 --iters 8
+ohho bench --pipeline --dataset ./dataset --episode 0 --hz 30
+ohho bench --pipeline --bag ./recording --hz 30
+```
+
+Stages, in order: `decode`, `preprocess`, `h2d`, `inference`, `d2h`,
+`postprocess`, `publish`. End-to-end latency is the sum of those seven.
+`latency.p50`, `p95`, and `p99` are that sum. `pipeline.jitter_ms` is
+`latency.std`. `latency.achievable_hz` stays "iterations per second implied
+by the mean latency". The paced control rate is `pipeline.achieved_hz` and
+`throughput` (`frames/s`).
+
+The default source is the in-process simulator (`--source sim`, `--robot sim`).
+Each tick reads a small RGB frame from that sim, runs the built-in `tiny-cpu`
+policy, and publishes a clamped body velocity back into the sim. The result
+is labelled `pipeline.world = sim` and `environment.world = sim`. It does not
+train a model and it does not open hardware. A LeRobot episode recorded by
+`record_sim_episodes` can be replayed with `--dataset`; an episode with no
+stored camera is decoded from a state raster and marked
+`pipeline.frame_origin = state-raster`.
+
+`--fixture` reads `ohho.pipeline.stream/v1` (a JSON list of base64 frames).
+`--bag` reads `ohho.pipeline.rosbag/v1` (`metadata.json` plus `frames.jsonl`,
+or one JSON file). A ROS 2 bag directory or an `.mcap` file is refused: this
+bench does not download rosbag2 and does not decode `sensor_msgs/Image`.
+
+`publish` goes to a sink. `sim` calls `Robot.drive` on the in-process
+simulator. `inprocess` records the action. `ros2` publishes
+`geometry_msgs/Twist` and imports `rclpy` only when that sink is selected.
+`postprocess` clamps vx, vy, and yaw rate to the robot spec (`--robot`,
+default `sim`) before the sink sees them. Non-holonomic vy is zero.
+
+Frames are paced at `--hz` (default 30). A frame is dropped when its
+control period has already elapsed before the pipeline can start it.
+`pipeline.rate_sustained` is true when nothing was dropped and every
+published frame finished inside its period. `pipeline.dropped_frames` is
+the skip count.
+
+H2D and D2H are host copies. `pipeline.device` is `cpu` and
+`pipeline.gpu_follow_up` lists `h2d` and `d2h`. CUDA copies are not timed.
+
+`--source hardware` is refused unless `--allow-hardware` is set. With that
+flag the bench still only replays `--fixture`, `--dataset`, or `--bag`.
+`pipeline.live_robot` is false. A `serial://`, `dds://`, or other device URI
+is refused. This command does not arm a robot and does not set
+`OHHO_ARM_HARDWARE`.
+
+`--artifact` stays the five-stage ONNX bench. Do not pass it with
+`--pipeline`.

@@ -37,7 +37,7 @@ class RaplSource(SensorSource):
         self._root = root if root is not None else _DEFAULT_ROOT
         self._clock = clock or time.monotonic
         self._zones: list[Path] = []
-        self._last: tuple[float, int] | None = None
+        self._last: tuple[float, dict[Path, int]] | None = None
 
     def probe(self) -> SourceStatus:
         zones = _package_zones(self._root)
@@ -64,23 +64,38 @@ class RaplSource(SensorSource):
     def read(self) -> SensorSample:
         if not self._zones:
             return SensorSample(self.source_id)
-        try:
-            energy, span = _read_zones(self._zones)
-        except OSError:
-            return SensorSample(self.source_id)
+        current: dict[Path, int] = {}
+        for zone in self._zones:
+            try:
+                current[zone] = _read_counter(zone / "energy_uj")
+            except (OSError, ValueError):
+                return SensorSample(self.source_id)
         now = float(self._clock())
         previous = self._last
-        self._last = (now, energy)
+        self._last = (now, current)
         if previous is None:
             return SensorSample(self.source_id)
-        prev_t, prev_e = previous
+        prev_t, prev_energies = previous
         dt = now - prev_t
         if dt <= 0:
             return SensorSample(self.source_id)
-        delta = _energy_delta(prev_e, energy, span)
-        if delta is None:
-            return SensorSample(self.source_id)
-        return SensorSample(self.source_id, power_w=(delta / 1_000_000.0) / dt)
+        total_delta = 0
+        for zone in self._zones:
+            prev_e = prev_energies.get(zone)
+            if prev_e is None:
+                return SensorSample(self.source_id)
+            span_path = zone / "max_energy_range_uj"
+            span = None
+            if span_path.is_file():
+                try:
+                    span = _read_counter(span_path)
+                except (OSError, ValueError):
+                    pass
+            delta = _energy_delta(prev_e, current[zone], span)
+            if delta is None:
+                return SensorSample(self.source_id)
+            total_delta += delta
+        return SensorSample(self.source_id, power_w=(total_delta / 1_000_000.0) / dt)
 
     def stop(self) -> None:
         self._last = None
@@ -91,14 +106,18 @@ def source() -> RaplSource:
     return RaplSource()
 
 
+def _is_mmio(path: Path) -> bool:
+    return "mmio" in path.name.lower()
+
+
 def _package_zones(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
-    found: list[Path] = []
     try:
         children = sorted(root.iterdir())
     except OSError:
         return []
+    packages: dict[str, Path] = {}
     for child in children:
         name_file = child / "name"
         energy = child / "energy_uj"
@@ -108,22 +127,13 @@ def _package_zones(root: Path) -> list[Path]:
             label = name_file.read_text(encoding="utf-8").strip().lower()
         except OSError:
             continue
-        if label.startswith("package"):
-            found.append(child)
-    return found
-
-
-def _read_zones(zones: list[Path]) -> tuple[int, int | None]:
-    energy = 0
-    span = 0
-    saw_span = False
-    for zone in zones:
-        energy += _read_counter(zone / "energy_uj")
-        span_path = zone / "max_energy_range_uj"
-        if span_path.is_file():
-            span += _read_counter(span_path)
-            saw_span = True
-    return energy, span if saw_span else None
+        if not label.startswith("package"):
+            continue
+        if label not in packages:
+            packages[label] = child
+        elif _is_mmio(packages[label]) and not _is_mmio(child):
+            packages[label] = child
+    return [packages[key] for key in sorted(packages)]
 
 
 def _read_counter(path: Path) -> int:

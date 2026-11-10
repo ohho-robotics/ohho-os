@@ -269,6 +269,85 @@ class TestOtherSources(unittest.TestCase):
         self.assertFalse(absent.available)
         self.assertIn("RAPL", absent.reason or "")
 
+    def test_rapl_deduplicates_mmio_package_zones(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            msr0 = root / "intel-rapl-0"
+            msr0.mkdir()
+            (msr0 / "name").write_text("package-0\n", encoding="utf-8")
+            (msr0 / "energy_uj").write_text("1000000\n", encoding="utf-8")
+
+            mmio0 = root / "intel-rapl-mmio-0"
+            mmio0.mkdir()
+            (mmio0 / "name").write_text("package-0\n", encoding="utf-8")
+            (mmio0 / "energy_uj").write_text("1000000\n", encoding="utf-8")
+
+            msr1 = root / "intel-rapl-1"
+            msr1.mkdir()
+            (msr1 / "name").write_text("package-1\n", encoding="utf-8")
+            (msr1 / "energy_uj").write_text("2000000\n", encoding="utf-8")
+
+            mmio1 = root / "intel-rapl-mmio-1"
+            mmio1.mkdir()
+            (mmio1 / "name").write_text("package-1\n", encoding="utf-8")
+            (mmio1 / "energy_uj").write_text("2000000\n", encoding="utf-8")
+
+            clock = {"t": 0.0}
+            source = RaplSource(root=root, clock=lambda: clock["t"])
+            status = source.probe()
+            self.assertTrue(status.available)
+            # Exactly two package zones, preferring msr over mmio
+            self.assertEqual(source._zones, [msr0, msr1])
+
+            self.assertIsNone(source.read().power_w)
+            (msr0 / "energy_uj").write_text("3000000\n", encoding="utf-8")
+            (msr1 / "energy_uj").write_text("3000000\n", encoding="utf-8")
+            clock["t"] = 1.0
+            # 2 J + 1 J = 3 J over 1 s -> 3.0 W (not 6.0 W from double-counting mmio)
+            self.assertAlmostEqual(source.read().power_w, 3.0)
+
+    def test_rapl_mmio_only_is_accepted_as_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mmio = root / "intel-rapl-mmio-0"
+            mmio.mkdir()
+            (mmio / "name").write_text("package-0\n", encoding="utf-8")
+            (mmio / "energy_uj").write_text("1000000\n", encoding="utf-8")
+            clock = {"t": 0.0}
+            source = RaplSource(root=root, clock=lambda: clock["t"])
+            status = source.probe()
+            self.assertTrue(status.available)
+            self.assertEqual(source._zones, [mmio])
+
+    def test_rapl_multi_socket_independent_counter_wrap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pkg0 = root / "intel-rapl-0"
+            pkg0.mkdir()
+            (pkg0 / "name").write_text("package-0\n", encoding="utf-8")
+            (pkg0 / "energy_uj").write_text("90000000\n", encoding="utf-8")
+            (pkg0 / "max_energy_range_uj").write_text("100000000\n", encoding="utf-8")
+
+            pkg1 = root / "intel-rapl-1"
+            pkg1.mkdir()
+            (pkg1 / "name").write_text("package-1\n", encoding="utf-8")
+            (pkg1 / "energy_uj").write_text("10000000\n", encoding="utf-8")
+            (pkg1 / "max_energy_range_uj").write_text("100000000\n", encoding="utf-8")
+
+            clock = {"t": 0.0}
+            source = RaplSource(root=root, clock=lambda: clock["t"])
+            source.probe()
+            self.assertIsNone(source.read().power_w)
+
+            # pkg0 wraps: (100M - 90M) + 5M = 15M uJ = 15 J
+            # pkg1 advances normally: 15M - 10M = 5M uJ = 5 J
+            (pkg0 / "energy_uj").write_text("5000000\n", encoding="utf-8")
+            (pkg1 / "energy_uj").write_text("15000000\n", encoding="utf-8")
+            clock["t"] = 1.0
+
+            # Combined watts should be 15 + 5 = 20 W, not 120 W from summed counters
+            self.assertAlmostEqual(source.read().power_w, 20.0)
+
     def test_jtop_board_object_uses_milliwatts(self) -> None:
         class _Board:
             power = {"tot": {"power": 4000, "avg": 3900}}
