@@ -84,8 +84,38 @@ A critical service that reaches the cap latches `do_not_operate`. The
 supervisor holds the class safe action and `allows_motion()` stays false
 until `clear_do_not_operate()`. That call is the human clear. It does not
 arm the robot and does not restart the failed service. The
-`on_do_not_operate` hook is the extension point for a later policy. This
-layer does not change the safety gate.
+`on_do_not_operate` hook is notified. Without a `Degradation` the
+supervisor does not touch the safety gate.
+
+## Degradation
+
+`ohho_runtime.degradation.Degradation` binds those failures to the class
+`SafetyPolicy` through the `SafetyGate`. Pass it as `Supervisor(..., degradation=...)`.
+
+A critical failure or a stale output calls `on_watchdog`. Transport loss
+calls `on_estop`, which latches the gate. The policy keeps the class
+meaning: ground zeros velocity, aerial transport loss stops streaming so
+the gate's flight e-stop can hold or land, and a humanoid failure does
+not damp a standing robot.
+
+Consumers of a failed producer get an `InvalidOutput` instead of the last
+value. `InvalidOutput.age_s` is the age of that stale output. The policy
+runner's applied command becomes a zero `HoldCommand` in the same step
+the runner fails, inside one policy period, and that command is not
+replayed. A publish rejected while holding is not stored. A policy
+restart drops the last command and enters that hold until a later
+observation finds the deadlines healthy.
+
+Perception failure disables the agent. Teleop still works while the
+teleop gateway, transport, telemetry, and the watchdog are ready and the
+gate is not latched. A required role that is missing, or that has not
+been observed yet, is not ready. A recorder failure only closes its own
+output.
+
+A critical service that will not restart, or that fails again, latches
+do-not-operate. A service restart clears arming and does not restore it.
+The gate comes back disarmed; motion waits for a new `arm()` from the
+operator. This layer never arms.
 
 A degradable service that reaches the cap stays failed. The other
 services keep running.

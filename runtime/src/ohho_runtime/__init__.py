@@ -13,7 +13,8 @@ stay in :mod:`ohho_runtime.heartbeat`.
 Structured logs live in :mod:`ohho_runtime.log`. Metrics live in
 :mod:`ohho_runtime.metrics`. The operator CLI lives in
 :mod:`ohho_runtime.cli` (console script ``ohho-runtime``). Crash bundles
-live in :mod:`ohho_runtime.crash`.
+live in :mod:`ohho_runtime.crash`. Safety-preserving degradation lives in
+:mod:`ohho_runtime.degradation`.
 """
 
 from __future__ import annotations
