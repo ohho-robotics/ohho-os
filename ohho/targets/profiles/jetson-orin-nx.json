@@ -1,0 +1,26 @@
+{
+  "schema": "ohho.target_profile.v1",
+  "id": "jetson-orin-nx",
+  "arch": "aarch64",
+  "accelerator": "orin_gpu",
+  "precisions": ["FP32", "FP16", "INT8"],
+  "execution_providers": [
+    "TensorrtExecutionProvider",
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "tensorrt": {
+    "min_version": "8.5.2",
+    "before_version": "11.0.0",
+    "excluded": []
+  },
+  "memory_budget_mib": 8192,
+  "workspace_size_mib": 1024,
+  "slos_p95_ms": {
+    "act": 35,
+    "smolvla": 140,
+    "diffusion": 70,
+    "openvla": 700
+  },
+  "summary": "Assumes the 16GB Orin NX module. Ampere iGPU with FP32, FP16 and INT8. TensorRT, then CUDA, then CPU."
+}
