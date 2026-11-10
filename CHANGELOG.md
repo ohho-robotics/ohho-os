@@ -75,6 +75,19 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Security
 
+- **Managed workers refuse untrusted pickle checkpoints** (OHH-485).
+  `ohho.model_safety` scans pickle opcodes before any load and accepts
+  safetensors, ONNX, or `torch.load(..., weights_only=True)` only.
+  `.pt`/`.bin` files that fail the scan, and files for which
+  `weights_only=True` fails, are refused when `OHHO_MANAGED_WORKER=1`.
+  There is no unrestricted pickle fallback. `ohho.worker_sandbox` records a
+  per-job container spec: read-only root, no host mounts, non-root user,
+  CPU/memory/GPU limits, wiped scratch, egress limited to the console API
+  and registry storage, and a short-lived job token instead of the user's
+  external-platform credentials. The spec is not executed here. Security
+  review sign-off is still required before cloud workers accept external
+  users. Docs:
+  [`docs/security/model-files-and-worker-sandbox.md`](docs/security/model-files-and-worker-sandbox.md).
 - **MCP stays on `sim://` unless a human passes `--allow-hardware`** (OHH-278).
   `OHHO_ALLOW_HARDWARE`, `OHHO_ARM_HARDWARE`, and tool arguments do not enable
   hardware. `ohho mcp connect` records `mcp serve` with neither

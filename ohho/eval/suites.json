@@ -1,0 +1,7 @@
+{
+  "gazebo-nav-regression": {
+    "title": "Proof v0 Gazebo nav regression",
+    "repository": "https://github.com/ohho-robotics/OmniBot",
+    "relative_path": "omnibot-ros2/omnibot_navigation/config/nav_regression_scenarios.yaml"
+  }
+}
