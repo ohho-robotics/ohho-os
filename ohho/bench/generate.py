@@ -175,6 +175,7 @@ class RequestSample:
     tpot_s: tuple[float, ...]
     e2e_s: float
     tokens: tuple[int, ...]
+    output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,7 @@ class PointMeasurement:
     wall_s: float
     peak_vram_mb: float | None
     vram_source: str
+    requests_total: int | None = None
 
 
 def canonical_precision(value: str) -> str:
@@ -272,7 +274,7 @@ def execute_generate(
     trace = MemoryTrace()
     trace.start()
     try:
-        points = _sweep(config, generator)
+        points, skipped_precisions = _sweep(config, generator)
     finally:
         if owns_generator:
             close = getattr(generator, "close", None)
@@ -280,7 +282,13 @@ def execute_generate(
                 close()
         memory = trace.snapshot()
         trace.close()
-    document = _document(config, profile, points, memory.as_telemetry())
+    document = _document(
+        config,
+        profile,
+        points,
+        memory.as_telemetry(),
+        skipped_precisions=skipped_precisions,
+    )
     if slos:
         document["gates"] = evaluate_gates(document, tuple(slos), ())
     _require_valid(document)
@@ -354,9 +362,18 @@ class TransformersGenerator:
         torch, transformers = _load_transformers()
         self._torch = torch
         self._model_id = model
-        self._cache: dict[str, tuple[Any, Any]] = {}
+        self._loaded_precision: str | None = None
+        self._loaded_model: Any = None
+        self._tokenizer: Any = None
         self._transformers = transformers
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    @property
+    def _cache(self) -> dict[str, tuple[Any, Any]]:
+        """Active precision model for callers inspecting cache state."""
+        if self._loaded_precision and self._loaded_model is not None:
+            return {self._loaded_precision: (self._loaded_model, self._tokenizer)}
+        return {}
 
     def measure(self, request: MeasureRequest) -> PointMeasurement:
         model, tokenizer = self._load(request.precision)
@@ -370,13 +387,22 @@ class TransformersGenerator:
         if self._device == "cuda":
             self._torch.cuda.reset_peak_memory_stats()
         count = max(request.requests, request.concurrency)
+        batch_size = max(1, request.concurrency)
         started = time.perf_counter()
-        samples = tuple(
-            _transformers_sample(
-                model, self._torch, prompt, request.max_tokens, self._device
+        samples: list[RequestSample] = []
+        remaining = count
+        while remaining > 0:
+            current_batch = min(remaining, batch_size)
+            batch_samples = _transformers_batch_sample(
+                model,
+                self._torch,
+                prompt,
+                request.max_tokens,
+                self._device,
+                current_batch,
             )
-            for _ in range(count)
-        )
+            samples.extend(batch_samples)
+            remaining -= current_batch
         wall = time.perf_counter() - started
         peak: float | None = None
         source = "unavailable"
@@ -384,23 +410,38 @@ class TransformersGenerator:
             peak = float(self._torch.cuda.max_memory_allocated()) / (1024 * 1024)
             source = "cuda"
         return PointMeasurement(
-            samples=samples,
+            samples=tuple(samples),
             wall_s=wall if wall > 0 else 1e-9,
             peak_vram_mb=peak,
             vram_source=source,
+            requests_total=count,
         )
 
     def close(self) -> None:
-        self._cache.clear()
+        self._loaded_model = None
+        self._loaded_precision = None
+        self._tokenizer = None
+        if self._device == "cuda":
+            self._torch.cuda.empty_cache()
 
     def _load(self, precision: str) -> tuple[Any, Any]:
-        cached = self._cache.get(precision)
-        if cached is not None:
-            return cached
         if precision in _FOUR_BIT and self._device != "cuda":
             raise BenchHarnessError(
                 f"{precision} needs a CUDA device, and this process has none."
             )
+        if self._tokenizer is None:
+            self._tokenizer = self._transformers.AutoTokenizer.from_pretrained(
+                self._model_id
+            )
+        if self._loaded_precision == precision and self._loaded_model is not None:
+            return self._loaded_model, self._tokenizer
+
+        # Precision is the outer loop: evict previous model before loading next
+        self._loaded_model = None
+        self._loaded_precision = None
+        if self._device == "cuda":
+            self._torch.cuda.empty_cache()
+
         kwargs: dict[str, Any] = {}
         torch = self._torch
         transformers = self._transformers
@@ -414,7 +455,43 @@ class TransformersGenerator:
                 ) from exc
             kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
             kwargs["device_map"] = "auto"
-        elif precision in {"awq", "gptq"}:
+        elif precision == "awq":
+            import importlib.util
+
+            if (
+                importlib.util.find_spec("autoawq") is None
+                and importlib.util.find_spec("awq") is None
+            ):
+                raise BenchHarnessError(
+                    "AWQ needs the autoawq package, which is not installed."
+                )
+            try:
+                from transformers import AwqConfig
+
+                kwargs["quantization_config"] = AwqConfig(bits=4)
+            except (ImportError, AttributeError, ValueError) as exc:
+                raise BenchHarnessError(
+                    f"AWQ quantization configuration failed for {self._model_id}: {exc}"
+                ) from exc
+            kwargs["device_map"] = "auto"
+        elif precision == "gptq":
+            import importlib.util
+
+            if (
+                importlib.util.find_spec("auto_gptq") is None
+                and importlib.util.find_spec("gptqmodel") is None
+            ):
+                raise BenchHarnessError(
+                    "GPTQ needs the auto-gptq package, which is not installed."
+                )
+            try:
+                from transformers import GPTQConfig
+
+                kwargs["quantization_config"] = GPTQConfig(bits=4)
+            except (ImportError, AttributeError, ValueError) as exc:
+                raise BenchHarnessError(
+                    f"GPTQ quantization configuration failed for {self._model_id}: {exc}"
+                ) from exc
             kwargs["device_map"] = "auto"
         else:
             dtype = {
@@ -429,7 +506,6 @@ class TransformersGenerator:
             model = transformers.AutoModelForCausalLM.from_pretrained(
                 self._model_id, **kwargs
             )
-            tokenizer = transformers.AutoTokenizer.from_pretrained(self._model_id)
         except Exception as exc:
             raise BenchHarnessError(
                 f"could not load {self._model_id} at {precision}: {exc}"
@@ -437,9 +513,9 @@ class TransformersGenerator:
         if "device_map" not in kwargs:
             model = model.to(self._device)
         model.eval()
-        loaded = (model, tokenizer)
-        self._cache[precision] = loaded
-        return loaded
+        self._loaded_model = model
+        self._loaded_precision = precision
+        return model, self._tokenizer
 
 
 class ServingGenerator:
@@ -450,13 +526,32 @@ class ServingGenerator:
     server is not sent pixels.
     """
 
+    SUPPORTED_PRECISIONS = frozenset({"fp16", "bf16", "fp32"})
+
     def __init__(self, backend: str, model: str) -> None:
         self.name = backend
         self._model = model
         self._backend: Any = None
         self._precision: str | None = None
 
+    def supports_precision(self, precision: str) -> bool:
+        if precision in _FOUR_BIT:
+            return False
+        from ohho.serve.backends import ServingBackendError, open_backend
+
+        try:
+            backend = self._backend or open_backend(self.name)
+            backend.plan(self._model, precision, {})
+            return True
+        except ServingBackendError:
+            return False
+
     def measure(self, request: MeasureRequest) -> PointMeasurement:
+        if not self.supports_precision(request.precision):
+            raise BenchHarnessError(
+                f"backend {self.name!r} does not support precision {request.precision!r}; "
+                "serving backends do not support 4-bit precisions (bnb-int4, awq, gptq)"
+            )
         endpoint = self._ensure(request.precision)
         words = request.prompt_tokens + request.image_tokens
         prompt = " ".join(["token"] * max(1, words))
@@ -480,6 +575,7 @@ class ServingGenerator:
             wall_s=result.wall_s,
             peak_vram_mb=None,
             vram_source="unavailable",
+            requests_total=len(result.samples),
         )
 
     def close(self) -> None:
@@ -510,12 +606,29 @@ def samples_from_load(result: Any) -> tuple[RequestSample, ...]:
     for sample in result.samples:
         if not getattr(sample, "ok", False):
             continue
+        chunks = getattr(sample, "chunks", None)
+        if chunks:
+            tokens = tuple(
+                int.from_bytes(hashlib.sha256(c.encode("utf-8")).digest()[:2], "big") % _VOCAB
+                for c in chunks
+            )
+        else:
+            words = _ids_from_text(str(sample.text))
+            count_val = int(getattr(sample, "output_tokens", 0) or len(words))
+            if len(words) == count_val:
+                tokens = words
+            elif len(words) > 0:
+                tokens = tuple(words[i % len(words)] for i in range(count_val))
+            else:
+                tokens = tuple((i % _VOCAB) for i in range(count_val))
+        count = int(getattr(sample, "output_tokens", 0) or len(tokens))
         samples.append(
             RequestSample(
                 ttft_s=float(sample.ttft_s),
                 tpot_s=tuple(float(gap) for gap in sample.inter_token_s),
                 e2e_s=float(sample.e2e_s),
-                tokens=_ids_from_text(str(sample.text)),
+                tokens=tokens,
+                output_tokens=count,
             )
         )
     if not samples:
@@ -566,12 +679,46 @@ def reference_tokens(
     )
 
 
-def _sweep(config: GenerateConfig, generator: Any) -> list[dict[str, Any]]:
+def _sweep(
+    config: GenerateConfig, generator: Any
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     points: list[dict[str, Any]] = []
+    skipped_precisions: list[dict[str, str]] = []
+
+    supported_precisions: list[str] = []
     for precision in config.precisions:
+        if hasattr(generator, "supports_precision") and not generator.supports_precision(precision):
+            skipped_precisions.append(
+                {
+                    "precision": precision,
+                    "reason": (
+                        f"backend {getattr(generator, 'name', config.backend)!r} "
+                        f"does not support precision {precision!r}"
+                    ),
+                }
+            )
+        else:
+            supported_precisions.append(precision)
+
+    if not supported_precisions:
+        reasons = "; ".join(f"{s['precision']}: {s['reason']}" for s in skipped_precisions)
+        raise BenchHarnessError(
+            f"backend {config.backend!r} cannot run any requested precision. {reasons}"
+        )
+
+    ref_precision = _primary_precision(supported_precisions)
+    precisions_order = list(supported_precisions)
+    if ref_precision in precisions_order:
+        precisions_order.remove(ref_precision)
+        precisions_order.insert(0, ref_precision)
+
+    reference_map: dict[tuple[int, int], tuple[int, ...]] = {}
+
+    for precision in precisions_order:
         for image_size in config.image_sizes:
             image_tokens = image_token_count(image_size)
             for prompt in config.prompt_tokens:
+                ref_key = (prompt, image_tokens)
                 for concurrency in config.concurrencies:
                     request = MeasureRequest(
                         precision=precision,
@@ -595,16 +742,27 @@ def _sweep(config: GenerateConfig, generator: Any) -> list[dict[str, Any]]:
                             )
                         )
                     measured = generator.measure(request)
-                    points.append(_point_row(config, request, measured))
+                    if (
+                        precision == ref_precision
+                        and ref_key not in reference_map
+                        and measured.samples
+                    ):
+                        reference_map[ref_key] = measured.samples[0].tokens
+
+                    ref_tokens = reference_map.get(ref_key)
+                    points.append(
+                        _point_row(config, request, measured, reference=ref_tokens)
+                    )
     if not points:
         raise BenchHarnessError("generate mode produced no measurements")
-    return points
+    return points, skipped_precisions
 
 
 def _point_row(
     config: GenerateConfig,
     request: MeasureRequest,
     measured: PointMeasurement,
+    reference: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     samples = measured.samples
     if not samples:
@@ -613,19 +771,30 @@ def _point_row(
     gaps = [gap for sample in samples for gap in sample.tpot_s]
     tpot = distribution(gaps)
     e2e = distribution([sample.e2e_s for sample in samples])
-    output_tokens = sum(len(sample.tokens) for sample in samples)
+    output_tokens = sum(
+        sample.output_tokens if sample.output_tokens is not None else len(sample.tokens)
+        for sample in samples
+    )
     wall = measured.wall_s if measured.wall_s > 0 else 1e-9
     per_request = [
-        len(sample.tokens) / sample.e2e_s
+        (sample.output_tokens if sample.output_tokens is not None else len(sample.tokens))
+        / sample.e2e_s
         for sample in samples
-        if sample.e2e_s > 0 and sample.tokens
+        if sample.e2e_s > 0
     ]
     tokens_per_request_s = sum(per_request) / len(per_request) if per_request else 0.0
-    reference = reference_tokens(
-        request.prompt_tokens, request.image_tokens, config.max_tokens
-    )
+    if reference is None:
+        reference = reference_tokens(
+            request.prompt_tokens, request.image_tokens, config.max_tokens
+        )
     scores = [top1_action_agreement(reference, sample.tokens) for sample in samples]
     agreement = sum(scores) / len(scores)
+    requests_total = (
+        measured.requests_total
+        if measured.requests_total is not None
+        else len(samples)
+    )
+    requests_ok = len(samples)
     row: dict[str, Any] = {
         "concurrency": request.concurrency,
         "prompt_tokens": request.prompt_tokens,
@@ -637,8 +806,9 @@ def _point_row(
         "e2e": e2e,
         "tokens_per_s": output_tokens / wall,
         "tokens_per_request_s": tokens_per_request_s,
-        "requests_per_s": len(samples) / wall,
-        "requests": len(samples),
+        "requests_per_s": requests_ok / wall,
+        "requests": requests_total,
+        "requests_ok": requests_ok,
         "output_tokens": output_tokens,
         "agreement": _agreement_metric(agreement, config.max_tokens),
     }
@@ -655,6 +825,7 @@ def _document(
     profile: TargetProfile,
     points: list[dict[str, Any]],
     memory: dict[str, Any],
+    skipped_precisions: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     primary = _primary_point(config, points)
     precision_rows = _precision_rows(config, points)
@@ -687,6 +858,10 @@ def _document(
     }
     telemetry.update(memory)
     telemetry.update(gpu_telemetry(gpu))
+    if skipped_precisions:
+        telemetry["skipped_precisions"] = [
+            item["precision"] for item in skipped_precisions
+        ]
     llm: dict[str, Any] = {
         "schema": LLM_BLOCK_ID,
         "backend": config.backend,
@@ -708,11 +883,13 @@ def _document(
         "image_tokens": primary["image_tokens"],
         "output_tokens": primary["output_tokens"],
         "requests": primary["requests"],
-        "requests_ok": primary["requests"],
+        "requests_ok": primary.get("requests_ok", primary["requests"]),
         "agreement": primary["agreement"],
         "points": points,
         "precisions": precision_rows,
     }
+    if skipped_precisions:
+        llm["skipped_precisions"] = skipped_precisions
     if "peak_vram_mb" in primary:
         llm["peak_vram_mb"] = primary["peak_vram_mb"]
         llm["vram_source"] = primary.get("vram_source", "")
@@ -913,6 +1090,51 @@ def _ids_from_text(text: str) -> tuple[int, ...]:
     return tuple(ids)
 
 
+def _transformers_batch_sample(
+    model: Any,
+    torch: Any,
+    prompt: Any,
+    max_tokens: int,
+    device: str,
+    batch_size: int = 1,
+) -> tuple[RequestSample, ...]:
+    if max_tokens < 1:
+        raise BenchHarnessError("--max-tokens must be a positive integer")
+    batched_prompt = prompt.repeat(batch_size, 1) if batch_size > 1 else prompt
+    started = time.perf_counter()
+    with torch.inference_mode():
+        output = model(batched_prompt, use_cache=True)
+    past_value = output.past_key_values
+    ttft = max(0.0, time.perf_counter() - started)
+    next_tokens = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    tokens_per_item: list[list[int]] = [
+        [int(next_tokens[i, 0].item())] for i in range(batch_size)
+    ]
+    gaps: list[float] = []
+    last = time.perf_counter()
+    for _ in range(max_tokens - 1):
+        with torch.inference_mode():
+            output = model(next_tokens, use_cache=True, past_key_values=past_value)
+        past_value = output.past_key_values
+        next_tokens = output.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        now = time.perf_counter()
+        gaps.append(max(0.0, now - last))
+        last = now
+        for i in range(batch_size):
+            tokens_per_item[i].append(int(next_tokens[i, 0].item()))
+    e2e = max(0.0, time.perf_counter() - started)
+    return tuple(
+        RequestSample(
+            ttft_s=ttft,
+            tpot_s=tuple(gaps),
+            e2e_s=e2e,
+            tokens=tuple(tokens_per_item[i]),
+            output_tokens=max_tokens,
+        )
+        for i in range(batch_size)
+    )
+
+
 def _transformers_sample(
     model: Any,
     torch: Any,
@@ -920,23 +1142,7 @@ def _transformers_sample(
     max_tokens: int,
     device: str,
 ) -> RequestSample:
-    clock_start = time.perf_counter()
-
-    class _Clock:
-        def now(self) -> float:
-            return time.perf_counter() - clock_start
-
-    past: dict[str, Any] = {"value": None, "next": prompt}
-
-    def step() -> int:
-        with torch.inference_mode():
-            output = model(past["next"], use_cache=True, past_key_values=past["value"])
-        past["value"] = output.past_key_values
-        token = int(output.logits[0, -1].argmax().item())
-        past["next"] = torch.tensor([[token]], device=device)
-        return token
-
-    return run_decode(step, max_tokens, _Clock())
+    return _transformers_batch_sample(model, torch, prompt, max_tokens, device, 1)[0]
 
 
 def _prompt_ids(
