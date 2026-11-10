@@ -39,6 +39,46 @@ with unit `Hz`.
 
 Random inputs have no labels. `accuracy.primary` is `not_measured`.
 
+## Power, memory, and thermal
+
+During the measured iterations (after warmup) a sampler thread reads optional
+sensors at 10 Hz. The first sample is taken when the window opens and another
+when it closes. Each source is detected at runtime and skipped when it is
+not there.
+
+| Source | What it can report |
+| --- | --- |
+| NVML | Accelerator power, device memory, temperature, clocks, throttle bits |
+| tegrastats, or jtop when that binary is absent | Board input power, host RAM, temperature, clocks, throttling |
+| RAPL package energy | CPU package power, from two counter readings |
+| vcgencmd | Temperature, clocks, and the current throttled bits. Not watts |
+
+Headline power prefers board input, then accelerator power, then package
+power. Those domains are not added together. tegrastats power is the
+instantaneous `VDD_IN` rail, or `POM_5V_IN` when that is the input rail.
+Other rails are left out of the headline. vcgencmd voltage is not turned
+into watts.
+
+`telemetry.sensors` always carries:
+
+| Field | Meaning |
+| --- | --- |
+| `power_w_mean`, `power_w_peak` | Headline power in watts, or null |
+| `energy_per_inference_mj` | Mean power times mean latency in milliseconds |
+| `device_memory_mb_peak` | Peak accelerator memory, or null |
+| `host_memory_mb_peak` | Peak host memory from a sensor, otherwise process peak RSS |
+| `temperature_c_max` | Hottest reading, or null |
+| `throttling_events` | Rising edges. Each has `source`, `t_s`, and `detail` |
+| `throttling_flagged` | True when any event was recorded |
+| `clocks_mhz` | Max observed clock per source and name, or null |
+| `reason` | Why a headline field is null. Null when every field was measured |
+| `sources` | One row per source: `id`, `available`, `reason`, `power_domain` |
+
+A missing sensor is null with a reason. The run still validates and exits 0
+when no gate fails. `telemetry.power_w_mean` and
+`telemetry.accelerator_memory_mb_max` are set only for real numbers, because
+ohho.bench/v1 defines those gauges as non-null.
+
 `telemetry.memory_mb_max` is the process peak RSS when the OS reports it, and
 `environment` records the target profile, git SHA, the execution provider that
 ran, and CUDA / TensorRT / ONNX Runtime / driver versions when those are
@@ -66,6 +106,19 @@ requested and this process has no CUDA device, the run falls back to
 `tests/test_bench_harness.py` checks the CPU sum on a pure-Python runner.
 The CUDA event path in that file uses a fake event clock. A development run
 without a CUDA device does not execute events on a GPU.
+
+## Sustained
+
+`--sustained 30` measures for 30 seconds instead of `--iters`. Warmup still
+runs first and is discarded. The result's `sustained` object lists p95 for
+each time window (one second when the run is at least two seconds, otherwise
+two equal windows), `p95_drift_ms` (last window minus first), and
+`throttling_flagged`. Each requested batch size gets its own window. The
+top-level `sustained` object is the primary batch.
+
+```bash
+ohho bench --artifact model.onnx --target x86-cpu --sustained 30 --json out.json
+```
 
 ## Baseline and gates
 
@@ -109,6 +162,73 @@ document = execute(
 A custom runner implements `preprocess`, `h2d`, `inference`, `d2h`, and
 `postprocess`. Pass it as `execute(config, runner=runner)`. That is the
 surface another package can call.
+
+## Generate mode
+
+`--mode generate` measures an autoregressive model: a language model, a
+vision-language model, or action tokens. It does not take `--artifact`.
+`--target` is still the hardware profile. `--workload` is `llm`, `vlm`, or
+`vla` (an omitted workload is `llm`).
+
+```bash
+ohho bench --mode generate --target x86-cpu --workload llm \
+  --concurrency 1,4,16 --prompt-tokens 16,64 \
+  --precision fp16,bf16,bnb-int4,awq,gptq \
+  --slo ttft_p95<=50ms,tpot_p95<=20ms --json out.json
+
+ohho bench --mode generate --target x86-cpu --workload vlm \
+  --image-sizes 224,448 --json out.json
+```
+
+Each cell records:
+
+| Field | Meaning |
+|---|---|
+| TTFT | Time to the first output token. mean, median, and p95. |
+| TPOT | Time per later output token. mean, median, and p95. |
+| end-to-end | First token plus the following tokens. This is the top-level latency. |
+| tokens/s per request | Output tokens divided by that request's end-to-end time. |
+| tokens/s | All output tokens divided by the wall time of the cell. |
+
+The default sweep is concurrency `1,4,16` and prompt lengths `16,64`.
+Concurrency is the batching axis: several requests share the generator.
+Static `--batch` stays on inference mode. A `vlm` or `vla` run also records
+an image size (`224` unless `--image-sizes` is set). `llm` rejects a
+non-zero image size. A cell runs at least as many requests as its
+concurrency, so the level is saturated. Higher concurrency raises TTFT and
+TPOT and still raises aggregate tokens/s on the stand-in.
+
+`--slo ttft_p95<=50ms` and `--slo tpot_p95<=20ms` read `llm.ttft.p95` and
+`llm.tpot.p95`. A comma in one `--slo` is two gates. A failed gate exits 1
+after the JSON is written. End-to-end gates such as `p95<=200ms` still apply
+to the primary latency.
+
+### Backends
+
+| `--backend` | When |
+|---|---|
+| `stand-in` (default) | Deterministic CPU generator. No extra packages. |
+| `transformers` | Hugging Face causal LM. Needs `torch` and `transformers`, which are not base dependencies. |
+| `vllm`, `sglang`, `tensorrt-llm` | External engines from the serving adapters. Only on a target whose accelerator is `dgpu` or `orin_gpu`. |
+
+The stand-in advances a virtual clock (`environment.timing_source` is
+`virtual`). FP16, BF16, and FP32 share greedy action tokens. `bnb-int4`,
+`awq`, and `gptq` disagree on every fourth token. Agreement is top-1
+action-token match against the FP16 sequence. `ohho.parity` supplies that
+score when it is installed; otherwise the fraction is computed locally.
+`peak_vram_mb` for the stand-in is the weight buffer it allocates
+(`vram_source` is `stand-in-weights`): FP16 and BF16 are larger than the
+4-bit buffers. That number is not a GPU probe.
+
+`llm.points` is every cell. `llm.precisions` is the comparison at concurrency
+1 (or the smallest concurrency), the shortest prompt, and the smallest image.
+The required `llm` fields stay the primary cell, so an older reader still
+sees TTFT, inter-token latency, and tokens/s. TPOT is also copied to
+`llm.inter_token`.
+
+On CPU CI the stand-in is the measured path. The transformers import and the
+external engines are not loaded unless that backend is selected. A 4-bit
+transformers load needs a CUDA device. GPU runs are outside CI.
 
 ## Pipeline (`--pipeline`)
 
@@ -167,3 +287,41 @@ is refused. This command does not arm a robot and does not set
 
 `--artifact` stays the five-stage ONNX bench. Do not pass it with
 `--pipeline`.
+
+## LLM serving sweep
+
+`ohho bench llm --sweep` varies concurrency and the server options the
+selected backend can change: max batch tokens, prefix caching, chunked
+prefill, and speculative decoding. An option the backend cannot change is
+skipped. The result records the reason, and the command still exits 0.
+
+```bash
+ohho bench llm --sweep --backend stand-in \
+  --concurrency 1,2,4,8 --prefix-cache on,off \
+  --target-p95-ttft 40ms \
+  --output result.json --chart pareto.svg
+```
+
+The grid is crossed with three workloads unless `--workloads` narrows them:
+
+| Workload | What is sent |
+|---|---|
+| `short` | Distinct short commands and no system prompt. On the stand-in, prefix caching does not change TTFT. |
+| `long-context` | A long prompt, the shared system prompt, and a 1x1 image part. |
+| `shared-prefix` | The same system prompt on every request, plus a short command. Prefix caching cuts stand-in TTFT and raises tokens/s. |
+
+`--target-p95-ttft` is milliseconds (`40` or `40ms`). The recommendation is
+the shared-prefix cell at or under that p95 TTFT with the highest tokens/s.
+An equal p95 meets the target. `llm.recommendations` has one row per
+workload. `llm.pareto` is the non-dominated set inside each workload: lower
+p95 TTFT and higher tokens/s. `--chart` writes an SVG of that scatter.
+
+The CPU backend is `stand-in`. `environment.timing_source` is `virtual`.
+Those numbers are a deterministic model of batching and cache hits, not a
+GPU measurement. The command does not launch an engine.
+`llm.sweep.engine_launched` is false. A one-GPU run is outside this
+command. Point `--endpoint` at a server you already started to measure
+concurrency and the workloads against it. Launch settings on that process
+are skipped, because the sweep does not relaunch it.
+
+Adapter flags for a later launch are in [`llm-backends.md`](llm-backends.md).

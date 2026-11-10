@@ -111,6 +111,7 @@ ohho = [
   "targets/profiles/*.json",
   "targets/*.json",
   "optimize/*.json",
+  "parity/*.json",
   "train/schema/*.json",
   "train/examples/*.yaml",
   "train/schemas/*.json",
