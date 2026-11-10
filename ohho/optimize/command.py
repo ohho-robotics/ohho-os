@@ -1,0 +1,129 @@
+"""``ohho optimize`` command line."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from typing import Any
+
+from ohho.optimize.errors import OptimizeError
+from ohho.optimize.plan import OptimizeRequest
+
+
+def register_optimize(subparsers: Any) -> None:
+    """Add the ``optimize`` command."""
+    parser = subparsers.add_parser(
+        "optimize",
+        help="export and compile a model for a hardware target",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  ohho optimize --model reference-act --target x86-cpu "
+            "--precision fp32 --out build/act --json\n"
+            "  ohho optimize --model policy.pt --submodule actor --target x86-cuda "
+            "--precision fp16 --tensorrt --workspace-gb 2 --max-batch 4 "
+            "--dynamic-batch --out build/fp16\n"
+            "  ohho optimize --model policy.pt --target jetson-orin-nx "
+            "--precision int8 --tensorrt --calib-data calib --calib-batch 8 "
+            "--calib-cache build/int8.cache --out build/int8\n"
+            "\n"
+            "TensorRT, the CUDA execution provider, AWQ, GPTQ, bitsandbytes, "
+            "and FP8 fail fast when they are not installed. That is a GPU follow-up."
+        ),
+    )
+    parser.add_argument("--model", required=True, help="checkpoint path or registry id")
+    parser.add_argument(
+        "--target", required=True, help="target profile id or profile file"
+    )
+    parser.add_argument(
+        "--precision",
+        required=True,
+        choices=("fp32", "fp16", "int8", "fp8", "int4"),
+        help="precision to apply",
+    )
+    parser.add_argument("--onnx", action="store_true", help="write an ONNX file")
+    parser.add_argument(
+        "--tensorrt", action="store_true", help="build a TensorRT engine"
+    )
+    parser.add_argument("--calib-data", default=None, help="INT8 calibration directory")
+    parser.add_argument(
+        "--calib-batch",
+        type=int,
+        default=None,
+        help="INT8 calibrator batch size",
+    )
+    parser.add_argument(
+        "--calib-cache", default=None, help="INT8 calibration cache path"
+    )
+    parser.add_argument(
+        "--ort-ep",
+        choices=("cuda", "cpu", "tensorrt"),
+        default=None,
+        help="ONNX Runtime execution provider",
+    )
+    parser.add_argument(
+        "--quant", choices=("awq", "gptq"), default=None, help="weight quantizer"
+    )
+    parser.add_argument(
+        "--workspace-gb", type=float, default=None, help="TensorRT workspace GiB"
+    )
+    parser.add_argument(
+        "--max-batch", type=int, default=1, help="maximum batch in the profile"
+    )
+    parser.add_argument(
+        "--dynamic-batch",
+        action="store_true",
+        help="TensorRT profile batch runs from 1 to --max-batch",
+    )
+    parser.add_argument(
+        "--submodule",
+        default=None,
+        help="dotted module path, or a role: vision, actor, encoder",
+    )
+    parser.add_argument("--out", required=True, help="output directory")
+    parser.add_argument(
+        "--json", action="store_true", help="print the manifest as JSON"
+    )
+    parser.set_defaults(func=run_optimize)
+
+
+def run_optimize(args: argparse.Namespace) -> int:
+    """Run one optimize request. Validation and capability errors exit 2."""
+    request = OptimizeRequest(
+        model=args.model,
+        target=args.target,
+        precision=args.precision,
+        out_dir=args.out,
+        onnx=bool(args.onnx),
+        tensorrt=bool(args.tensorrt),
+        calib_data=args.calib_data,
+        calib_batch=args.calib_batch,
+        calib_cache=args.calib_cache,
+        ort_ep=args.ort_ep,
+        quant=args.quant,
+        workspace_gb=args.workspace_gb,
+        max_batch=args.max_batch,
+        dynamic_batch=bool(args.dynamic_batch),
+        submodule=args.submodule,
+    )
+    try:
+        from ohho.optimize.engine import optimize
+
+        document = optimize(request)
+    except OptimizeError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(document, indent=2))
+        return 0
+    print(f"optimized {document['model']['ref']} for {document['target']['id']}")
+    print(f"  precision: {document['precision']}")
+    print(f"  provider: {document['execution_provider']}")
+    for item in document["outputs"]:
+        print(f"  {item['role']}: {item['path']}")
+    print("  manifest: manifest.json")
+    return 0

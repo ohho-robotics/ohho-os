@@ -64,6 +64,7 @@ class TokenSample:
     output_tokens: int
     text: str
     error: str = ""
+    chunks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -352,6 +353,7 @@ def _request(spec: LoadSpec, started: float, index: int = 0) -> TokenSample:
         e2e_s=time.perf_counter() - started,
         output_tokens=len(chunks),
         text="".join(chunks),
+        chunks=tuple(chunks),
     )
 
 

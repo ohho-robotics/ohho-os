@@ -33,7 +33,11 @@
       "description": "Every measured batch. Top-level latency and throughput repeat the primary batch.",
       "items": {"$ref": "#/$defs/batch_result"}
     },
-    "llm": {"$ref": "#/$defs/llm"}
+    "llm": {"$ref": "#/$defs/llm"},
+    "pipeline": {
+      "$ref": "#/$defs/pipeline",
+      "description": "Camera-to-action pipeline block (ohho.bench.pipeline/v1). Absent on an artifact-only run."
+    }
   },
   "$defs": {
     "host": {
@@ -280,6 +284,11 @@
           "type": "string",
           "minLength": 1,
           "description": "GPU driver version when a driver is visible."
+        },
+        "world": {
+          "type": "string",
+          "enum": ["sim", "recorded", "hardware"],
+          "description": "Where a pipeline run executed. sim is the in-process simulator. Omitted on an artifact-only run."
         }
       }
     },
@@ -620,6 +629,108 @@
       "properties": {
         "option": {"type": "string", "minLength": 1},
         "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "pipeline": {
+      "title": "PipelineBench",
+      "description": "End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline version plus a converter.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "version",
+        "world",
+        "source",
+        "target_hz",
+        "achieved_hz",
+        "rate_sustained",
+        "dropped_frames",
+        "frames_presented",
+        "frames_published",
+        "jitter_ms",
+        "device",
+        "live_robot"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "ohho.bench.pipeline/v1",
+          "description": "Pipeline block version. Independent of the ohho.bench/v1 document id."
+        },
+        "world": {
+          "type": "string",
+          "enum": ["sim", "recorded", "hardware"],
+          "description": "sim is the in-process simulator. hardware is a replay labelled hardware and is never a live robot in this block."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "sim, lerobot, rosbag, fixture, or hardware."
+        },
+        "target_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Configured control rate."
+        },
+        "achieved_hz": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Published frames per second across the paced window. This is the control rate, not latency.achievable_hz."
+        },
+        "rate_sustained": {
+          "type": "boolean",
+          "description": "True when no frame was dropped and every published frame finished inside its control period."
+        },
+        "dropped_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Frames skipped because the previous frame was still running at the target Hz."
+        },
+        "frames_presented": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frames_published": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "jitter_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Population standard deviation of measured end-to-end latencies, in milliseconds. Same value as latency.std."
+        },
+        "interval_jitter_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Population standard deviation of inter-publish intervals, in milliseconds."
+        },
+        "control_period_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sink": {"type": "string", "minLength": 1},
+        "device": {
+          "type": "string",
+          "enum": ["cpu", "cuda"],
+          "description": "cpu when H2D and D2H were host copies."
+        },
+        "live_robot": {
+          "type": "boolean",
+          "description": "True only if this process commanded a real robot. The pipeline bench writes false."
+        },
+        "gpu_follow_up": {
+          "type": "array",
+          "description": "Stages that stayed on the host because CUDA copies are not timed here.",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "gpu_note": {"type": "string", "minLength": 1},
+        "policy": {"type": "string", "minLength": 1},
+        "episode": {"type": "integer", "minimum": 0},
+        "frame_origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "camera, sim, or state-raster when a LeRobot episode has no stored image."
+        },
+        "recording": {"type": "string", "minLength": 1}
       }
     }
   }
