@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
+from ..model_safety import (
+    UnsafeModelFile,
+    ensure_torch_weights_allowed,
+    managed_worker_mode,
+)
 from .il.progress import ValTracker, validation_due
 
 try:
@@ -417,6 +422,8 @@ def load_act_checkpoint(
             config = json.load(f)
 
     pt_file = p / "policy.pt" if (p / "policy.pt").exists() else p
+    if pt_file.is_file() and pt_file.suffix.lower() in {".pt", ".pth", ".bin"}:
+        ensure_torch_weights_allowed(pt_file)
     if not TORCH_AVAILABLE or not pt_file.is_file():
         return None, config
 
@@ -433,7 +440,16 @@ def load_act_checkpoint(
         kl_weight=config.get("kl_weight", 10.0),
     )
     dev = torch.device(device)
-    state_dict = torch.load(pt_file, map_location=dev, weights_only=True)
+    try:
+        state_dict = torch.load(pt_file, map_location=dev, weights_only=True)
+    except Exception as exc:
+        if managed_worker_mode():
+            detail = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            raise UnsafeModelFile(
+                "managed workers refuse this checkpoint because "
+                "torch.load(weights_only=True) failed: " + detail[:200]
+            ) from exc
+        raise
     model.load_state_dict(state_dict)
     model.to(dev)
     model.eval()
