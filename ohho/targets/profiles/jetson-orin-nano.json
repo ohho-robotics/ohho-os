@@ -1,0 +1,26 @@
+{
+  "schema": "ohho.target_profile.v1",
+  "id": "jetson-orin-nano",
+  "arch": "aarch64",
+  "accelerator": "orin_gpu",
+  "precisions": ["FP32", "FP16", "INT8"],
+  "execution_providers": [
+    "TensorrtExecutionProvider",
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "tensorrt": {
+    "min_version": "8.5.2",
+    "before_version": "11.0.0",
+    "excluded": []
+  },
+  "memory_budget_mib": 4096,
+  "workspace_size_mib": 512,
+  "slos_p95_ms": {
+    "act": 50,
+    "smolvla": 200,
+    "diffusion": 100,
+    "openvla": 1000
+  },
+  "summary": "Assumes the 8GB Orin Nano module. Ampere iGPU with FP32, FP16 and INT8. TensorRT, then CUDA, then CPU."
+}
