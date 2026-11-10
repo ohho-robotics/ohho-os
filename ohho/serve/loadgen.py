@@ -48,6 +48,9 @@ class LoadSpec:
     concurrency: int = 1
     requests: int = 1
     timeout_s: float = 30.0
+    system_prompt: str = ""
+    image_url: str = ""
+    prompts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,7 +123,7 @@ def run_load(spec: LoadSpec) -> LoadResult:
     workers = min(spec.concurrency, spec.requests)
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_one, spec) for _ in range(spec.requests)]
+        futures = [pool.submit(_one, spec, index) for index in range(spec.requests)]
         samples = tuple(future.result() for future in futures)
     wall = time.perf_counter() - started
     if not any(sample.ok for sample in samples):
@@ -262,12 +265,19 @@ def _check_spec(spec: LoadSpec) -> None:
         raise LoadGenError("max_tokens must be >= 1")
     if spec.timeout_s <= 0:
         raise LoadGenError("timeout_s must be positive")
+    for prompt in spec.prompts:
+        if not isinstance(prompt, str) or not prompt:
+            raise LoadGenError("prompts entries must be non-empty strings")
+    if spec.system_prompt and not isinstance(spec.system_prompt, str):
+        raise LoadGenError("system_prompt must be a string")
+    if spec.image_url and not isinstance(spec.image_url, str):
+        raise LoadGenError("image_url must be a string")
 
 
-def _one(spec: LoadSpec) -> TokenSample:
+def _one(spec: LoadSpec, index: int = 0) -> TokenSample:
     started = time.perf_counter()
     try:
-        return _request(spec, started)
+        return _request(spec, started, index)
     except Exception as exc:
         return TokenSample(
             ok=False,
@@ -280,11 +290,11 @@ def _one(spec: LoadSpec) -> TokenSample:
         )
 
 
-def _request(spec: LoadSpec, started: float) -> TokenSample:
+def _request(spec: LoadSpec, started: float, index: int = 0) -> TokenSample:
     url = _chat_url(spec.endpoint_url)
     payload = {
         "model": spec.model,
-        "messages": [{"role": "user", "content": spec.prompt}],
+        "messages": _messages(spec, index),
         "stream": True,
         "max_tokens": spec.max_tokens,
         "temperature": 0,
@@ -345,6 +355,38 @@ def _request(spec: LoadSpec, started: float) -> TokenSample:
         text="".join(chunks),
         chunks=tuple(chunks),
     )
+
+
+def _prompt_at(spec: LoadSpec, index: int) -> str:
+    if spec.prompts:
+        return spec.prompts[index % len(spec.prompts)]
+    return spec.prompt
+
+
+def _messages(spec: LoadSpec, index: int) -> list[dict[str, Any]]:
+    """Chat messages for one request.
+
+    A system prompt is shared across the sweep's prefix-cache workload.
+    An image URL is sent as an OpenAI image part for the long-context
+    vision workload. The server decides whether it can read that part.
+    """
+    prompt = _prompt_at(spec, index)
+    messages: list[dict[str, Any]] = []
+    if spec.system_prompt:
+        messages.append({"role": "system", "content": spec.system_prompt})
+    if spec.image_url:
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": spec.image_url}},
+                ],
+            }
+        )
+    else:
+        messages.append({"role": "user", "content": prompt})
+    return messages
 
 
 def _chat_url(endpoint: str) -> str:

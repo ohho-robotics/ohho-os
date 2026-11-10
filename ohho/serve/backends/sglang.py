@@ -20,6 +20,7 @@ from .cmdline import (
     resolve_port,
 )
 from .errors import ServingBackendError
+from .sweep_support import launch_args
 
 _DTYPE = {
     "auto": "auto",
@@ -63,6 +64,7 @@ class SglangBackend(ServingBackend):
             parallel = optional_positive_int(config, "tensor_parallel_size")
         if parallel is not None:
             command.extend(["--tp-size", str(parallel)])
+        command.extend(launch_args(self.name, config))
         command.extend(extra_args(config))
         return LaunchPlan(
             commands=(tuple(command),),
