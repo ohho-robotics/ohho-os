@@ -23,6 +23,12 @@ The sweep ``seed`` derives the sampler seed and each trial's training seed
 (:mod:`ohho.train.sweep_seed`). Grid order ignores the seed. The training
 seed is stored on the trial and does not advance the proposal generator.
 
+``early_stopping.rule`` is ``patience`` (the default), ``asha``, or
+``median``. Expansion copies that object onto the plan and does not drop
+trials. :mod:`ohho.train.sweep_early` is the library a trial runner and the
+sweep controller call. The controller that fans jobs out is not in this
+package.
+
 The JSON Schema shipped at ``ohho/train/schemas/sweep.v1.json`` is package
 data. :func:`validate_sweep` is the validator the CLI uses.
 """
@@ -45,6 +51,7 @@ from .sweep_seed import derived_trial_seed, sampler_seed, trial_training_seed
 SCHEMA_ID = "ohho.sweep/v1"
 SCHEMA_FILENAME = "sweep.v1.json"
 STRATEGIES = ("grid", "random", "tpe", "bayesian", "multi")
+EARLY_RULES = ("patience", "asha", "median")
 ADAPTIVE_STRATEGIES = frozenset({"tpe", "bayesian", "multi"})
 ADAPTIVE_PLAN_NOTE = (
     "strategy {strategy} is sequential; this plan is the startup batch. "
@@ -225,11 +232,17 @@ def format_plan(plan: SweepPlan) -> str:
             lines.append(f"  {obj['name']}: {obj['direction']}{primary}")
     if plan.early_stopping is not None:
         early = plan.early_stopping
+        rungs = early["rungs"]
+        rung_text = ",".join(str(step) for step in rungs) if rungs else "-"
         lines.append(
             "early_stopping: "
-            f"metric={early['metric']} patience={early['patience']} "
+            f"metric={early['metric']} rule={early['rule']} "
+            f"patience={early['patience']} "
             f"min_delta={_format_number(float(early['min_delta']))} "
-            f"mode={early['mode']}"
+            f"mode={early['mode']} "
+            f"reduction_factor={early['reduction_factor']} "
+            f"grace_period={early['grace_period']} "
+            f"rungs={rung_text}"
         )
     if plan.budget:
         lines.append("budget:")
@@ -636,6 +649,8 @@ def _check_semantics(doc: Mapping[str, Any]) -> None:
             )
     if strategy == "multi" and len(objectives) < 2:
         raise SweepError("strategy multi requires at least two objectives")
+    if doc.get("early_stopping") is not None:
+        normalize_early_stopping(doc["early_stopping"])
 
 
 def _check_dimension(dim: Mapping[str, Any], strategy: str, where: str) -> None:
@@ -728,16 +743,105 @@ def _as_int(value: Any) -> int:
     return int(value)
 
 
+def normalize_early_stopping(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Fill defaults for an ``early_stopping`` object and check its rules.
+
+    ``rule`` ``asha`` requires ``rungs``. Rungs are strictly increasing, and
+    each rung is greater than or equal to ``grace_period``. ``patience`` is
+    the single-trial rule. ``asha`` and ``median`` compare trials at a step.
+    """
+
+    if not isinstance(raw, Mapping):
+        raise SweepError("early_stopping must be a mapping")
+    allowed = {
+        "metric",
+        "rule",
+        "rungs",
+        "reduction_factor",
+        "grace_period",
+        "patience",
+        "min_delta",
+        "mode",
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise SweepError(f"$.early_stopping.{unknown[0]}: unexpected property")
+    metric = raw.get("metric")
+    if not isinstance(metric, str) or metric == "":
+        raise SweepError("$.early_stopping.metric is required")
+    rule = raw.get("rule", "patience")
+    if rule not in EARLY_RULES:
+        raise SweepError(
+            "$.early_stopping.rule must be one of "
+            + ", ".join(repr(name) for name in EARLY_RULES)
+        )
+    mode = raw.get("mode", "min")
+    if mode not in ("min", "max"):
+        raise SweepError("$.early_stopping.mode must be 'min' or 'max'")
+    patience = _strict_int(raw.get("patience", 1), "$.early_stopping.patience")
+    if patience < 1:
+        raise SweepError("$.early_stopping.patience must be >= 1")
+    min_delta = _nonneg_number(raw.get("min_delta", 0.0), "$.early_stopping.min_delta")
+    reduction = _strict_int(
+        raw.get("reduction_factor", 4), "$.early_stopping.reduction_factor"
+    )
+    if reduction < 2:
+        raise SweepError("$.early_stopping.reduction_factor must be >= 2")
+    grace = _strict_int(raw.get("grace_period", 0), "$.early_stopping.grace_period")
+    if grace < 0:
+        raise SweepError("$.early_stopping.grace_period must be >= 0")
+    if "rungs" in raw and raw["rungs"] is not None:
+        rung_raw = raw["rungs"]
+        if not isinstance(rung_raw, (list, tuple)):
+            raise SweepError("$.early_stopping.rungs must be an array")
+        rungs = [
+            _strict_int(step, f"$.early_stopping.rungs[{index}]")
+            for index, step in enumerate(rung_raw)
+        ]
+    else:
+        rungs = []
+    if any(step < 1 for step in rungs):
+        raise SweepError("$.early_stopping.rungs must be >= 1")
+    if rungs != sorted(rungs) or len(set(rungs)) != len(rungs):
+        raise SweepError("$.early_stopping.rungs must be strictly increasing")
+    if any(step < grace for step in rungs):
+        raise SweepError(
+            "$.early_stopping.rungs must be greater than or equal to grace_period"
+        )
+    if rule == "asha" and not rungs:
+        raise SweepError("$.early_stopping: rule asha requires rungs")
+    return {
+        "metric": metric,
+        "rule": rule,
+        "rungs": rungs,
+        "reduction_factor": reduction,
+        "grace_period": grace,
+        "patience": patience,
+        "min_delta": min_delta,
+        "mode": mode,
+    }
+
+
+def _strict_int(value: Any, where: str) -> int:
+    if not _int_like(value):
+        raise SweepError(f"{where} must be an integer")
+    return _as_int(value)
+
+
+def _nonneg_number(value: Any, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SweepError(f"{where} must be a number")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise SweepError(f"{where} must be a finite number")
+    if value < 0:
+        raise SweepError(f"{where} must be >= 0")
+    return float(value)
+
+
 def _build_spec(doc: Mapping[str, Any]) -> SweepSpec:
-    early_raw = doc.get("early_stopping")
     early = None
-    if early_raw is not None:
-        early = {
-            "metric": early_raw["metric"],
-            "patience": int(early_raw.get("patience", 1)),
-            "min_delta": float(early_raw.get("min_delta", 0.0)),
-            "mode": early_raw.get("mode", "min"),
-        }
+    if doc.get("early_stopping") is not None:
+        early = normalize_early_stopping(doc["early_stopping"])
     objectives = tuple(
         {
             "name": obj["name"],
@@ -1537,7 +1641,9 @@ __all__ = [
     "SweepSpec",
     "Trial",
     "SweepPlan",
+    "EARLY_RULES",
     "load_schema",
+    "normalize_early_stopping",
     "parse_sweep_text",
     "validate_sweep",
     "load_sweep",
