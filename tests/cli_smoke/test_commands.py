@@ -192,6 +192,49 @@ class TestCliSmokeCore(unittest.TestCase):
             code, _, _ = run_in_home(["memory", "clear", "omnibot"])
             self.assertEqual(code, 0)
 
+    def test_eval_checkpoint_sim(self):
+        fixture = """\
+version: 1
+frame_id: map
+world: apartment
+scenarios:
+  - id: clear_goal
+    start: {x: 0.0, y: 0.0, yaw_deg: 0.0}
+    goal: {x: 1.0, y: 0.0, yaw_deg: 0.0}
+    obstacle:
+      name: off_path
+      pose: {x: 0.5, y: 3.0, yaw_deg: 0.0}
+      size: {x: 0.2, y: 0.2, z: 0.2}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = root / "checkpoint.json"
+            checkpoint.write_text('{"eval": {"speed_mps": 0.4}}\n', encoding="utf-8")
+            scenarios = root / "scenarios.yaml"
+            scenarios.write_text(fixture, encoding="utf-8")
+            out = root / "report.json"
+            code, stdout, err = _run_cli(
+                [
+                    "eval",
+                    str(checkpoint),
+                    "--suite",
+                    "gazebo-nav-regression",
+                    "--scenarios",
+                    str(scenarios),
+                    "--episodes",
+                    "1",
+                    "--seed",
+                    "0",
+                    "--out",
+                    str(out),
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            self.assertIn("ohho.eval/v1", stdout)
+            report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema"], "ohho.eval/v1")
+            self.assertEqual(report["success_rate"], 1.0)
+
     def test_sim_demo_sim_fast(self):
         # The harness binds its log stream at import, so redirect_stdout
         # does not capture the demo transcript. Exit code is the smoke check.
@@ -219,11 +262,95 @@ class TestCliSmokeCore(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertIn("overall_status", data)
 
+    def test_job_validate_and_run(self):
+        spec = (
+            Path(__file__).resolve().parents[2]
+            / "ohho"
+            / "serve"
+            / "job"
+            / "examples"
+            / "full.yaml"
+        )
+        code, out, err = _run_cli(["job", "validate", str(spec)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("schema_version: ohho.job/v1", out)
+        code, out, err = _run_cli(["job", "run", str(spec)])
+        self.assertEqual(code, 2, err + out)
+        self.assertIn("optimize is not available in this build", out)
+        self.assertIn("parity is not available in this build", out)
+        self.assertIn("bench is not available in this build", out)
+
     def test_sim_serve_not_built(self):
         for backend in ("isaac", "mujoco"):
             code, out, err = _run_cli(["sim-serve", "--backend", backend])
             self.assertNotEqual(code, 0)
             self.assertIn("not built", out + err)
+
+    def test_dataset_build_pin_stats(self):
+        from ohho.data.recorder import Episode, Frame
+        from ohho.data.writer import write_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "episodes"
+            frame = Frame(
+                observation_state=[0.0, 0.0, 0.0],
+                action=[0.1, 0.0, 0.0],
+                timestamp=0.0,
+                frame_index=0,
+                episode_index=0,
+                task_index=0,
+                next_done=True,
+            )
+            write_dataset(
+                [Episode(task="hold", frames=[frame], episode_index=0, fps=10.0)],
+                str(source),
+                repo_id="local/smoke",
+                fps=10.0,
+                tasks=["hold"],
+                robot_type="sim",
+            )
+            code, out, err = _run_cli(
+                [
+                    "dataset",
+                    "build",
+                    "--source",
+                    str(source),
+                    "--store",
+                    str(root / "store"),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            built = json.loads(out)
+            self.assertIn("content_hash", built)
+            code, out, err = _run_cli(
+                [
+                    "dataset",
+                    "pin",
+                    built["version_id"],
+                    "--store",
+                    str(root / "store"),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            self.assertTrue(json.loads(out)["pinned"])
+            code, out, err = _run_cli(
+                [
+                    "dataset",
+                    "stats",
+                    built["version_id"],
+                    "--store",
+                    str(root / "store"),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            stats = json.loads(out)
+            self.assertEqual(stats["episodes"], 1)
+            self.assertEqual(stats["frames"], 1)
+            self.assertEqual(stats["action_ranges"], built["stats"]["action_ranges"])
 
 
 @unittest.skipUnless(

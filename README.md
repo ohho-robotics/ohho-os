@@ -18,7 +18,7 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
@@ -173,6 +173,14 @@ python scripts/sim_loop.py --mock
 ohho sim-loop --mock
 ```
 
+## Checkpoint eval
+
+`ohho eval` scores a checkpoint with seeded episodes on the in-process kinematic sim and writes an `ohho.eval/v1` report (success rate, Wilson 95% interval, episode length, failure counts, optional trace paths). The Gazebo nav regression suite is loaded from the OmniBot checkout (`OHHO_PROOF_ROOT` or `--scenarios`); the scenario file is not vendored here. See [`docs/eval.md`](docs/eval.md).
+
+```bash
+ohho eval ./checkpoint.json --suite gazebo-nav-regression --episodes 5 --seed 0 --out eval-report.json
+```
+
 To run with custom parameters:
 ```bash
 python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200 --eval-steps 50 --output-dir ./sim_loop_output
@@ -282,6 +290,20 @@ ohho selftest --robot omnibot --allow-spin
 ```
 
 See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, and the JSON schema.
+
+## Benchmark results (`ohho bench`)
+
+`ohho bench validate <file>` checks a Serve benchmark result against
+`ohho.bench/v1`. The schema ships with the package
+(`ohho/bench/schemas/bench.v1.json`). Rules for additive fields and for a
+future v2 converter are in
+[`docs/serve/bench-schema.md`](docs/serve/bench-schema.md).
+
+Runnable Serve examples, with the hardware, runtime, and expected output for
+each one, are in [`examples/serve`](examples/serve/README.md). CPU examples
+run in CI and on release tags. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
+W&B/Prometheus export stay placeholders until those commands are on main.
+They do not publish benchmark numbers.
 
 ## TypeScript
 

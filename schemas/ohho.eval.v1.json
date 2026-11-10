@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.eval/v1.json",
+  "title": "EvalReport",
+  "description": "Checkpoint sim evaluation report (ohho.eval/v1). The root object allows additional properties. Removing, renaming, or retyping a field requires ohho.eval/v2.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "checkpoint",
+    "checkpoint_sha256",
+    "suite",
+    "scenario_source",
+    "scenario_ids",
+    "seed",
+    "backend",
+    "episodes_per_scenario",
+    "success_rate",
+    "success_ci95",
+    "episode_length",
+    "failure_modes",
+    "videos",
+    "episodes"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "ohho.eval/v1",
+      "description": "Schema id. A breaking change uses a new id."
+    },
+    "checkpoint": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Checkpoint path passed to the runner."
+    },
+    "checkpoint_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the checkpoint file, or of the sorted relative paths and digests in a directory."
+    },
+    "suite": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Suite name. gazebo-nav-regression is the Proof v0 Gazebo nav regression suite."
+    },
+    "scenario_source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Where the scenario definitions were read from. A repository reference (url#path) or a filesystem path. The report does not embed the scenario bodies."
+    },
+    "scenario_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Scenario ids in run order. Ids only; geometry stays in the referenced file."
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Base seed. Episode i of scenario s uses seed + s * episodes_per_scenario + i."
+    },
+    "backend": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Sim backend that rolled out the episodes. The CPU runner uses kinematic-sim."
+    },
+    "episodes_per_scenario": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "success_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Successes divided by episodes. 0 when there are no episodes."
+    },
+    "success_ci95": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "level", "low", "high", "successes", "trials"],
+      "properties": {
+        "method": {"type": "string", "const": "wilson"},
+        "level": {"type": "number", "minimum": 0, "maximum": 1},
+        "low": {"type": "number", "minimum": 0, "maximum": 1},
+        "high": {"type": "number", "minimum": 0, "maximum": 1},
+        "successes": {"type": "integer", "minimum": 0},
+        "trials": {"type": "integer", "minimum": 0}
+      }
+    },
+    "episode_length": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mean", "min", "max", "unit"],
+      "properties": {
+        "mean": {"type": "number", "minimum": 0},
+        "min": {"type": "number", "minimum": 0},
+        "max": {"type": "number", "minimum": 0},
+        "unit": {"type": "string", "const": "steps"}
+      }
+    },
+    "failure_modes": {
+      "type": "object",
+      "description": "Count of unsuccessful episodes by mode. Known modes are collision and timeout.",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "videos": {
+      "type": "array",
+      "description": "Optional recording or pose-trace paths. Empty when no video directory was requested.",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "episodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scenario_id",
+          "seed",
+          "success",
+          "length",
+          "failure_mode",
+          "video_path"
+        ],
+        "properties": {
+          "scenario_id": {"type": "string", "minLength": 1},
+          "seed": {"type": "integer"},
+          "success": {"type": "boolean"},
+          "length": {"type": "integer", "minimum": 0},
+          "failure_mode": {"type": ["string", "null"], "minLength": 1},
+          "video_path": {"type": ["string", "null"], "minLength": 1}
+        }
+      }
+    }
+  }
+}
