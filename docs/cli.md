@@ -63,8 +63,9 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
-| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
-| `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
+| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail`. `--parity-set` selects a captured set; without one, random inputs are synthetic |
+| `ohho parity capture --reference <model> --inputs DATASET\|recorded\|camera:PATH --out DIR --id SET` | Record N real inputs and FP32 outputs as a versioned parity set (`ohho.parity_set/v1`) |
+| `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). `--parity-set` reuses a captured set. Exit 1 when mean abs diff is above 0.05 |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.

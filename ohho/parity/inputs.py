@@ -1,8 +1,10 @@
-"""Parity inputs: seeded random, a LeRobot dataset, or a sim-loop episode.
+"""Parity inputs: seeded random, a LeRobot dataset, a sim rollout, or a camera log.
 
 Dataset and recorded sources use ``observation.state`` from
 :class:`ohho.data.reader.DatasetReader`. The ``recorded`` keyword calls
 :func:`ohho.sim_loop.record_sim_episodes` and then reads that dataset.
+A camera log is a JSONL file, or a directory with ``frames.jsonl`` or
+``log.jsonl``. Each row has ``observation.state`` and may name an ``image``.
 Random inputs are drawn with :class:`random.Random` so the seed is stable
 without PyTorch.
 """
@@ -25,6 +27,7 @@ _PREFIXES = (
     ("dataset:", "dataset"),
     ("recorded:", "recorded"),
     ("episode:", "recorded"),
+    ("camera:", "camera"),
 )
 
 
@@ -38,6 +41,7 @@ class FrameSource:
     n_requested: int
     indices: list[int]
     frames: list[list[float]]
+    media: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,8 +68,8 @@ class InputBundle:
 def parse_input_source(text: str) -> tuple[str, str | None]:
     """Return ``(kind, path)``.
 
-    ``kind`` is ``random``, ``dataset``, ``recorded``, or ``path`` (a filesystem
-    path whose kind is decided once the path is opened).
+    ``kind`` is ``random``, ``dataset``, ``recorded``, ``camera``, or ``path``
+    (a filesystem path whose kind is decided once the path is opened).
     """
     raw = text.strip()
     if not raw:
@@ -118,7 +122,11 @@ def load_observation_frames(
     path = Path(path_text)
     if kind == "path":
         kind = _kind_of_path(path)
-    frames = _read_frames(path, kind)
+    media_rows: list[str | None] | None = None
+    if kind == "camera":
+        frames, media_rows = _read_camera(path)
+    else:
+        frames = _read_frames(path, kind)
     if not frames:
         raise ParityError(f"{path} has no observation frames.")
     width = len(frames[0])
@@ -126,6 +134,11 @@ def load_observation_frames(
         raise ParityError(f"{path} frames do not share one observation width.")
     indices = choose_indices(len(frames), n, seed)
     chosen = [frames[index] for index in indices]
+    chosen_media: tuple[str | None, ...] = ()
+    if media_rows is not None:
+        if len(media_rows) != len(frames):
+            raise ParityError(f"{path} camera frames and images do not match.")
+        chosen_media = tuple(media_rows[index] for index in indices)
     return FrameSource(
         source=kind,
         path=str(path),
@@ -133,6 +146,7 @@ def load_observation_frames(
         n_requested=n,
         indices=indices,
         frames=chosen,
+        media=chosen_media,
     )
 
 
@@ -160,13 +174,22 @@ def load_batches(
             batches=_random_batches(specs, n, seed),
         )
     frames = load_observation_frames(source, n=n, seed=seed, record_dir=record_dir)
+    return bundle_from_frames(frames, specs)
+
+
+def bundle_from_frames(
+    frames: FrameSource, specs: tuple[ExportInput, ...]
+) -> InputBundle:
+    """Pack frames that were already loaded into the model's input batches."""
+    if not frames.frames:
+        raise ParityError("dataset has no frames.")
     return InputBundle(
         source=frames.source,
         path=frames.path,
-        seed=seed,
-        n_requested=n,
+        seed=frames.seed,
+        n_requested=frames.n_requested,
         indices=frames.indices,
-        batches=_batches_from_frames(frames.frames, specs, seed),
+        batches=_batches_from_frames(frames.frames, specs, frames.seed),
     )
 
 
@@ -207,11 +230,16 @@ def _kind_of_path(path: Path) -> str:
     if not path.exists():
         raise ParityError(f"Inputs path does not exist: {path}")
     if path.is_dir():
+        if (path / "meta" / "info.json").is_file():
+            return "dataset"
+        if (path / "frames.jsonl").is_file() or (path / "log.jsonl").is_file():
+            return "camera"
         return "dataset"
     if path.is_file() and path.suffix.lower() == ".jsonl":
         return "recorded"
     raise ParityError(
-        f"{path} is not a LeRobot dataset directory or an episode .jsonl file."
+        f"{path} is not a LeRobot dataset directory, an episode .jsonl file, "
+        "or a camera log."
     )
 
 
@@ -241,12 +269,44 @@ def _read_dataset_dir(path: Path) -> list[list[float]]:
     return rows
 
 
+def _read_camera(path: Path) -> tuple[list[list[float]], list[str | None]]:
+    files = _camera_files(path)
+    if not files:
+        raise ParityError(f"{path} has no camera log.")
+    base = path if path.is_dir() else path.parent
+    frames: list[list[float]] = []
+    media: list[str | None] = []
+    for file in files:
+        for row in _json_objects(file):
+            frames.append(_observation_from_row(row, file))
+            media.append(_image_from_row(row, file, base))
+    return frames, media
+
+
+def _camera_files(path: Path) -> list[Path]:
+    if path.is_file():
+        if path.suffix.lower() != ".jsonl":
+            raise ParityError(f"{path} is not a camera log (.jsonl).")
+        return [path]
+    if not path.is_dir():
+        raise ParityError(f"Inputs path does not exist: {path}")
+    for name in ("frames.jsonl", "log.jsonl"):
+        candidate = path / name
+        if candidate.is_file():
+            return [candidate]
+    return sorted(path.glob("*.jsonl"))
+
+
 def _read_episode_file(path: Path) -> list[list[float]]:
-    rows: list[list[float]] = []
+    return [_observation_from_row(row, path) for row in _json_objects(path)]
+
+
+def _json_objects(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise ParityError(f"Could not read {path}: {exc}") from exc
+    rows: list[dict[str, Any]] = []
     for line in lines:
         if not line.strip():
             continue
@@ -256,9 +316,31 @@ def _read_episode_file(path: Path) -> list[list[float]]:
             raise ParityError(f"{path} is not valid JSON Lines: {exc}") from exc
         if not isinstance(row, dict):
             raise ParityError(f"{path} rows must be objects.")
-        state = row.get("observation.state", row.get("observation_state"))
-        rows.append(_as_float_row(state, path))
+        rows.append(row)
     return rows
+
+
+def _observation_from_row(row: dict[str, Any], path: Path) -> list[float]:
+    state = row.get("observation.state", row.get("observation_state"))
+    if state is None and "observation" in row:
+        observed = row["observation"]
+        if isinstance(observed, dict):
+            state = observed.get("state", observed.get("observation.state"))
+        else:
+            state = observed
+    return _as_float_row(state, path)
+
+
+def _image_from_row(row: dict[str, Any], path: Path, base: Path) -> str | None:
+    image = row.get("image")
+    if image is None:
+        return None
+    if not isinstance(image, str) or not image.strip():
+        raise ParityError(f"{path} image must be a path.")
+    image_path = Path(image)
+    if not image_path.is_absolute():
+        image_path = base / image
+    return str(image_path)
 
 
 def _as_float_row(state: object, path: Path) -> list[float]:

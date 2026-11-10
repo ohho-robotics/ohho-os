@@ -181,6 +181,8 @@ def _gate_and_publish(
             thresholds=request.parity_thresholds,
             submodule=request.submodule,
             record_dir=str(out / "parity-inputs"),
+            parity_set=request.parity_set,
+            registry_root=request.parity_registry,
         )
     except (ParityError, OptimizeError):
         _discard(out, outputs)

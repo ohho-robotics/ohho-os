@@ -63,6 +63,8 @@ class OptimizeRequest:
     task_episodes: str | None = None
     task_detections: str | None = None
     task_tokens: str | None = None
+    parity_set: str | None = None
+    parity_registry: str | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,15 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
         raise OptimizeError("--parity-seed must be an integer.")
     if not isinstance(request.parity_inputs, str) or not request.parity_inputs.strip():
         raise OptimizeError("--parity-inputs is required.")
+    if request.parity_set is not None and (
+        not isinstance(request.parity_set, str) or not request.parity_set.strip()
+    ):
+        raise OptimizeError("--parity-set must be a set id or a path.")
+    if request.parity_registry is not None and (
+        not isinstance(request.parity_registry, str)
+        or not request.parity_registry.strip()
+    ):
+        raise OptimizeError("--parity-registry must be a directory.")
     if request.parity_mean_abs is not None and (
         isinstance(request.parity_mean_abs, bool)
         or not isinstance(request.parity_mean_abs, (int, float))

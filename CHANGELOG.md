@@ -17,6 +17,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Parity sets** — `ohho parity capture` records real inputs (a LeRobot dataset,
+  a sim rollout, or a camera log) and the FP32 reference outputs into a
+  versioned set (`ohho.parity_set/v1`, directory or `.tar.gz`, sha256 of
+  `samples.json`). `ohho parity` and `ohho optimize` accept `--parity-set`
+  and record the set id and sha256 on the report. Without a set, random
+  inputs are labelled `synthetic`. `attach_parity_set` plus
+  `ParitySetPublisher` is the local registry hook for a later console upload.
 - **`ohho parity`** — numerical gate between a reference model and an optimized
   artifact (`ohho.parity/v1`). Reports mean absolute difference, max absolute
   difference, RMSE, and cosine similarity per output; action heads also report

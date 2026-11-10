@@ -15,6 +15,7 @@
     "precision",
     "thresholds",
     "inputs",
+    "parity_set",
     "outputs",
     "unchecked",
     "allow_parity_fail"
@@ -85,7 +86,7 @@
         "dtype"
       ],
       "properties": {
-        "source": {"enum": ["random", "dataset", "recorded"]},
+        "source": {"enum": ["random", "dataset", "recorded", "camera"]},
         "path": {"type": ["string", "null"]},
         "seed": {"type": "integer"},
         "n_requested": {"type": "integer", "minimum": 1},
@@ -96,6 +97,19 @@
         },
         "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
         "dtype": {"const": "float32"}
+      }
+    },
+    "parity_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The parity set that was scored. synthetic is true only for the auto-generated fallback. sha256 is null when no samples were scored.",
+      "required": ["id", "version", "sha256", "synthetic", "source"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "synthetic": {"type": "boolean"},
+        "source": {"enum": ["synthetic", "dataset", "recorded", "camera"]}
       }
     },
     "outputs": {

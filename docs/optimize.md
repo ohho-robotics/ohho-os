@@ -104,10 +104,15 @@ that flag on `flags`, `inputs`, and `parity` in the manifest.
 ```bash
 ohho optimize --model reference-act --target x86-cpu --precision fp32 --out build/act --parity-n 256
 ohho optimize --model reference-act --target x86-cpu --precision fp32 --out build/act --allow-parity-fail
+ohho optimize --model reference-act --target x86-cpu --precision fp32 --out build/act --parity-set build/act-golden
 ```
 
+`--parity-set` scores the export on a captured set. The manifest's
+`parity.parity_set` records that set's id and sha256. Omitting it uses a
+synthetic set when `--parity-inputs` is `random`, with `synthetic` true.
 `--parity-inputs` is `random` (seeded, `--parity-seed`), a LeRobot dataset
-directory, or `recorded` (one short episode from the sim-loop recorder).
+directory, `recorded` (one short episode from the sim-loop recorder), or
+`camera:PATH`.
 TensorRT engines and weight-quant directories are not executed here. When the
 directory has an ONNX graph, that graph is what the gate scores and the engine
 is listed as unchecked. When nothing runnable was written, the gate fails
