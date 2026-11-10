@@ -80,6 +80,15 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   status. A 32-trial synthetic ASHA benchmark uses under half the
   trial-steps of the same sweep with no stopping rule.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
+  `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
+  `ohho sweep start --backend native` (the default) stores a local run and
+  prints no W&B URL. `--backend wandb` creates the sweep through the W&B
+  API when `WANDB_API_KEY` is set and prints the URL that client returns.
+  Each agent trial runs `python -m ohho.train.sweep_agent`, one OhhO train
+  job. `wandb` is an optional extra and is imported only on that path.
+  Patience-based `early_stopping` is not sent as Hyperband `early_terminate`
+  (OHH-520). Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
   tags (`python examples/serve/run_cpu.py`). A failed example fails the
   release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
