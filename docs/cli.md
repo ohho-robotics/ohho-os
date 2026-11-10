@@ -68,7 +68,9 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
-| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch ([`train/sweeps.md`](train/sweeps.md)) |
+| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
+| `ohho sweep start <file> [--id ID]` | Persist a new sweep run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` |
+| `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 

@@ -19,6 +19,10 @@ spec (the first matching ``estimate.by_value`` rule, otherwise
 ``estimate.gpu_hours_per_trial``). Planning does not train and does not
 measure a run.
 
+The sweep ``seed`` derives the sampler seed and each trial's training seed
+(:mod:`ohho.train.sweep_seed`). Grid order ignores the seed. The training
+seed is stored on the trial and does not advance the proposal generator.
+
 The JSON Schema shipped at ``ohho/train/schemas/sweep.v1.json`` is package
 data. :func:`validate_sweep` is the validator the CLI uses.
 """
@@ -35,6 +39,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from .sweep_seed import derived_trial_seed, sampler_seed, trial_training_seed
 
 SCHEMA_ID = "ohho.sweep/v1"
 SCHEMA_FILENAME = "sweep.v1.json"
@@ -107,13 +113,17 @@ class SweepSpec:
 
 @dataclass(frozen=True)
 class Trial:
-    """One concrete trial: dotted overrides plus the resolved recipe."""
+    """One concrete trial: dotted overrides plus the resolved recipe.
+
+    ``seed`` is the training seed derived from the sweep seed and ``index``.
+    """
 
     index: int
     overrides: dict[str, Any]
     sets: tuple[str, ...]
     recipe: dict[str, Any]
     estimated_gpu_hours: float
+    seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -123,6 +133,7 @@ class SweepPlan:
     schema: str
     strategy: str
     seed: int
+    sampler_seed: int
     parallelism: int
     trials: tuple[Trial, ...]
     estimated_gpu_hours: float
@@ -199,6 +210,7 @@ def format_plan(plan: SweepPlan) -> str:
         f"schema: {plan.schema}",
         f"strategy: {plan.strategy}",
         f"seed: {plan.seed}",
+        f"sampler_seed: {plan.sampler_seed}",
         f"parallelism: {plan.parallelism}",
         f"trials: {len(plan.trials)}",
         f"estimated_gpu_hours: {_format_number(plan.estimated_gpu_hours)}",
@@ -233,6 +245,7 @@ def format_plan(plan: SweepPlan) -> str:
     for trial in plan.trials:
         lines.append("---")
         lines.append(f"trial: {trial.index}")
+        lines.append(f"seed: {trial.seed}")
         lines.append(
             f"estimated_gpu_hours: {_format_number(trial.estimated_gpu_hours)}"
         )
@@ -254,6 +267,7 @@ def plan_as_dict(plan: SweepPlan) -> dict[str, Any]:
         "schema": plan.schema,
         "strategy": plan.strategy,
         "seed": plan.seed,
+        "sampler_seed": plan.sampler_seed,
         "parallelism": plan.parallelism,
         "trials": len(plan.trials),
         "estimated_gpu_hours": plan.estimated_gpu_hours,
@@ -266,6 +280,7 @@ def plan_as_dict(plan: SweepPlan) -> dict[str, Any]:
         "trial_recipes": [
             {
                 "index": trial.index,
+                "seed": trial.seed,
                 "overrides": dict(trial.overrides),
                 "sets": list(trial.sets),
                 "recipe": trial.recipe,
@@ -837,7 +852,7 @@ def _expand_random(spec: SweepSpec) -> list[list[tuple[str, Any]]]:
     count = int(spec.budget["max_trials"])
     if count == 0:
         return []
-    rng = random.Random(spec.seed)
+    rng = random.Random(sampler_seed(spec.seed))
     kept: list[list[tuple[str, Any]]] = []
     limit = max(_SAMPLE_MIN_ATTEMPTS, count * _SAMPLE_ATTEMPT_FACTOR)
     attempts = 0
@@ -882,13 +897,15 @@ def _plan_from_rows(spec: SweepSpec, rows: list[list[tuple[str, Any]]]) -> Sweep
             break
         overrides = {path: copy.deepcopy(value) for path, value in assigned}
         sets = tuple(_format_set(path, value) for path, value in assigned)
+        index = len(trials)
         trials.append(
             Trial(
-                index=len(trials),
+                index=index,
                 overrides=overrides,
                 sets=sets,
                 recipe=recipe,
                 estimated_gpu_hours=hours,
+                seed=trial_training_seed(spec.seed, index),
             )
         )
         total += hours
@@ -896,6 +913,7 @@ def _plan_from_rows(spec: SweepSpec, rows: list[list[tuple[str, Any]]]) -> Sweep
         schema=spec.schema,
         strategy=spec.strategy,
         seed=spec.seed,
+        sampler_seed=sampler_seed(spec.seed),
         parallelism=spec.parallelism,
         trials=tuple(trials),
         estimated_gpu_hours=total,
@@ -1527,4 +1545,7 @@ __all__ = [
     "format_plan",
     "plan_as_dict",
     "run_plan",
+    "sampler_seed",
+    "trial_training_seed",
+    "derived_trial_seed",
 ]
