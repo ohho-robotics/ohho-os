@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from typing import Any
 
+from ohho.bench.environment import GpuProbe
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.harness import BenchConfig, execute
+from ohho.bench.sensors.base import SensorSource
 from ohho.bench.report import (
     dump_result,
     log_wandb,
@@ -39,6 +42,8 @@ def register_bench(subparsers: Any) -> None:
             "--warmup 10 --iters 50 --batch 1,4,8 --inputs random --json out.json\n"
             "  ohho bench --artifact model.onnx --target x86-cpu --baseline prev.json "
             "--slo p95<=200ms --max-regression p95=10%% --markdown summary.md\n"
+            "  ohho bench --artifact model.onnx --target x86-cpu --sustained 30 "
+            "--json out.json\n"
             "  ohho bench validate out.json\n"
         ),
     )
@@ -118,6 +123,15 @@ def register_bench(subparsers: Any) -> None:
         default="inference",
         help="workload class stored in run.target (default inference)",
     )
+    bench.add_argument(
+        "--sustained",
+        type=float,
+        default=None,
+        help=(
+            "measure for this many seconds instead of --iters, and report "
+            "p95 latency drift per time window"
+        ),
+    )
     commands = bench.add_subparsers(dest="bench_command", required=False)
     validate = commands.add_parser(
         "validate",
@@ -144,6 +158,8 @@ def run_bench_command(
     *,
     runner: Any = None,
     clock: Any = None,
+    sources: Sequence[SensorSource] | None = None,
+    gpu: GpuProbe | None = None,
 ) -> int:
     """Run the harness from parsed CLI arguments.
 
@@ -156,6 +172,8 @@ def run_bench_command(
             config,
             runner=runner,
             clock=clock,
+            sources=sources,
+            gpu=gpu,
             baseline_path=getattr(args, "baseline", None),
             slos=tuple(args.slo or ()),
             max_regressions=tuple(args.max_regression or ()),
@@ -197,6 +215,7 @@ def _config(args: argparse.Namespace) -> BenchConfig:
         batches=_batches(args.batch),
         inputs=args.inputs,
         workload=args.workload,
+        sustained=getattr(args, "sustained", None),
     )
 
 

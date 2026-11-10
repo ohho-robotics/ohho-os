@@ -69,6 +69,13 @@ they are omitted in that case. Making those gauges nullable would be an
 `ohho.bench/v2` change. `telemetry.memory_mb_max` is the peak process
 memory when it can be read.
 
+`telemetry.sensors` is an additional object written by the harness. Power,
+energy, device memory, temperature, and clocks inside it are JSON `null`
+when no source reported them, and `reason` says why. `throttling_events` is
+an array. `sustained` is an additional top-level object present only for
+`--sustained`. Both stay on v1 because they do not change a field v1 already
+defined.
+
 Checked-in results:
 
 - `ohho/bench/examples/vision.json` — vision policy
