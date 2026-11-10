@@ -83,12 +83,6 @@ and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
 export are not in this tree; those examples are placeholders and do not print
 benchmark numbers.
 
-## Training recipes
-
-| Command | Description |
-|---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
-
 ## Benchmark (`ohho bench`)
 
 | Command | Description |
@@ -101,6 +95,12 @@ benchmark numbers.
 
 Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
 external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
+
+## Training recipes
+
+| Command | Description |
+|---------|-------------|
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
 
 ## Simulation services
 
