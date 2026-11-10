@@ -25,6 +25,7 @@ from .cmdline import (
     resolve_port,
 )
 from .errors import ServingBackendError
+from .sweep_support import launch_args
 
 _LAUNCHERS = {"trtllm-serve", "triton"}
 _KV_CACHE = {"fp8": "fp8", "float8": "fp8", "fp4": "nvfp4", "nvfp4": "nvfp4"}
@@ -95,6 +96,7 @@ class TensorRtLlmBackend(ServingBackend):
         config_path = config.get("config_file") or config.get("config_path")
         if config_path:
             command.extend(["--config", str(config_path)])
+        command.extend(launch_args(self.name, config))
         command.append(model)
         command.extend(extra_args(config))
         return LaunchPlan(
@@ -151,6 +153,7 @@ class TensorRtLlmBackend(ServingBackend):
                 str(metrics),
             ]
         )
+        command.extend(launch_args(self.name, config))
         command.extend(extra_args(config))
         commands = [tuple(command)]
         openai = config.get("openai_argv")

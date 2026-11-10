@@ -176,3 +176,41 @@ sees TTFT, inter-token latency, and tokens/s. TPOT is also copied to
 On CPU CI the stand-in is the measured path. The transformers import and the
 external engines are not loaded unless that backend is selected. A 4-bit
 transformers load needs a CUDA device. GPU runs are outside CI.
+
+## LLM serving sweep
+
+`ohho bench llm --sweep` varies concurrency and the server options the
+selected backend can change: max batch tokens, prefix caching, chunked
+prefill, and speculative decoding. An option the backend cannot change is
+skipped. The result records the reason, and the command still exits 0.
+
+```bash
+ohho bench llm --sweep --backend stand-in \
+  --concurrency 1,2,4,8 --prefix-cache on,off \
+  --target-p95-ttft 40ms \
+  --output result.json --chart pareto.svg
+```
+
+The grid is crossed with three workloads unless `--workloads` narrows them:
+
+| Workload | What is sent |
+|---|---|
+| `short` | Distinct short commands and no system prompt. On the stand-in, prefix caching does not change TTFT. |
+| `long-context` | A long prompt, the shared system prompt, and a 1x1 image part. |
+| `shared-prefix` | The same system prompt on every request, plus a short command. Prefix caching cuts stand-in TTFT and raises tokens/s. |
+
+`--target-p95-ttft` is milliseconds (`40` or `40ms`). The recommendation is
+the shared-prefix cell at or under that p95 TTFT with the highest tokens/s.
+An equal p95 meets the target. `llm.recommendations` has one row per
+workload. `llm.pareto` is the non-dominated set inside each workload: lower
+p95 TTFT and higher tokens/s. `--chart` writes an SVG of that scatter.
+
+The CPU backend is `stand-in`. `environment.timing_source` is `virtual`.
+Those numbers are a deterministic model of batching and cache hits, not a
+GPU measurement. The command does not launch an engine.
+`llm.sweep.engine_launched` is false. A one-GPU run is outside this
+command. Point `--endpoint` at a server you already started to measure
+concurrency and the workloads against it. Launch settings on that process
+are skipped, because the sweep does not relaunch it.
+
+Adapter flags for a later launch are in [`llm-backends.md`](llm-backends.md).

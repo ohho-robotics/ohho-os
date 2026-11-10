@@ -17,6 +17,15 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **LLM serving sweep** (OHH-476) — `ohho bench llm --sweep` varies
+  concurrency, max batch tokens, prefix caching, chunked prefill, and
+  speculative decoding where the serving adapter supports the option.
+  Workloads are short commands, long-context prompts with an image, and a
+  shared system prompt. The `ohho.bench/v1` result includes a Pareto table
+  of p95 TTFT against tokens/s. `--target-p95-ttft` recommends the
+  highest-throughput configuration at or under that TTFT. Unsupported
+  options are skipped with a reason. The CPU path is a stand-in and does
+  not launch an engine. A one-GPU run is not part of this command.
 - **Generate-mode bench** (OHH-436) — `ohho bench --mode generate` measures
   TTFT, TPOT (mean, median, p95), end-to-end latency, and tokens/s for an
   autoregressive workload (`llm`, `vlm`, `vla`). The default CPU stand-in
