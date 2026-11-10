@@ -15,11 +15,14 @@ Consumers of a failed producer read an :class:`InvalidOutput` instead of the
 last value. The age of that output is on the marker. The policy runner's
 applied command becomes a :class:`HoldCommand` (all zeros) in the same step
 as the failure, which is inside one policy period, and the previous command
-is not replayed.
+is not replayed. A publish rejected while holding is not written into the
+slot. A policy restart drops the last command and enters that hold until a
+later observation finds the deadlines healthy.
 
 Perception failure disables the agent and leaves teleop in place while the
 teleop gateway, transport, telemetry, and the watchdog are still ready.
-A recorder failure only invalidates its own output.
+A required role that is missing, or that has not been observed yet, is not
+ready. A recorder failure only invalidates its own output.
 
 A critical service that will not restart, or that fails again, latches
 do-not-operate on the supervisor. A service restart clears arming and never
@@ -174,7 +177,8 @@ class PolicyRunner:
     and applies :class:`HoldCommand` immediately, so the zero lands inside
     that period. The previous command is not kept and is not replayed.
     A later :meth:`publish` is accepted only after :meth:`set_healthy`
-    says the deadlines are healthy again.
+    says the deadlines are healthy again. A sample rejected while holding
+    is not stored, so :meth:`read` keeps returning :class:`InvalidOutput`.
     """
 
     def __init__(self, slot: OutputSlot, period_s: float) -> None:
@@ -187,6 +191,9 @@ class PolicyRunner:
         self.zeroed_after_s: float | None = None
         self._failed_at: float | None = None
         self._healthy = True
+        # Set by fail(). The next observation must not treat that same
+        # step as healthy deadlines.
+        self._fresh_hold = False
 
     @property
     def slot(self) -> OutputSlot:
@@ -207,29 +214,49 @@ class PolicyRunner:
         self._healthy = healthy
 
     def publish(self, value: object, at: float) -> None:
-        """Publish one command, unless hold is still waiting on deadlines."""
-        if self.mode == "hold" and not self._healthy:
+        """Publish one command, unless hold is still waiting on deadlines.
+
+        The slot is updated only when the sample is accepted. A command
+        rejected while holding does not become readable again.
+        """
+        if self._rejects(at):
             return
         self._slot.publish(value, at)
-        if (
-            self.mode == "hold"
-            and self._failed_at is not None
-            and at <= self._failed_at
-        ):
-            return
         self.applied = value
         self.mode = "run"
         self._failed_at = None
 
+    def _rejects(self, at: object) -> bool:
+        """True when hold must drop ``at`` without storing it."""
+        if self.mode != "hold":
+            return False
+        if not self._healthy:
+            return True
+        if self._failed_at is None:
+            return False
+        # Validate before comparing, so a bad timestamp still raises
+        # instead of being stored and then ignored.
+        OutputSlot._check_time(at)
+        return float(at) <= self._failed_at
+
+    def _take_fresh_hold(self) -> bool:
+        """True once after :meth:`fail`, then clear that marker."""
+        fresh = self._fresh_hold
+        self._fresh_hold = False
+        return fresh
+
     def fail(self, at: float, reason: str) -> None:
         """Invalidate the output and fall back to hold within one period."""
-        if self.mode == "hold" and self._failed_at is not None:
-            self._slot.invalidate(at, reason or "failed")
-            self._healthy = False
-            return
-        self._slot.invalidate(at, reason or "failed")
-        self._failed_at = float(at)
+        why = reason or "failed"
+        self._slot.invalidate(at, why)
+        failed_at = float(at)
         self._healthy = False
+        self._fresh_hold = True
+        if self.mode == "hold" and self._failed_at is not None:
+            if failed_at > self._failed_at:
+                self._failed_at = failed_at
+            return
+        self._failed_at = failed_at
         self.applied = HoldCommand()
         self.mode = "hold"
         # Applied in this step, so the delay is zero, which is within the period.
@@ -344,16 +371,17 @@ class Degradation:
         return self._dno
 
     def teleop_enabled(self) -> bool:
-        """True while the operator path's required services are ready.
+        """True while every operator-path service has been observed ready.
 
-        Perception is not one of those services. A latched gate or a
-        do-not-operate latch is not an available teleop path.
+        Perception is not one of those services. A missing role, including
+        before the first :meth:`observe` and when the role is absent from
+        the manifest, is not ready. A latched gate or a do-not-operate
+        latch is not an available teleop path.
         """
         if self.do_not_operate() or self._gate.latched:
             return False
         for role in _TELEOP_REQUIRES:
-            state = self._states.get(role)
-            if state is not None and state is not LifecycleState.READY:
+            if self._states.get(role) is not LifecycleState.READY:
                 return False
         return True
 
@@ -381,11 +409,18 @@ class Degradation:
             self._runner.set_period(1.0 / spec.loop_hz)
 
     def publish(self, role: str, value: object, at: float) -> None:
-        """Publish one sample. A fresh sample clears that role's stale latch."""
-        self._stale_latched.discard(role)
+        """Publish one sample. A fresh sample clears that role's stale latch.
+
+        A policy sample rejected while holding is not a fresh sample, so it
+        does not clear the latch and is not stored.
+        """
         if role == ROLE_POLICY:
             self._runner.publish(value, at)
+            if self._runner.mode != "run":
+                return
+            self._stale_latched.discard(role)
             return
+        self._stale_latched.discard(role)
         self._slot(role).publish(value, at)
 
     def note_telemetry(self, sample: Telemetry) -> None:
@@ -432,12 +467,18 @@ class Degradation:
             self._escalate(role, why, now)
 
     def on_service_restart(self, role: str, at: float | None = None) -> None:
-        """A service came back. Arming is cleared and not restored."""
+        """A service came back. Arming is cleared and not restored.
+
+        A policy restart invalidates the last command and enters hold.
+        That command is not left readable. The runner stays unhealthy
+        until a later observation finds the deadlines healthy.
+        """
         now = self._now() if at is None else float(at)
         self._restarts += 1
         self._clear_arming(role, now)
         if role == ROLE_POLICY:
-            self._runner.set_healthy(False)
+            self._runner.fail(now, "restart")
+            self._record("hold", role, "restart", now)
 
     def observe(
         self,
@@ -448,13 +489,19 @@ class Degradation:
 
         Does not sleep. A sample whose age has reached its liveness window
         is invalidated once. Transport staleness uses the estop hook.
+        A policy hold opened in this step stays unhealthy when the policy
+        service is still ``READY``. That does not make the dropped command
+        readable.
         """
         if states is not None:
             self._states = dict(states)
         now = float(at)
         self._expire(now)
-        policy_state = self._states.get(ROLE_POLICY)
-        self._runner.set_healthy(policy_state is LifecycleState.READY)
+        fresh_hold = self._runner._take_fresh_hold()
+        policy_ready = self._states.get(ROLE_POLICY) is LifecycleState.READY
+        if fresh_hold and policy_ready:
+            return
+        self._runner.set_healthy(policy_ready)
 
     def _remember(self, sample: Telemetry) -> None:
         self._sample = sample

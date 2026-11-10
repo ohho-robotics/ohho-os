@@ -102,11 +102,15 @@ Consumers of a failed producer get an `InvalidOutput` instead of the last
 value. `InvalidOutput.age_s` is the age of that stale output. The policy
 runner's applied command becomes a zero `HoldCommand` in the same step
 the runner fails, inside one policy period, and that command is not
-replayed.
+replayed. A publish rejected while holding is not stored. A policy
+restart drops the last command and enters that hold until a later
+observation finds the deadlines healthy.
 
 Perception failure disables the agent. Teleop still works while the
 teleop gateway, transport, telemetry, and the watchdog are ready and the
-gate is not latched. A recorder failure only closes its own output.
+gate is not latched. A required role that is missing, or that has not
+been observed yet, is not ready. A recorder failure only closes its own
+output.
 
 A critical service that will not restart, or that fails again, latches
 do-not-operate. A service restart clears arming and does not restore it.

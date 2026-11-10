@@ -367,6 +367,25 @@ class OutputTests(unittest.TestCase):
         self.assertIsInstance(runner.read(0.03), InvalidOutput)
         self.assertEqual(runner.applied, HoldCommand())
 
+    def test_rejected_publish_does_not_become_readable(self) -> None:
+        slot = OutputSlot(ROLE_POLICY)
+        runner = PolicyRunner(slot, period_s=0.05)
+        command = (0.4, 0.1, 0.2)
+        runner.publish(command, 1.0)
+        runner.fail(1.2, "stale")
+        # Deadlines reported healthy must not store a sample hold already dropped.
+        runner.set_healthy(True)
+        runner.publish(command, 1.2)
+        seen = runner.read(1.2)
+        self.assertIsInstance(seen, InvalidOutput)
+        self.assertNotEqual(seen, command)
+        self.assertFalse(slot.valid)
+        self.assertEqual(runner.applied, HoldCommand())
+        self.assertEqual(runner.mode, "hold")
+        runner.publish((0.2, 0.0, 0.0), 1.1)
+        self.assertIsInstance(runner.read(1.3), InvalidOutput)
+        self.assertEqual(runner.mode, "hold")
+
 
 class DegradationTests(unittest.TestCase):
     def _world(
@@ -436,6 +455,127 @@ class DegradationTests(unittest.TestCase):
         world.degradation.publish(ROLE_POLICY, command, world.clock())
         self.assertIsInstance(runner.read(world.clock()), InvalidOutput)
         self.assertEqual(runner.applied, HoldCommand())
+
+    def test_stale_policy_sample_stays_unreadable_while_service_is_ready(self) -> None:
+        world = self._world(RobotClass.MOBILE_BASE)
+        world.connect()
+        world.degradation.watch(
+            make_service(
+                ROLE_POLICY,
+                _entry(),
+                liveness_timeout_s=0.2,
+                loop_hz=10.0,
+                commands_motion=True,
+            )
+        )
+        command = (0.3, 0.0, 0.1)
+        world.degradation.publish(ROLE_POLICY, command, 1.0)
+        ready = {ROLE_POLICY: LifecycleState.READY}
+        world.degradation.observe(1.5, ready)
+        runner = world.degradation.policy_runner
+        self.assertEqual(runner.mode, "hold")
+        self.assertEqual(runner.applied, HoldCommand())
+        seen = runner.read(1.5)
+        self.assertIsInstance(seen, InvalidOutput)
+        self.assertEqual(seen.reason, "stale")
+        self.assertNotEqual(seen, command)
+        # The same step must not put the dropped command, or a later one, back.
+        world.degradation.publish(ROLE_POLICY, command, 1.5)
+        world.degradation.publish(ROLE_POLICY, command, 1.6)
+        self.assertIsInstance(runner.read(1.6), InvalidOutput)
+        self.assertNotEqual(runner.read(1.6), command)
+        self.assertEqual(runner.applied, HoldCommand())
+        self.assertEqual(runner.mode, "hold")
+        world.degradation.observe(1.7, ready)
+        fresh = (0.05, 0.0, 0.0)
+        world.degradation.publish(ROLE_POLICY, fresh, 1.7)
+        self.assertEqual(runner.read(1.7), fresh)
+        self.assertEqual(runner.mode, "run")
+
+    def test_policy_restart_drops_the_last_command_and_holds(self) -> None:
+        world = self._world(RobotClass.MOBILE_BASE)
+        world.connect()
+        world.arm_gate()
+        command = (0.25, 0.0, 0.05)
+        world.degradation.publish(ROLE_POLICY, command, 1.0)
+        world.degradation.on_service_restart(ROLE_POLICY, at=2.0)
+        runner = world.degradation.policy_runner
+        self.assertEqual(runner.mode, "hold")
+        self.assertEqual(runner.applied, HoldCommand())
+        self.assertFalse(world.gate.armed)
+        seen = runner.read(2.0)
+        self.assertIsInstance(seen, InvalidOutput)
+        self.assertEqual(seen.reason, "restart")
+        self.assertNotEqual(seen, command)
+        ready = {ROLE_POLICY: LifecycleState.READY}
+        world.degradation.observe(2.0, ready)
+        world.degradation.publish(ROLE_POLICY, command, 2.5)
+        self.assertIsInstance(runner.read(2.5), InvalidOutput)
+        self.assertNotEqual(runner.read(2.5), command)
+        self.assertEqual(runner.applied, HoldCommand())
+        self.assertEqual(runner.mode, "hold")
+        world._emit(_upright())
+        self.assertTrue(world.gate.arm())
+        self.assertIsInstance(runner.read(2.5), InvalidOutput)
+        self.assertNotEqual(runner.read(2.5), command)
+        world.degradation.observe(3.0, ready)
+        fresh = (0.05, 0.0, 0.0)
+        world.degradation.publish(ROLE_POLICY, command, 2.0)
+        self.assertIsInstance(runner.read(3.0), InvalidOutput)
+        world.degradation.publish(ROLE_POLICY, fresh, 3.0)
+        self.assertEqual(runner.read(3.0), fresh)
+        self.assertNotEqual(fresh, command)
+
+    def test_supervised_policy_restart_does_not_replay_the_last_command(self) -> None:
+        world = self._world(RobotClass.MOBILE_BASE)
+        world.connect()
+        world.arm_gate()
+        world.start()
+        command = (0.2, 0.0, 0.1)
+        world.degradation.publish(ROLE_POLICY, command, world.clock())
+        world.crash(ROLE_POLICY)
+        world.restart_due()
+        runner = world.degradation.policy_runner
+        self.assertEqual(runner.mode, "hold")
+        self.assertEqual(runner.applied, HoldCommand())
+        seen = runner.read(world.clock())
+        self.assertIsInstance(seen, InvalidOutput)
+        self.assertNotEqual(seen, command)
+        later = world.clock() + 0.05
+        world.degradation.publish(ROLE_POLICY, command, later)
+        self.assertIsInstance(runner.read(later), InvalidOutput)
+        self.assertEqual(runner.applied, HoldCommand())
+        world._emit(_upright())
+        self.assertTrue(world.gate.arm())
+        self.assertIsInstance(runner.read(later), InvalidOutput)
+        self.assertNotEqual(runner.read(later), command)
+
+    def test_teleop_requires_every_required_role_to_be_observed_ready(self) -> None:
+        world = self._world(RobotClass.MOBILE_BASE)
+        world.connect()
+        world.arm_gate()
+        self.assertFalse(world.degradation.teleop_enabled())
+        self.assertFalse(world.degradation.accepts_teleop())
+        without_gateway = {
+            ROLE_TRANSPORT: LifecycleState.READY,
+            ROLE_TELEMETRY: LifecycleState.READY,
+            ROLE_SAFETY_WATCHDOG: LifecycleState.READY,
+        }
+        world.degradation.observe(1.0, without_gateway)
+        self.assertFalse(world.degradation.teleop_enabled())
+        starting = dict(without_gateway)
+        starting[ROLE_TELEOP_GATEWAY] = LifecycleState.STARTING
+        world.degradation.observe(1.0, starting)
+        self.assertFalse(world.degradation.teleop_enabled())
+        self.assertFalse(world.degradation.accepts_teleop())
+        starting[ROLE_TELEOP_GATEWAY] = LifecycleState.READY
+        world.degradation.observe(1.0, starting)
+        self.assertTrue(world.degradation.teleop_enabled())
+        self.assertTrue(world.degradation.accepts_teleop())
+        missing_watchdog = dict(starting)
+        del missing_watchdog[ROLE_SAFETY_WATCHDOG]
+        world.degradation.observe(1.0, missing_watchdog)
+        self.assertFalse(world.degradation.teleop_enabled())
 
     def test_perception_failure_leaves_teleop_and_disables_the_agent(self) -> None:
         world = self._world(RobotClass.MOBILE_BASE)
