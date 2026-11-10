@@ -1,0 +1,19 @@
+{
+  "schema": "ohho.sweep/v1",
+  "recipe": {"family": "policy"},
+  "dimensions": [
+    {
+      "name": "family",
+      "type": "categorical",
+      "values": ["act", "vla"]
+    },
+    {
+      "name": "lora_rank",
+      "path": "model.lora.rank",
+      "type": "int",
+      "values": [4, 8],
+      "when": {"path": "family", "eq": "vla"}
+    }
+  ],
+  "estimate": {"gpu_hours_per_trial": 0.5}
+}
