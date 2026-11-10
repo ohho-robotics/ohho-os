@@ -250,11 +250,95 @@ scenarios:
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertIn("overall_status", data)
 
+    def test_job_validate_and_run(self):
+        spec = (
+            Path(__file__).resolve().parents[2]
+            / "ohho"
+            / "serve"
+            / "job"
+            / "examples"
+            / "full.yaml"
+        )
+        code, out, err = _run_cli(["job", "validate", str(spec)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("schema_version: ohho.job/v1", out)
+        code, out, err = _run_cli(["job", "run", str(spec)])
+        self.assertEqual(code, 2, err + out)
+        self.assertIn("optimize is not available in this build", out)
+        self.assertIn("parity is not available in this build", out)
+        self.assertIn("bench is not available in this build", out)
+
     def test_sim_serve_not_built(self):
         for backend in ("isaac", "mujoco"):
             code, out, err = _run_cli(["sim-serve", "--backend", backend])
             self.assertNotEqual(code, 0)
             self.assertIn("not built", out + err)
+
+    def test_dataset_build_pin_stats(self):
+        from ohho.data.recorder import Episode, Frame
+        from ohho.data.writer import write_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "episodes"
+            frame = Frame(
+                observation_state=[0.0, 0.0, 0.0],
+                action=[0.1, 0.0, 0.0],
+                timestamp=0.0,
+                frame_index=0,
+                episode_index=0,
+                task_index=0,
+                next_done=True,
+            )
+            write_dataset(
+                [Episode(task="hold", frames=[frame], episode_index=0, fps=10.0)],
+                str(source),
+                repo_id="local/smoke",
+                fps=10.0,
+                tasks=["hold"],
+                robot_type="sim",
+            )
+            code, out, err = _run_cli(
+                [
+                    "dataset",
+                    "build",
+                    "--source",
+                    str(source),
+                    "--store",
+                    str(root / "store"),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            built = json.loads(out)
+            self.assertIn("content_hash", built)
+            code, out, err = _run_cli(
+                [
+                    "dataset",
+                    "pin",
+                    built["version_id"],
+                    "--store",
+                    str(root / "store"),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            self.assertTrue(json.loads(out)["pinned"])
+            code, out, err = _run_cli(
+                [
+                    "dataset",
+                    "stats",
+                    built["version_id"],
+                    "--store",
+                    str(root / "store"),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            stats = json.loads(out)
+            self.assertEqual(stats["episodes"], 1)
+            self.assertEqual(stats["frames"], 1)
+            self.assertEqual(stats["action_ranges"], built["stats"]["action_ranges"])
 
 
 @unittest.skipUnless(

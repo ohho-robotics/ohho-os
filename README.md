@@ -18,7 +18,7 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
@@ -300,6 +300,12 @@ future v2 converter are in
 `ohho bench --artifact model.onnx --target x86-cpu --json out.json` runs the
 harness: latency stats, per-stage timing, an optional baseline comparison,
 and SLO / regression gates. See [`docs/serve/bench.md`](docs/serve/bench.md).
+
+Runnable Serve examples, with the hardware, runtime, and expected output for
+each one, are in [`examples/serve`](examples/serve/README.md). CPU examples
+run in CI and on release tags. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
+W&B/Prometheus export stay placeholders until those commands are on main.
+They do not publish benchmark numbers.
 
 ## TypeScript
 
