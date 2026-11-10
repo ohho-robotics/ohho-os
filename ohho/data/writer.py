@@ -109,7 +109,7 @@ def write_dataset(
 
     _write_tasks(meta_dir, tasks)
     _write_episodes(meta_dir, episodes)
-    features = _write_info(meta_dir, episodes, repo_id, fps, tasks, robot_type)
+    features = _write_info(meta_dir, episodes, repo_id, fps, tasks, robot_type or "sim")
     _write_stats(meta_dir, episodes)
     _write_episodes_stats(meta_dir, episodes)
 

@@ -52,6 +52,7 @@
 | Robot plugins (`ohho.robots`) | ✅ **OHH-310** — `RobotPlugin` in `ohho/plugins.py`. Built-ins (sim, aerial), the mobile manipulator (`ohho.robots.omnibot`, **OHH-318**), and the quadruped (`ohho.robots.unitree`, **OHH-319**) load through the `ohho.robots` entry point. A source checkout without a reinstall falls back to every shipped entry in `pyproject.toml`. `ohho list --plugins` shows each plugin, its specs and any load error. **OHH-313** reads `safety_policy(spec)` when the gate loads (discovery still does not call it). |
 | Humanoid plugin package | ✅ **OHH-330 / OHH-331** — `plugins/ohho-booster` is a separate distribution. Installing it registers `booster-t2` (`robot_class: humanoid`, 31 joints, `sim_backend=humanoid-mujoco`). No vendor SDK import at load. The description archive and `t2_walk.pt` are fetched at pinned commits with sha256 and are not vendored. `ohho sim --robot booster-t2` is headless MuJoCo. The checkpoint's training command range is not an Ohho cap. No `booster://` transport in this package. |
 | Transport + sim registries | ✅ **OHH-311** — `resolve_transport` asks `RobotPlugin.transports()` first, then the existing scheme dict (entries unchanged). `sim://` and auto use `RobotSpec.sim_backend` when set (`kinematic` and `humanoid-mujoco` are the built-in backends); an empty name keeps today's simulator. Unknown schemes list each plugin's schemes. `dds://` stays Unitree. |
+| Robot-id resolver | ✅ **OHH-314** — `ohho.config.resolve_robot_id`: `--robot`, then `OHHO_ROBOT`, then `robot = "..."` in `~/.ohho/config.toml`, then `sim`. `RobotProfile` (`~/.ohho/robots/<id>.toml` or repo-local `ohho.toml`) sets transport, sim backend, asset path, network interface, and safety overrides that may only tighten caps. `ohho config show` prints the id and source (`flag`, `env`, `config`, `default`). `SafetyGate` selects the per-class `SafetyPolicy` from that resolved spec's `robot_class`. |
 | Conformance kit | ✅ **OHH-315** — `python -m ohho.testing.conformance --robot <id>` runs the class scenario on the plugin sim backend only. Quadruped runs `quadruped_walk` on the kinematic backend (stand before drive, lie/sit block motion, euler clamped to the safety limit). Aerial and humanoid skip with a reason until a sim backend is registered. Scenarios that open `SafetyGate` exercise the per-class `SafetyPolicy` (watchdog, e-stop, joint clamp). Vendor-name allowlist: `ohho/testing/conformance/vendor_allowlist.txt`. |
 | Sim CI matrix | ✅ **OHH-316** — `ohho list --json --ci-sim` emits one row per spec with `ci_sim.enabled` (robot id, class, plugin, scenario). `.github/workflows/sim-matrix.yml` runs the class conformance scenario once per row on CPU, sim backends only, and writes that row's runtime to the job summary. Optional plugin `asset_source()` pins `owner/name` plus a commit; the workflow caches it with `actions/cache` and does not vendor meshes. `sim` (builtin) and the mobile manipulator (`ohho.robots.omnibot`) opt in. The quadruped plugin (`ohho.robots.unitree`) stays out of the matrix. |
 | Runtime port + **native** backend | ✅ working (threaded scheduler, pub/sub, timers, params) |
@@ -69,15 +70,15 @@
 | **Nightly CPU sim loop (`sim-loop`)** | ✅ **OHH-86 complete** — `ohho.sim_loop` (teleop record >=5 episodes -> LeRobot v2.0 dataset schema check + LeRobotDataset loading -> tiny ACT CPU train -> FastAPI serve -> >=50 closed-loop sim steps + latency p50/p95). CLI `ohho sim-loop` + `python scripts/sim_loop.py` + `.github/workflows/sim-loop.yml`. |
 | **Go2 MuJoCo Sim Demo (`sim-demo`)** | ✅ **OHH-134 complete** — `ohho.sim_demo` (6-shot scripted demo harness: doctor -> sim connection -> typed goal -> tool-call log -> SafetyGate clamp/e-stop demo -> end card; eval JSON schema + example log; recording checklist; labeled Simulation only everywhere; video recording pending Varun). CLI `ohho sim-demo` + `python scripts/sim_demo_harness.py`. |
 | **Train eval (`ohho eval`)** | ✅ **OHH-535** — `ohho eval <checkpoint> --suite gazebo-nav-regression` runs seeded kinematic-sim episodes. Proof scenario files are referenced (OmniBot `nav_regression_scenarios.yaml`), not vendored. Report schema `ohho.eval/v1` in `schemas/ohho.eval.v1.json`. Training and sweep trials call `ohho.eval.evaluate_after_train` or `run_eval_job`. Docs `docs/eval.md`. |
-| **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. **OHH-313** delegates those decisions to a `SafetyPolicy` per `robot_class` (Ground, Arm, Legged) without changing caps or behaviour. Rules in §9a. CLI `--arm --estop-damp --safety-config` |
+| **SafetyGate (`ohho.safety`)** | ✅ **OHH-117** — fail-closed `Transport` wrapper inserted by `Robot.connect` for every `protocol != "simulated"`: velocity/accel/joint/effort caps, 300 ms command + 500 ms state watchdogs, latched e-stop, sport-action allowlist, tilt/fault latch, hardware arming, JSONL audit. **OHH-313** delegates those decisions to a `SafetyPolicy` per `robot_class` (Ground, Arm, Legged) without changing caps or behaviour for those classes. **OHH-328** adds `HumanoidPolicy` for `robot_class` humanoid (asymmetric speed caps, watchdog that does not damp, fall latch, gated `move_joints`). Rules in §9a. CLI `--arm --estop-damp --safety-config` |
 | **Humanoid telemetry** | ✅ **OHH-327** — `Telemetry.custom["humanoid"]` on `ohho.telemetry.v1`: mode, vendor mode (logs only), fall state, base orientation, per-group joints, planar odom shadowed onto `Telemetry.odom`, battery, experimental. Unknown or missing fall state is not upright. |
 | **Humanoid MuJoCo sim** | ✅ **OHH-329** — `humanoid-mujoco` sim backend. A plugin supplies the MJCF, joint order, PD gains, observation layout and an ONNX or TorchScript checkpoint (default 50 Hz). `drive` stores a body velocity; the policy writes joint targets; PD runs every model step (`tau = kp (q_target - q) - kd dq`). `prepare`, `damp` and `custom` run with no policy. Protocol stays `simulated`, so SafetyGate is unchanged. Extra `humanoid-sim`. |
-| **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`, plus `emergency_stop`. **OHH-278**: hardware URIs need a human `--allow-hardware`; the process never arms or releases an e-stop; results carry `backend` and velocity clamps. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). Docs `docs/mcp.md` |
+| **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`, plus `emergency_stop`. **OHH-278**: hardware URIs need a human `--allow-hardware`; the process never arms or releases an e-stop; results carry `backend` and velocity clamps. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). **OHH-335** adds `ohho/mcp_humanoid.py`: `humanoid_walk` (clamped by `HumanoidPolicy`), `humanoid_stop`, `emergency_stop` and `humanoid_telemetry` are listed from `humanoid.locomotion` / `humanoid.posture`. `arm`, `damp`, `move_joints`, dances and trajectory tools are never listed, even when a config names them. Every tool payload includes `backend`. The session resolves the robot id through `ohho.config`. Sim-only unless `allow_hardware` was set on the session. The tools never arm. Docs `docs/mcp.md` |
 | **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
 | **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
-| CLI (`ohho`) | ✅ `doctor` (`--agent`), `verify --sim`, `list version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo eval market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`) |
-| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
-| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`; installs `plugins/ohho-booster`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run, and caches and fetches the pinned description archive and walk checkpoint. Other cells skip those tests when the packages or assets are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`, `--robot`), `config show`, `verify --sim`, `list` (`--plugins`, `--json --ci-sim`) `version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo eval market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`) |
+| Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_config.py` covers the OHH-314 robot-id resolver. `tests/test_humanoid_policy.py` covers the OHH-328 humanoid policy. `tests/test_mcp_humanoid.py` covers the OHH-335 humanoid MCP tools. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. `tests/test_eval.py` covers the OHH-535 sim eval runner. `tests/test_model_safety.py` covers the OHH-485 checkpoint refusals. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
+| CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and ≥95% line+branch coverage gates on `ohho/safety.py` and `ohho/humanoid_policy.py`; installs `plugins/ohho-booster`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run, and caches and fetches the pinned description archive and walk checkpoint. Other cells skip those tests when the packages or assets are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. |
 
 **M1 (two-robot hardware vertical slice) — software complete.** All four adapters
 (`yahboom`, `feetech`, `composite`, `unitree`) are built and unit-tested against
@@ -181,6 +182,7 @@ sdk/
 │   │   ├── ros2.py            # Ros2Transport — ros2:// (bridges /cmd_vel, /odom, /joint_states); msg_factory injectable
 │   │   └── humanoid_mujoco.py # HumanoidMujocoTransport — any plugin MJCF, policy, then PD; mujoco imported on connect
 │   ├── humanoid.py       # generic humanoid modes and Robot methods (posture, gaze, hands, joints)
+│   ├── mcp_humanoid.py   # capability-gated humanoid MCP tools; hard denylist; backend on every payload (OHH-335)
 │   ├── humanoid_telemetry.py  # custom["humanoid"] block (ohho.telemetry.v1): validator, JSON, odom shadow
 │   ├── humanoid_sim.py   # HumanoidSimConfig, observation layout, bind_sim_config (stdlib; no mujoco import)
 │   ├── policy_runner.py  # LocomotionPolicy — ONNX or TorchScript on CPU; runtime imported on load
@@ -207,6 +209,7 @@ sdk/
 │   ├── hil.py            # ohho.hil — HIL runner, fake-transport scenarios, results markdown (OHH-35)
 │   ├── safety.py         # ohho.safety — SafetyGate(Transport), SafetyProfile, AuditLog, arming policy
 │   ├── safety_policy.py  # SafetyPolicy per robot class (Ground, Arm, Legged); plugin caps may only tighten (OHH-313)
+│   ├── humanoid_policy.py # HumanoidPolicy (OHH-328): caps, watchdog, fall latch, joint gating
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
@@ -219,6 +222,8 @@ sdk/
 │   ├── agent_doctor.py   # ohho doctor --agent readiness (OHH-271 phase 7); rules hook is ohho.agent_rules
 │   ├── agent_rules/      # ohho rules install (OHH-271 phase 6); body is ohho-rules.md
 │   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
+│   ├── config.py         # robot-id resolver + RobotProfile (OHH-314)
+│   ├── session.py        # MCP RobotSession — one resolved robot id
 │   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
 │   ├── eval/             # ohho eval — Proof suite reference, kinematic sim, ohho.eval/v1 (OHH-535)
 │   ├── cli.py            # argparse: doctor/verify/list(--plugins, --json --ci-sim)/version/login/whoami/logout/connect/sim/drive/agent/serve/sim-serve/sim-loop/sim-demo/eval/selftest/hil/mcp/rules; main()
@@ -305,6 +310,15 @@ loads; it maps onto `robot_class`. Shipped specs: `omnibot` (mobile manipulator
 plugin, 6-DOF arm, max_lin 0.2), `unitree-go2` (quadruped plugin, max_lin 1.5, `dds://`), `sim`
 (mobile base, generic holonomic). Safety caps are unchanged. ADR:
 `docs/architecture/robot-plugins.md`.
+
+**Robot id (`ohho/config.py`):** `resolve_robot_id` returns the id and a source
+of `flag`, `env`, `config`, or `default`. Precedence is the explicit argument,
+then `OHHO_ROBOT`, then `robot` in `~/.ohho/config.toml` (`OHHO_HOME` relocates
+that directory for tests), then `sim`. `load_robot_profile` reads
+`~/.ohho/robots/<id>.toml` and a repo-local `ohho.toml`. A profile that raises
+any safety cap is refused at load. `Robot.connect` applies a tighter override
+through the existing `SafetyConfig`; `SafetyGate` itself is unchanged. MCP
+callers use `ohho.session.RobotSession`, which sends only the resolved id.
 
 **Robot plugins (`ohho/plugins.py`):** `RobotPlugin` declares `specs()`,
 `transports()` (scheme → factory), `sim_backends()`, `safety_policy(spec)`
@@ -615,8 +629,13 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
    denylist wins over any config file. Humanoid names (`prepare`, `walk_mode`,
    `damp`, `get_up`, `lie_down`, `look`, `move_ee`, `gripper`, `hand`) are not
    on those lists. A profile may name them; `command` then calls
-   `send_humanoid` and never a sport call. `move_joints` stays refused at the
-   gate.
+   `send_humanoid` and never a sport call. `move_joints` stays refused for
+   Ground, Arm and Legged. **OHH-328** `HumanoidPolicy` may forward it only
+   in `CUSTOM` on a sim target, with joint limits, a 0.15 rad step and gain
+   ceilings. A stale command on a humanoid zeros velocity and does not damp.
+   Upright e-stop in `WALK`/`PREPARE` holds `PREPARE`. Fall state other than
+   `upright`, or roll/pitch above 0.5 rad for 100 ms, latches. Hardware speed
+   stays at 0.3 / 0.2 / 0.2 / 0.5 until a dated walk. A plugin may only tighten.
 8. **Tilt / fault.** `|roll|` or `|pitch|` > 0.6 rad, or `error_code != 0` →
    stop + latch, armed or not.
 9. **Arming.** Never automatic, including tests and CI. Any non-loopback
@@ -624,9 +643,11 @@ the latch and e-stop stay as written here. Audit lines add a `policy` field.
    TTY confirmation ("I am physically present, the area is clear, the remote is
    in my hand"), logged with a timestamp. CI env or non-TTY → refused.
 10. **Audit.** Every arm/disarm, e-stop, release, clamp, refusal and watchdog
-    trip goes to `~/.ohho/safety/<UTC date>.jsonl`.
+    trip goes to `~/.ohho/safety/<UTC date>.jsonl`. Humanoid records add
+    `mode_transition` and a `plugin` field on fall latches.
 11. **Tests.** Fake clock + fake transports only; no sleeps, no hardware. CI
-    fails below 95 % line + branch coverage on `ohho/safety.py`.
+    fails below 95 % line + branch coverage on `ohho/safety.py` and on
+    `ohho/humanoid_policy.py`.
 
 Not gated: `ohho selftest` and `tests/hil/` construct adapters directly (they
 have their own consent: `--allow-spin`, or `OHHO_HIL=1` plus an explicit

@@ -221,8 +221,9 @@ class TestPolicyByClass(unittest.TestCase):
         self.assertIsInstance(policy, GroundPolicy)
         self.assertEqual(policy.profile, profile_for(spec.id, spec))
 
-    def test_humanoid_has_no_humanoid_policy_yet(self) -> None:
-        self.assertFalse(hasattr(policy_mod, "HumanoidPolicy"))
+    def test_humanoid_uses_humanoid_policy(self) -> None:
+        from ohho.humanoid_policy import HumanoidPolicy
+
         spec = RobotSpec(
             id="walker",
             name="Walker",
@@ -231,8 +232,12 @@ class TestPolicyByClass(unittest.TestCase):
             source="",
         )
         policy = policy_for_class(spec)
-        self.assertIsInstance(policy, GroundPolicy)
-        self.assertEqual(policy.name, "ground")
+        self.assertIsInstance(policy, HumanoidPolicy)
+        self.assertNotIsInstance(policy, GroundPolicy)
+        self.assertEqual(policy.name, "humanoid")
+        self.assertLessEqual(policy.profile.max_vx, 0.5)
+        self.assertIn("prepare", policy.allowlist)
+        self.assertTrue(policy.denied("front_flip"))
 
 
 class TestPluginCaps(unittest.TestCase):
