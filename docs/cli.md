@@ -63,6 +63,9 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
+| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)) |
+| `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho sweep start <file> [--id ID]` | Persist a new sweep run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` |
