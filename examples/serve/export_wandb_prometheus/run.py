@@ -27,7 +27,7 @@ def main() -> int:
         example_id="export-wandb-prometheus",
         hardware="cpu",
         pending="W&B and Prometheus export from the bench report",
-        checks=("export:metrics",),
+        checks=("ohho.bench.export_live",),
     )
 
 

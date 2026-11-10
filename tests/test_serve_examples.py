@@ -109,7 +109,7 @@ class TestServeExamples(unittest.TestCase):
         self.assertTrue(support.feature_ready("ohho.optimize"))
         self.assertFalse(support.feature_ready("bench:llm"))
         self.assertFalse(support.feature_ready("bench:launch"))
-        self.assertFalse(support.feature_ready("export:metrics"))
+        self.assertTrue(support.feature_ready("export:metrics"))
         self.assertTrue(support.feature_ready("cli:bench"))
         self.assertEqual(support.bench_commands(), {"validate"})
         buffer = StringIO()
