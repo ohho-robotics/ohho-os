@@ -190,6 +190,15 @@ def _cmd_doctor(args) -> int:
     print(
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
+    optimize_ready = have("torch") and have("onnx") and have("onnxruntime")
+    print(
+        "  optimize    : "
+        + (
+            "onnx export and ORT CPU ready  (TensorRT, CUDA EP, AWQ, GPTQ, FP8 need a GPU)"
+            if optimize_ready
+            else "needs [optimize] extra  (torch, onnx, onnxruntime)"
+        )
+    )
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
@@ -1237,18 +1246,6 @@ def _cmd_eval(args) -> int:
     return 0
 
 
-def _cmd_bench(args) -> int:
-    from .bench.schema import BenchValidationError, validate_path
-
-    try:
-        validate_path(args.file)
-    except BenchValidationError as exc:
-        print(exc, file=sys.stderr)
-        return 1
-    print(f"valid ohho.bench/v1: {args.file}")
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = _ArgumentParser(prog="ohho", description="OhhO OS — the open robot engine.")
     p.add_argument(
@@ -1646,6 +1643,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_targets(sub)
 
+    from .optimize.command import register_optimize
+
+    register_optimize(sub)
+
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
         "--robot",
@@ -1953,17 +1954,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ev.set_defaults(func=_cmd_eval)
     add_dataset_parser(sub)
-    bench = sub.add_parser(
-        "bench",
-        help="validate ohho.bench/v1 benchmark results",
-    )
-    bench_sub = bench.add_subparsers(dest="bench_command", required=True)
-    bench_validate = bench_sub.add_parser(
-        "validate",
-        help="validate a result file against ohho.bench/v1",
-    )
-    bench_validate.add_argument("file", help="path to a JSON result")
-    bench_validate.set_defaults(func=_cmd_bench)
+
+    from .bench.command import register_bench
+
+    register_bench(sub)
 
     return p
 
@@ -1977,6 +1971,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not getattr(args, "command", None):
             parser.print_help()
             return 0
+        if (
+            args.command == "bench"
+            and not getattr(args, "bench_command", None)
+            and not getattr(args, "artifact", None)
+        ):
+            parser.error(
+                "bench needs `validate FILE` or `--artifact PATH --target PROFILE`"
+            )
         if not (
             args.command == "mcp" and getattr(args, "mcp_command", None) == "connect"
         ):

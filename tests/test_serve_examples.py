@@ -105,11 +105,11 @@ class TestServeExamples(unittest.TestCase):
 
     def test_pending_features_are_absent_and_block_when_present(self) -> None:
         support = self.support
-        self.assertFalse(support.feature_ready("cli:optimize"))
-        self.assertFalse(support.feature_ready("ohho.optimize"))
+        self.assertTrue(support.feature_ready("cli:optimize"))
+        self.assertTrue(support.feature_ready("ohho.optimize"))
         self.assertFalse(support.feature_ready("bench:llm"))
         self.assertFalse(support.feature_ready("bench:launch"))
-        self.assertFalse(support.feature_ready("export:metrics"))
+        self.assertTrue(support.feature_ready("export:metrics"))
         self.assertTrue(support.feature_ready("cli:bench"))
         self.assertEqual(support.bench_commands(), {"validate"})
         buffer = StringIO()
