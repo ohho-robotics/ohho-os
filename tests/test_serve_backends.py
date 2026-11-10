@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
@@ -42,6 +44,20 @@ _FIXTURE = _ROOT / "tests" / "fixtures" / "fake_openai_server.py"
 
 def _prefix() -> list[str]:
     return [sys.executable, str(_FIXTURE)]
+
+
+def _load_fake_server() -> object:
+    name = "_ohho_fake_openai_server"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(name, _FIXTURE)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"cannot load {_FIXTURE}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _read_pid(path: Path, timeout: float = 3.0) -> int:
@@ -418,6 +434,27 @@ class TestProcessTree(unittest.TestCase):
             backend.teardown()
             if pid and pid_alive(pid):
                 kill_pid(pid)
+
+    def test_fake_server_listens_without_reverse_dns(self) -> None:
+        module = _load_fake_server()
+
+        def stall(host: str = "") -> str:
+            time.sleep(3)
+            return host
+
+        with patch("socket.getfqdn", stall):
+            started = time.monotonic()
+            server = module._ListeningServer(
+                ("127.0.0.1", 0), module._handler(["a"], 0.0)
+            )
+            elapsed = time.monotonic() - started
+            try:
+                self.assertLess(elapsed, 1.0)
+                port = server.server_address[1]
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    pass
+            finally:
+                server.server_close()
 
 
 @contextmanager

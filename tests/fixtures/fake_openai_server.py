@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
 import subprocess
 import sys
 import time
@@ -105,6 +106,23 @@ def _hang() -> int:
     return 0
 
 
+class _ListeningServer(ThreadingHTTPServer):
+    """Accept connections without a reverse DNS lookup.
+
+    ``HTTPServer.server_bind`` calls ``socket.getfqdn`` after ``bind`` and
+    before ``listen``. On macOS 15 and later that lookup of ``127.0.0.1``
+    can take tens of seconds when the interpreter has no Local Network
+    permission, so the socket is not accepting connections yet. This
+    stand-in never reads ``server_name``.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def _serve() -> int:
     host = _flag("--host", "127.0.0.1") or "127.0.0.1"
     port = int(_flag("--port", "0") or "0")
@@ -117,7 +135,7 @@ def _serve() -> int:
         _spawn_sleeper(child)
     handler = _handler(tokens, delay)
     try:
-        server = ThreadingHTTPServer((host, port), handler)
+        server = _ListeningServer((host, port), handler)
     except OSError as exc:
         print(f"error: could not bind {host}:{port}: {exc}", file=sys.stderr)
         return 1
