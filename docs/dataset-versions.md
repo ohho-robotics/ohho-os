@@ -23,12 +23,12 @@ protocol manifest in `schemas/manifest.json`.
 | `dataset_name` | Label. Not a path. |
 | `parent_version_id` | Version this one was edited from, or null. |
 | `pinned` | When true, the version cannot be modified. |
-| `content_hash` | `sha256:` of the canonical episode bytes. |
+| `content_hash` | `sha256:` of the canonical bytes. Those bytes include the episode rows and the `split` and `augmentation` configs. |
 | `source_query` | Local episode roots. |
 | `filters` | Task substring, robot type, min/max frames. |
-| `split` | `all`, `train`, `val`, or `test`, plus weights. |
-| `seed` | Shuffle and noise seed. |
-| `augmentation` | Scale, offset, noise, and copies. |
+| `split` | Slice name, weights, strategy (`episode`, `session`, `task`, `scene`), and held-out scenes. |
+| `seed` | Shuffle and noise seed. Part of the version id. With `split.name=all` it leaves the content hash unchanged. |
+| `augmentation` | Build-time scale, offset, noise, and copies, plus train-time crop, resize, colour jitter, blur, temporal stride, and per-camera toggles. |
 | `stats` | Episodes, frames, action ranges, state ranges. |
 | `licence` | Licence string stored with the version. |
 | `storage_prefix` | `versions/<version_id>/dataset`. |
@@ -70,13 +70,26 @@ form of `select * from dataset_versions`.
    directory (`meta/info.json`) or a directory whose children are.
 2. Keep episodes that match the filters. Order is source path, then episode
    index, then task.
-3. `split=all` keeps that order and ignores the seed. `train`, `val`, and
-   `test` shuffle with `random.Random.random` (the stable `random()` stream)
-   and take a Hamilton share of the weights.
-4. Apply scale, offset, and noise. Noise is zero unless the std is positive,
-   so a zero-noise build does not depend on the seed. Numbers are rendered
-   with 8 decimal places.
-5. Write a LeRobot dataset and `meta/ohho_content.json`.
+3. Assign every filtered episode to train, val, or test. The episode moves
+   as a whole: its frames stay in one split. `strategy=episode` shuffles
+   episodes with `random.Random.random` (the stable `random()` stream) and
+   takes a Hamilton share of the weights. `session` groups by the `session`
+   string on `episodes.jsonl`, otherwise by `day`, otherwise by the UTC day
+   of the first frame timestamp when that timestamp is a Unix time at or
+   after `1000000000`, otherwise one undated group, and shuffles those
+   groups. `task` groups by the task string. `scene` groups by the `scene`
+   string (episodes with no scene stay in one group). Scenes named in
+   `held_out_scenes` are appended to test and stay out of the shuffle.
+   Weights are Hamilton shares of the remaining groups. `name=all` keeps
+   source order. `name=train`, `val`, or `test` writes that part only.
+4. Apply scale, offset, noise, and copies to the materialised rows. Zero
+   noise leaves the seeded stream untouched. Numbers are rendered with 8
+   decimal places. Crop, resize, colour jitter, blur, temporal stride, and
+   camera toggles are stored on the version and applied later by
+   `apply_augmentation`.
+5. Write a LeRobot dataset and `meta/ohho_content.json`. The hashed JSON
+   object contains `episodes`, `split`, and `augmentation`, so a train-time
+   setting changes the content hash when the stored rows stay the same.
 6. Store stats on `version.json`: episode count, frame count, and the
    min/max of each action and state dimension.
 
@@ -114,6 +127,164 @@ root = resolve_dataset_version("dv_...")  # or an existing dataset path
 `meta/ohho_content.json` when given a version id. It does not import
 `ohho.train`.
 
+## Splits
+
+`ohho.datasets.assign_splits` is the partition the builder uses. Pass
+`SplitEpisode` rows and a `Split`. The same list, split, and seed return
+the same `SplitAssignment`.
+
+| Strategy | Group |
+| --- | --- |
+| `episode` | one episode |
+| `session` | `session`, else `day`, else the UTC day of a Unix timestamp `>= 1000000000`, else one undated group |
+| `task` | the task string, matched exactly |
+| `scene` | the `scene` string; a missing scene shares one group |
+
+`episodes.jsonl` may include string fields `session`, `day`, and `scene`.
+The LeRobot writer leaves them unset. Session, day, and scene labels are
+stripped. A `session` keeps episodes from different days together. Held-out
+scene names are stored sorted and unique. A listed scene that matches no
+selected episode fails the build.
+
+Fractions are weights of groups. For `episode` each group is one episode, so
+the counts match a Hamilton split of episodes. For the other strategies a
+large session can land entirely in train.
+
+## Train-time augmentation
+
+`ohho.datasets.apply_augmentation(sample, augmentation, seed=...)` is pure
+Python. Numpy arrays of shape `(height, width, 3)` and PIL images are
+accepted at the edge. Pillow is imported only for a PIL image. Numpy is
+imported only when the return value keeps a numpy image. List pixels need
+neither package.
+
+The sample is an object:
+
+```python
+{
+    "episode_id": "ep-1",
+    "frames": [
+        {
+            "frame_index": 0,
+            "timestamp": 0.0,
+            "observation_state": [0.0, 0.1],
+            "action": [0.2],
+            "cameras": {
+                "front": {"height": 2, "width": 2, "pixels": [0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255]}
+            },
+        }
+    ],
+}
+```
+
+`pixels` is row-major RGB, integers 0 through 255, length `height * width * 3`.
+The function returns `episode_id` and `frames`. Cameras come back as a list
+sorted by name, each with `name`, `height`, `width`, and `pixels`. The input
+object is left unchanged.
+
+Operations on an enabled camera run in this order: random crop, nearest
+resize, colour (brightness, contrast, saturation, hue), Gaussian blur.
+`blur` is the sigma in pixels. `temporal_stride` of N keeps frames whose
+position in the sample satisfies `index % N == phase`. State and action use
+`value * scale + offset + jitter`. `copies` stays a build-time repeat of
+episodes and does not change one sample.
+
+Draws use `random.Random` streams whose seeds are the first 8 bytes of
+SHA-256 over `ohho.augment.v1:{seed}:{label}`. Labels are `color`, `crop`,
+`temporal`, `state`, and `action`. A magnitude of zero leaves that stream
+untouched. Colour factors are drawn once per call. Crop, state noise, and
+action noise run on the frames temporal sub-sampling kept. Cameras are
+visited in name order. A camera listed with `enabled: false` is copied
+through and consumes no crop draw. A camera omitted from `cameras` is
+augmented.
+
+Same sample, config, and seed: same result.
+
+### ACT and Diffusion Policy
+
+ACT (`policy="act"`) and Diffusion Policy (`policy="diffusion"`) keep their
+dataset readers. Resolve the version, then call `apply_augmentation` on each
+training sample. OHH-508 wires this into the recipe data loaders.
+
+```python
+from ohho.datasets import (
+    apply_augmentation,
+    load_version,
+    materialised_apply_config,
+    resolve_dataset_version,
+)
+
+record = load_version(version_id)
+dataset_path = resolve_dataset_version(record.version_id)
+
+# The loader reads dataset_path like any other LeRobot directory.
+# sample_index is the loader's own deterministic index
+# (episode index, or episode index and chunk index).
+augmented = apply_augmentation(
+    sample,
+    materialised_apply_config(record.augmentation),
+    seed=record.seed + sample_index,
+)
+```
+
+`materialised_apply_config` keeps crop, resize, colour jitter, blur,
+temporal stride, and camera toggles. Scale, offset, noise, and copies are
+already in the stored frames, so the loader passes scale 1, offset 0, and
+noise 0 into `apply_augmentation`.
+
+A loader that reads the source episodes, rather than the materialised
+version, passes `record.augmentation` itself so scale, offset, and noise run
+inside `apply_augmentation`:
+
+```python
+augmented = apply_augmentation(sample, record.augmentation, seed=record.seed + sample_index)
+```
+
+## Preview samples
+
+`preview_augmentation(sample, augmentation, seed=...)` returns the object the
+console preview renders. The console sends one raw sample and draws `before`
+and `after`. It does not run the augmentation itself.
+
+```json
+{
+  "schema": "ohho.augmentation_preview.v1",
+  "seed": 0,
+  "augmentation": {},
+  "before": {
+    "episode_id": "ep-1",
+    "frames": [
+      {
+        "frame_index": 0,
+        "timestamp": 0.0,
+        "observation_state": [0.0],
+        "action": [0.0],
+        "cameras": [
+          {
+            "name": "front",
+            "height": 2,
+            "width": 2,
+            "pixels": [0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 255]
+          }
+        ]
+      }
+    ]
+  },
+  "after": {
+    "episode_id": "ep-1",
+    "frames": []
+  }
+}
+```
+
+`augmentation` is the normalised config stored on the version. `pixels` is
+row-major RGB, integers 0 through 255, length `height * width * 3`. Cameras
+are sorted by name. Match a before frame to an after frame by
+`frame_index`. Temporal sub-sampling leaves some source frames out of
+`after.frames`. A disabled camera has the same pixels in `before` and
+`after`. Preview applies the full config, including scale, offset, and
+noise, to the raw sample the console supplied.
+
 ## Proposed cloud tables (follow-up)
 
 Do not create these tables from ohho-os. One local `version.json` is one row.
@@ -140,7 +311,10 @@ One local `dataset/` tree is one object prefix.
 | `created_at` | `created_at` | timestamptz not null |
 
 `stats` stays on the row so a console can show episodes, frames, and ranges
-without reading the dataset.
+without reading the dataset. `split` and `augmentation` stay single JSON
+columns. `split` carries `strategy` and `held_out_scenes`. `augmentation`
+carries `crop`, `resize`, `color_jitter`, `blur`, `temporal_stride`, and
+`cameras`.
 
 ### Object storage
 
@@ -169,7 +343,12 @@ ohho dataset import-hf owner/name --revision main
 Repeat `--source` to combine roots. `--store DIR` selects the store.
 `--json` prints the machine-readable result. `--split train` with the
 default fractions keeps every episode as train; pass `--train-fraction`,
-`--val-fraction`, and `--test-fraction` to partition.
+`--val-fraction`, and `--test-fraction` to partition. `--split-strategy` is
+`episode` (default), `session`, `task`, or `scene`. Repeat
+`--held-out-scene` when the strategy is `scene`. Train-time image settings
+are `--crop-height`, `--crop-width`, `--resize-height`, `--resize-width`,
+`--brightness`, `--contrast`, `--saturation`, `--hue`, `--blur`,
+`--temporal-stride`, and repeatable `--camera-off`.
 
 ## Lineage and Hub import
 
