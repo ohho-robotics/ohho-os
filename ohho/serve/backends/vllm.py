@@ -19,6 +19,7 @@ from .cmdline import (
     resolve_port,
 )
 from .errors import ServingBackendError
+from .sweep_support import launch_args
 
 _DTYPE = {
     "auto": "auto",
@@ -63,6 +64,7 @@ class VllmBackend(ServingBackend):
         length = optional_positive_int(config, "max_model_len")
         if length is not None:
             command.extend(["--max-model-len", str(length)])
+        command.extend(launch_args(self.name, config))
         command.extend(extra_args(config))
         return LaunchPlan(
             commands=(tuple(command),),
