@@ -142,6 +142,67 @@ The JSON and Markdown are still written.
 `--prometheus-push URL` POSTs a text exposition. `--wandb` logs to Weights &
 Biases. Both exporters are off unless the flag is set, and the tests never
 require them. A missing `wandb` install errors only when `--wandb` is passed.
+`--export` below is the plugin path. A failure there is a warning, and the
+bench exit code does not change.
+
+## Export
+
+`--export` repeats. Each value is one optional plugin. The core bench code
+does not import a vendor client; the adapter module does, and only when that
+spec is selected.
+
+```bash
+ohho bench --artifact model.onnx --target x86-cpu \
+  --export wandb:my-entity/ohho \
+  --export prometheus=http://127.0.0.1:9091 \
+  --export-ttl 5 \
+  --json out.json
+
+ohho bench --artifact model.onnx --target x86-cpu \
+  --export prometheus=remote-write:http://127.0.0.1:9090/api/v1/write \
+  --json out.json
+```
+
+`wandb` and `wandb:entity/project` open one run. `wandb:project` sets the
+project and leaves the entity to the environment. With no target, the project
+is `WANDB_PROJECT` or `ohho`, and the entity is `WANDB_ENTITY` when that is
+set. Config is the job spec plus the manifest and artifact refs (manifest
+path, `file://` URI when that path is a file, and the artifact digest).
+Summary is latency, accuracy, and energy when those numbers were measured.
+Energy is omitted when the run did not measure it. The result stores the run
+URL at `exports.wandb.url`.
+
+The API key stays in the process environment (`WANDB_API_KEY`). This command
+never takes the key as an argument and never writes it into the result or
+the run config. Install `wandb` only on a machine that should log. The
+package is optional. Tests mock the module and skip a live import when it
+is absent.
+
+`prometheus=<url>` pushes gauges. A base URL such as `http://127.0.0.1:9091`
+is a Pushgateway. `prometheus=pushgateway:<url>` is the same.
+`prometheus=remote-write:<url>`, or a URL whose path ends in `/api/v1/write`,
+is Prometheus remote-write (snappy-compressed protobuf, stdlib only).
+Pushgateway series use the grouping key `job`, `model`, `target`, and
+`run_id`. Gauges are latency, throughput, accuracy, energy, and power, with
+those labels. `--export-ttl` is how many minutes the process keeps that
+group before it deletes it (default 5). The process waits, then sends
+`DELETE`. `--export-ttl 0` deletes as soon as the push returns. Remote-write
+has no delete step. The result stores `exports.prometheus` (`mode`, `url`,
+and `deleted` for a Pushgateway).
+
+Export errors print `warning:` on stderr. The JSON result is still written.
+A bad `--export-ttl` (negative or non-finite) is a usage error and exits 2
+before the run. The older `--wandb` and `--prometheus-push` flags are
+unchanged: they still exit 1 when that export fails, after the result is
+written.
+
+`export_result` in `ohho.bench.exports` is the same hook an optimize run
+uses (`kind="optimize"`). One call is one W&B run and one Prometheus push.
+This repository does not ship an `ohho optimize` command.
+
+Cloud jobs use that same hook on the console after the run. The console
+path is not in this package. A managed worker must not receive the API key;
+the console already stores it and exports after the job (OHH-485).
 
 ## Library
 

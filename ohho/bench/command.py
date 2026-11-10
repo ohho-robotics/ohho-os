@@ -8,12 +8,14 @@ is rejected by the root parser so the historical exit code 2 stays.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from collections.abc import Sequence
 from typing import Any
 
 from ohho.bench.environment import GpuProbe
 from ohho.bench.errors import BenchHarnessError
+from ohho.bench.exports import export_result
 from ohho.bench.harness import BenchConfig, execute
 from ohho.bench.sensors.base import SensorSource
 from ohho.bench.report import (
@@ -33,7 +35,8 @@ def register_bench(subparsers: Any) -> None:
         help="benchmark an inference artifact or validate a result",
         description=(
             "Run an inference benchmark, or validate an ohho.bench/v1 result. "
-            "A bare `ohho bench` is not a run."
+            "A bare `ohho bench` is not a run. "
+            "`--export` sends the result to an optional exporter plugin."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -44,6 +47,8 @@ def register_bench(subparsers: Any) -> None:
             "--slo p95<=200ms --max-regression p95=10%% --markdown summary.md\n"
             "  ohho bench --artifact model.onnx --target x86-cpu --sustained 30 "
             "--json out.json\n"
+            "  ohho bench --artifact model.onnx --target x86-cpu --export <spec> "
+            "--export-ttl 5 --json out.json\n"
             "  ohho bench validate out.json\n"
         ),
     )
@@ -119,6 +124,25 @@ def register_bench(subparsers: Any) -> None:
         help="log the result to W&B. Off unless set, and not required to run.",
     )
     bench.add_argument(
+        "--export",
+        action="append",
+        default=None,
+        help=(
+            "repeatable exporter spec (scheme, scheme:target, or scheme=url). "
+            "A failure is a warning and does not change the bench exit code."
+        ),
+    )
+    bench.add_argument(
+        "--export-ttl",
+        dest="export_ttl",
+        type=float,
+        default=5.0,
+        help=(
+            "minutes to keep a pushed grouping key before deleting it "
+            "(default 5). The process waits, then deletes."
+        ),
+    )
+    bench.add_argument(
         "--workload",
         default="inference",
         help="workload class stored in run.target (default inference)",
@@ -160,14 +184,17 @@ def run_bench_command(
     clock: Any = None,
     sources: Sequence[SensorSource] | None = None,
     gpu: GpuProbe | None = None,
+    export_context: Any = None,
 ) -> int:
     """Run the harness from parsed CLI arguments.
 
     Tests pass ``runner`` and ``clock`` to avoid a real session. The argparse
-    path leaves both unset and loads the ONNX artifact.
+    path leaves both unset and loads the ONNX artifact. ``export_context``
+    stands in for an optional exporter client. Export failures are warnings.
     """
     try:
         config = _config(args)
+        _check_export_ttl(args)
         document = execute(
             config,
             runner=runner,
@@ -179,6 +206,12 @@ def run_bench_command(
             max_regressions=tuple(args.max_regression or ()),
             parity_path=getattr(args, "parity", None),
         )
+        try:
+            messages = _auto_export(args, document, export_context)
+        except Exception as exc:
+            messages = [f"export failed: {exc}"]
+        for message in messages:
+            print(f"warning: {message}", file=sys.stderr)
         _emit(document, args)
     except BenchHarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -250,6 +283,72 @@ def _emit(document: dict[str, Any], args: argparse.Namespace) -> None:
     if markdown:
         write_text(markdown, render_markdown(document))
         print(f"wrote {markdown}")
+
+
+def _check_export_ttl(args: argparse.Namespace) -> None:
+    specs = getattr(args, "export", None) or []
+    if not specs:
+        return
+    ttl = getattr(args, "export_ttl", 5.0)
+    if (
+        isinstance(ttl, bool)
+        or not isinstance(ttl, (int, float))
+        or not math.isfinite(float(ttl))
+        or float(ttl) < 0
+    ):
+        raise BenchHarnessError("--export-ttl must be a non-negative number of minutes")
+
+
+def _job_spec(args: argparse.Namespace) -> dict[str, Any]:
+    raw = {
+        "command": "bench",
+        "artifact": getattr(args, "artifact", None),
+        "target": getattr(args, "target", None),
+        "warmup": getattr(args, "warmup", None),
+        "iters": getattr(args, "iters", None),
+        "batch": getattr(args, "batch", None),
+        "inputs": getattr(args, "inputs", None),
+        "workload": getattr(args, "workload", None),
+        "sustained": getattr(args, "sustained", None),
+        "baseline": getattr(args, "baseline", None),
+        "slo": list(getattr(args, "slo", None) or []),
+        "max_regression": list(getattr(args, "max_regression", None) or []),
+        "parity": getattr(args, "parity", None),
+    }
+    return {
+        key: value
+        for key, value in raw.items()
+        if value is not None and value != "" and value != []
+    }
+
+
+def _auto_export(
+    args: argparse.Namespace,
+    document: dict[str, Any],
+    context: Any,
+) -> list[str]:
+    specs = list(getattr(args, "export", None) or [])
+    if not specs:
+        return []
+    run = document.get("run")
+    if not isinstance(run, dict):
+        run = {}
+    manifest = {
+        "manifest_ref": run.get("manifest_ref"),
+        "artifact_sha": run.get("artifact_sha"),
+        "model_sha": run.get("model_sha"),
+        "run_id": run.get("id"),
+        "workload": run.get("target"),
+    }
+    return export_result(
+        document,
+        specs,
+        kind="bench",
+        spec=_job_spec(args),
+        manifest=manifest,
+        ttl_minutes=getattr(args, "export_ttl", 5.0),
+        context=context,
+    )
 
 
 def _exporters(args: argparse.Namespace, document: dict[str, Any]) -> None:

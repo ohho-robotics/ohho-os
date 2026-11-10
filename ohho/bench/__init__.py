@@ -3,13 +3,15 @@
 The JSON Schema, validator, and converter live in :mod:`ohho.bench.schema`.
 The harness times a five-stage runner and writes a document that validates
 against that schema. During the measured window it samples optional power,
-memory, and thermal sources. Import the harness from here so another package
+memory, and thermal sources. Optional result exporters live in
+:mod:`ohho.bench.exports`. Import the harness from here so another package
 can call :func:`execute` without going through the CLI.
 """
 
 from __future__ import annotations
 
 from ohho.bench.errors import BenchHarnessError
+from ohho.bench.exports import export_result
 from ohho.bench.harness import BenchConfig, execute, finalize_result, run_benchmark
 from ohho.bench.report import render_markdown, render_prometheus
 from ohho.bench.runner import STAGE_NAMES, StageRunner
@@ -35,6 +37,7 @@ __all__ = [
     "ValidationIssue",
     "convert",
     "execute",
+    "export_result",
     "finalize_result",
     "load_schema",
     "render_markdown",

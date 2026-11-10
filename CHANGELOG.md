@@ -17,6 +17,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Bench export (OHH-498)** — `ohho bench --export` sends one result through
+  optional exporter plugins. A W&B spec records the job spec, manifest,
+  latency, accuracy, and energy, and the result stores the run URL. A
+  Prometheus spec pushes gauges to a Pushgateway (the grouping key is deleted
+  after `--export-ttl` minutes) or remote-write. Failures are warnings.
+  `export_result` is the same hook an optimize run calls. Docs:
+  [`docs/serve/bench.md`](docs/serve/bench.md).
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);

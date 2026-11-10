@@ -291,7 +291,9 @@ future v2 converter are in
 
 `ohho bench --artifact model.onnx --target x86-cpu --json out.json` runs the
 harness: latency stats, per-stage timing, an optional baseline comparison,
-and SLO / regression gates. See [`docs/serve/bench.md`](docs/serve/bench.md).
+and SLO / regression gates. `--export` can send that result through an
+optional W&B or Prometheus plugin. A failed export is a warning. See
+[`docs/serve/bench.md`](docs/serve/bench.md).
 
 ## TypeScript
 
