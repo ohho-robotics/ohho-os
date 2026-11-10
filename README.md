@@ -312,7 +312,6 @@ first token, inter-token latency, tokens/s, request throughput) and writes
 `ohho.bench/v1` with an optional `ohho.bench.llm/v1` block. vLLM, SGLang,
 TensorRT-LLM, and llama.cpp are external programs, not package dependencies.
 See [`docs/serve/llm-backends.md`](docs/serve/llm-backends.md).
-
 `ohho bench --mode generate --target x86-cpu` measures time to first token,
 time per output token, and tokens/s for an autoregressive model. The default
 backend is a CPU stand-in. It sweeps concurrency and prompt length, and it

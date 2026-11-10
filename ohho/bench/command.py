@@ -287,6 +287,121 @@ def run_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_version(args: argparse.Namespace) -> int:
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config: dict[str, object] = {}
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    try:
+        print(open_backend(args.backend).version(config))
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _bench_launch_config(args: argparse.Namespace) -> dict[str, object]:
+    config: dict[str, object] = {
+        "host": args.host,
+        "startup_timeout_s": args.startup_timeout,
+    }
+    if args.port is not None:
+        config["port"] = args.port
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    if args.model_repository:
+        config["model_repository"] = args.model_repository
+    if args.n_gpu_layers is not None:
+        config["n_gpu_layers"] = args.n_gpu_layers
+    if args.ctx_size is not None:
+        config["ctx_size"] = args.ctx_size
+    if args.tp_size is not None:
+        config["tp_size"] = args.tp_size
+    if args.extra_arg:
+        config["extra_args"] = list(args.extra_arg)
+    return config
+
+
+def run_launch(args: argparse.Namespace) -> int:
+    import json
+    import time
+
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config = _bench_launch_config(args)
+    try:
+        backend = open_backend(args.backend)
+        if args.dry_run:
+            config["dry_run"] = True
+            plan = backend.plan(args.model, args.precision, config)
+            json.dump(
+                {
+                    "backend": backend.name,
+                    "commands": [list(command) for command in plan.commands],
+                    "endpoint_url": plan.endpoint_url,
+                    "health_url": plan.health_url,
+                    "version_argv": list(plan.version_argv),
+                    "precision": plan.precision,
+                },
+                sys.stdout,
+                indent=2,
+            )
+            sys.stdout.write("\n")
+            return 0
+        backend.launch(args.model, args.precision, config)
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(backend.endpoint_url())
+    try:
+        while backend.running:
+            time.sleep(0.5)
+        print("error: serving process exited", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        backend.teardown()
+
+
+def run_llm(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from ohho.bench.schema import BenchValidationError
+    from ohho.serve.loadgen import LoadGenError, LoadSpec, run_load, to_bench_result
+
+    spec = LoadSpec(
+        endpoint_url=args.endpoint,
+        model=args.model,
+        prompt=args.prompt,
+        max_tokens=args.max_tokens,
+        concurrency=args.concurrency,
+        requests=args.requests,
+        timeout_s=args.timeout,
+    )
+    try:
+        result = run_load(spec)
+        document = to_bench_result(
+            result,
+            backend=args.backend_name,
+            backend_version=args.backend_version,
+            precision=args.precision,
+        )
+    except (LoadGenError, BenchValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    path = Path(args.output)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {path}")
+    return 0
+
+
 def run_bench_command(
     args: argparse.Namespace,
     *,
