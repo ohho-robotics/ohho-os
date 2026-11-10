@@ -30,7 +30,7 @@ def main() -> int:
         example_id="ort-int8-cpu",
         hardware="Raspberry Pi 5 CPU (profile edge_cpu)",
         pending="ohho optimize (OHH-429) CPU ORT INT8",
-        checks=("cli:optimize", "ohho.optimize"),
+        checks=("ohho.optimize.ort_int8",),
     )
 
 

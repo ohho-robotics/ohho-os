@@ -17,6 +17,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **`ohho optimize`** — ONNX opset 17 export (dynamic batch, submodule
+  selection, ACT-style and MLP policies, TorchScript), TensorRT FP16/INT8/FP8
+  builds with an entropy calibrator attached before the build, ONNX Runtime
+  sessions checked against a target profile, and AWQ/GPTQ/bitsandbytes/FP8
+  weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
+  quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
+  Docs: [`docs/optimize.md`](docs/optimize.md).
 - **`ohho sweep plan`** — `ohho.sweep/v1` search-space schema (package data) and an
   expander that turns it into trial recipes. Each trial is the opaque base
   recipe plus dotted `path=value` overrides (the same form as
