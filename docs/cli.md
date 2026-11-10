@@ -65,6 +65,12 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
 
+Serve examples are in [`examples/serve`](../examples/serve/README.md). Each
+README states hardware, runtime, and expected output. CPU examples run in CI
+and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
+export are not in this tree; those examples are placeholders and do not print
+benchmark numbers.
+
 ## Simulation services
 
 | Command | Description |
