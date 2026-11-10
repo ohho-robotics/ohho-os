@@ -72,6 +72,14 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   proposes trials from completed objectives, stores an
   `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep early stopping** — `early_stopping.rule` `asha` (successive
+  halving at rungs) and `median`, plus the existing `patience` rule.
+  `SweepRun.report` records an intermediate metric and `SweepRun.decide`
+  returns continue or stop. A stopped trial stays `pruned`, keeps its last
+  checkpoint and metrics, and is distinct from `failed`. Resume keeps that
+  status. A 32-trial synthetic ASHA benchmark uses under half the
+  trial-steps of the same sweep with no stopping rule.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
   tags (`python examples/serve/run_cpu.py`). A failed example fails the
   release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and

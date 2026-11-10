@@ -8,6 +8,13 @@ Trial indexes already in the table are not proposed again. Each row's
 
 ``ohho.run/v1`` is not defined here. :func:`ohho.train.sweep_seed.derived_trial_seed`
 reads the stored training seed for a later manifest.
+
+:meth:`SweepRun.report` records an intermediate metric.
+:meth:`SweepRun.decide` returns ``continue`` or ``stop``. A stop marks the
+trial ``pruned``, keeps its last checkpoint and metrics, and is distinct
+from :meth:`SweepRun.mark_failed`. Resume keeps both statuses. The
+controller that fans trials out across jobs is not in this package; it
+calls these methods.
 """
 
 from __future__ import annotations
@@ -32,6 +39,14 @@ from .sweep import (
     _read_resource,
     _validate,
     load_sweep,
+)
+from .sweep_early import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_PRUNED,
+    EarlyStopping,
+    StopDecision,
 )
 from .sweep_sampler import SAMPLER_SCHEMA_ID, SweepSampler
 from .sweep_seed import derived_trial_seed, sampler_seed, trial_training_seed
@@ -92,6 +107,8 @@ class SweepRun:
         self._sampler = sampler
         self._trials = trials
         self._path = _run_path(root, sweep_id)
+        early = sampler.spec.early_stopping
+        self._early = None if early is None else EarlyStopping(early)
 
     @property
     def spec(self) -> SweepSpec:
@@ -189,16 +206,80 @@ class SweepRun:
         return trials
 
     def tell(self, index: int, values: Mapping[str, Any]) -> None:
-        """Record objective values for a proposed trial and persist them."""
+        """Record objective values for a proposed trial and persist them.
 
+        The trial status becomes ``completed``. A ``pruned`` or ``failed``
+        trial is refused, so those statuses stay distinct.
+        """
+
+        self._reject_stopped(index)
         before = self._sampler.dump_state()
         saved_rows = copy.deepcopy(self._trials)
         try:
             self._sampler.tell(index, values)
             self._copy_values(index)
+            self._set_status(index, STATUS_COMPLETED)
             self.save()
         except Exception:
             self._sampler = SweepSampler.load_state(before)
+            self._trials = saved_rows
+            raise
+
+    def report(
+        self,
+        index: int,
+        step: int,
+        value: int | float,
+        *,
+        checkpoint: str | None = None,
+    ) -> None:
+        """Record an intermediate metric and persist the trial row.
+
+        This is the call a trial runner makes at a configured step. It does
+        not decide and it does not launch a job. The sweep controller calls
+        :meth:`decide` after the reports it wants in the comparison.
+        """
+
+        stopper = self._require_early()
+        saved_rows = copy.deepcopy(self._trials)
+        try:
+            stopper.report(self._trials, index, step, value, checkpoint=checkpoint)
+            self.save()
+        except Exception:
+            self._trials = saved_rows
+            raise
+
+    def decide(self, index: int) -> StopDecision:
+        """Return ``continue`` or ``stop`` and persist a stop as ``pruned``.
+
+        A stopped trial keeps the checkpoint and metrics already stored.
+        ``pruned`` is not ``failed``. The same call after resume returns
+        stop for a trial that was already pruned.
+        """
+
+        stopper = self._require_early()
+        saved_rows = copy.deepcopy(self._trials)
+        try:
+            decision = stopper.decide(self._trials, index)
+            self.save()
+        except Exception:
+            self._trials = saved_rows
+            raise
+        return decision
+
+    def mark_failed(self, index: int, error: str) -> None:
+        """Mark a trial ``failed``, keep its checkpoint and metrics, and persist.
+
+        This is distinct from a prune. A pruned trial cannot be marked
+        failed, and a failed trial cannot be marked pruned.
+        """
+
+        stopper = self._require_early()
+        saved_rows = copy.deepcopy(self._trials)
+        try:
+            stopper.mark_failed(self._trials, index, error)
+            self.save()
+        except Exception:
             self._trials = saved_rows
             raise
 
@@ -251,6 +332,26 @@ class SweepRun:
                 row["values"] = (
                     None if state["values"] is None else dict(state["values"])
                 )
+                return
+        raise SweepError(f"trial {index} is missing from the trial table")
+
+    def _require_early(self) -> EarlyStopping:
+        if self._early is None:
+            raise SweepError("sweep has no early_stopping config")
+        return self._early
+
+    def _reject_stopped(self, index: int) -> None:
+        for row in self._trials:
+            if row.get("index") == index and row.get("status") in (
+                STATUS_PRUNED,
+                STATUS_FAILED,
+            ):
+                raise SweepError(f"trial {index} is {row['status']}")
+
+    def _set_status(self, index: int, status: str) -> None:
+        for row in self._trials:
+            if row.get("index") == index:
+                row["status"] = status
                 return
         raise SweepError(f"trial {index} is missing from the trial table")
 
@@ -324,6 +425,11 @@ def _row_from_trial(trial: Trial) -> dict[str, Any]:
         "recipe": copy.deepcopy(trial.recipe),
         "estimated_gpu_hours": float(trial.estimated_gpu_hours),
         "values": None,
+        "status": STATUS_PENDING,
+        "checkpoint": None,
+        "metrics": [],
+        "decision": None,
+        "error": None,
     }
 
 
@@ -331,6 +437,11 @@ def _copy_row(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise SweepError("sweep trial must be an object")
     values = raw.get("values")
+    status = raw.get("status")
+    if status is None:
+        status = STATUS_COMPLETED if values is not None else STATUS_PENDING
+    metrics = raw.get("metrics")
+    decision = raw.get("decision", None)
     return {
         "index": raw.get("index"),
         "seed": raw.get("seed"),
@@ -339,6 +450,11 @@ def _copy_row(raw: Mapping[str, Any]) -> dict[str, Any]:
         "recipe": copy.deepcopy(dict(raw.get("recipe") or {})),
         "estimated_gpu_hours": raw.get("estimated_gpu_hours"),
         "values": None if values is None else copy.deepcopy(dict(values)),
+        "status": status,
+        "checkpoint": raw.get("checkpoint"),
+        "metrics": [] if metrics is None else copy.deepcopy(list(metrics)),
+        "decision": None if decision is None else copy.deepcopy(dict(decision)),
+        "error": raw.get("error"),
     }
 
 
