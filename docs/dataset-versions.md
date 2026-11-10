@@ -337,6 +337,7 @@ prefix. The previous prefix stays.
 ohho dataset build --source episodes/ --name demos --licence Apache-2.0
 ohho dataset pin dv_0123...
 ohho dataset stats dv_0123...
+ohho dataset import-hf owner/name --revision main
 ```
 
 Repeat `--source` to combine roots. `--store DIR` selects the store.
@@ -348,3 +349,8 @@ default fractions keeps every episode as train; pass `--train-fraction`,
 are `--crop-height`, `--crop-width`, `--resize-height`, `--resize-width`,
 `--brightness`, `--contrast`, `--saturation`, `--hue`, `--blur`,
 `--temporal-stride`, and repeatable `--camera-off`.
+
+## Lineage and Hub import
+
+Episode, run, and model-version edges, and the Hugging Face import record,
+are described in [`dataset-lineage.md`](dataset-lineage.md).

@@ -38,6 +38,7 @@ serial = ["pyserial>=3.5"]                   # serial base adapter
 arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101)
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
+datasets = ["huggingface_hub>=0.23"]         # Hugging Face Hub dataset import
 # cyclonedds is a build and runtime dependency of the DDS SDK (not on PyPI).
 unitree = ["cyclonedds>=0.10"]               # DDS transport extra
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
@@ -60,6 +61,7 @@ all = [
   "numpy>=1.24",
   "anthropic>=0.40",
   "pyarrow>=14.0",
+  "huggingface_hub>=0.23",
   "torch>=2.1",
   "mujoco>=3.1",
   "onnx>=1.15",
@@ -90,7 +92,7 @@ unitree = "ohho.robots.unitree:plugin"
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "datasets/*.json"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "datasets/*.json", "targets/profiles/*.json", "targets/*.json", "serve/job/schema.json", "serve/job/examples/*.yaml", "bench/schemas/*.json", "bench/examples/*.json", "eval/schemas/*.json", "eval/suites.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

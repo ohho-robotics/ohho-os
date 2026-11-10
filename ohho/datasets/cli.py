@@ -1,4 +1,4 @@
-"""``ohho dataset build|pin|stats``."""
+"""``ohho dataset build|pin|stats|import-hf``."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from .build import build_version
+from .hf_import import import_hf_dataset
 from .model import (
     Augmentation,
     AxisRange,
@@ -29,7 +30,7 @@ def add_dataset_parser(sub: Any) -> None:
     """Register the ``dataset`` command on the root ``ohho`` parser."""
     dataset = sub.add_parser(
         "dataset",
-        help="version local episodes: build, pin, stats",
+        help="version local episodes: build, pin, stats, import-hf",
     )
     commands = dataset.add_subparsers(dest="dataset_command", required=True)
 
@@ -137,6 +138,19 @@ def add_dataset_parser(sub: Any) -> None:
     _add_common(stats)
     stats.set_defaults(func=dispatch)
 
+    import_hf = commands.add_parser(
+        "import-hf",
+        help="import a LeRobot dataset from Hugging Face Hub as a pinned version",
+    )
+    import_hf.add_argument("repo_id", help="Hugging Face dataset repo id (owner/name)")
+    import_hf.add_argument(
+        "--revision",
+        default=None,
+        help="branch, tag, or commit to resolve and pin (default: the Hub default)",
+    )
+    _add_common(import_hf)
+    import_hf.set_defaults(func=dispatch)
+
 
 def dispatch(args: argparse.Namespace) -> int:
     """Run the selected dataset subcommand. User errors exit 1."""
@@ -148,6 +162,8 @@ def dispatch(args: argparse.Namespace) -> int:
             return _pin(args)
         if command == "stats":
             return _stats(args)
+        if command == "import-hf":
+            return _import_hf(args)
     except DatasetVersionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -262,6 +278,37 @@ def _stats(args: argparse.Namespace) -> int:
         return 0
     print(f"version_id: {args.version_id}")
     _print_ranges(record_stats)
+    return 0
+
+
+def _import_hf(args: argparse.Namespace) -> int:
+    record = import_hf_dataset(args.repo_id, revision=args.revision, store=args.store)
+    dataset = resolve_dataset_version(record.version_id, store=args.store)
+    if record.warning:
+        print(f"warning: {record.warning}", file=sys.stderr)
+    if args.json:
+        _emit(
+            {
+                "version_id": record.version_id,
+                "repo_id": record.repo_id,
+                "revision": record.revision,
+                "requested_revision": record.requested_revision,
+                "licence": record.licence,
+                "non_commercial": record.non_commercial,
+                "revision_pinned": True,
+                "licence_pinned": True,
+                "pinned": True,
+                "dataset": str(dataset),
+                "warning": record.warning,
+            }
+        )
+        return 0
+    print(f"version_id: {record.version_id}")
+    print(f"repo_id: {record.repo_id}")
+    print(f"revision: {record.revision}")
+    print(f"licence: {record.licence}")
+    print(f"non_commercial: {str(record.non_commercial).lower()}")
+    print(f"dataset: {dataset}")
     return 0
 
 

@@ -1,4 +1,4 @@
-"""Dataset versions: build, pin, and stats for local episodes.
+"""Dataset versions: build, pin, stats, lineage, and Hugging Face import.
 
 A version is an immutable, content-hashed LeRobot dataset built from local
 episodes. The content hash covers the episode rows and the split and
@@ -8,6 +8,9 @@ augmentation config. Training code keeps taking a filesystem path; call
 
 See ``docs/dataset-versions.md`` for the on-disk layout, the preview payload,
 and how ACT and Diffusion Policy loaders call the augmentation.
+
+Lineage edges (episode, run, model version) live in a JSON file. See
+``docs/dataset-lineage.md``. No cloud resources are created here.
 """
 
 from __future__ import annotations
@@ -20,6 +23,26 @@ from .augment import (
     preview_augmentation,
 )
 from .build import build_version, edit_version, prepare_spec
+from .hf_import import (
+    DatasetImport,
+    DatasetImportError,
+    import_hf_dataset,
+    is_non_commercial,
+    resolved_licence,
+)
+from .lineage import (
+    EpisodeDeletion,
+    EpisodeRecord,
+    EpisodeTraining,
+    JsonLineageStore,
+    LineageConflict,
+    LineageError,
+    LineageNotFound,
+    LineageStore,
+    ModelLineage,
+    episode_from_canonical,
+    record_version_lineage,
+)
 from .model import (
     SCHEMA_NAME,
     Augmentation,
@@ -61,13 +84,24 @@ __all__ = [
     "ColorJitter",
     "Crop",
     "DatasetBuildError",
+    "DatasetImport",
+    "DatasetImportError",
     "DatasetSpec",
     "DatasetStats",
     "DatasetVersion",
     "DatasetVersionError",
     "DatasetVersionFrozen",
     "DatasetVersionNotFound",
+    "EpisodeDeletion",
+    "EpisodeRecord",
+    "EpisodeTraining",
     "Filters",
+    "JsonLineageStore",
+    "LineageConflict",
+    "LineageError",
+    "LineageNotFound",
+    "LineageStore",
+    "ModelLineage",
     "SourceQuery",
     "Split",
     "SplitAssignment",
@@ -76,6 +110,9 @@ __all__ = [
     "assign_splits",
     "build_version",
     "edit_version",
+    "episode_from_canonical",
+    "import_hf_dataset",
+    "is_non_commercial",
     "list_versions",
     "load_version",
     "materialised_apply_config",
@@ -83,8 +120,10 @@ __all__ = [
     "pin_version",
     "prepare_spec",
     "preview_augmentation",
+    "record_version_lineage",
     "resolve_dataset_version",
     "resolve_store",
+    "resolved_licence",
     "schema_path",
     "version_stats",
 ]

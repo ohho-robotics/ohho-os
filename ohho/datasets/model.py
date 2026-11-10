@@ -362,8 +362,8 @@ def json_number(value: float) -> float:
 
 def canonical_content_bytes(
     episodes: Sequence[CanonicalEpisode],
-    split: Split,
-    augmentation: Augmentation,
+    split: Split | None = None,
+    augmentation: Augmentation | None = None,
 ) -> bytes:
     """UTF-8 bytes hashed into ``content_hash``, including a trailing newline.
 
@@ -371,6 +371,10 @@ def canonical_content_bytes(
     configs. A config change hashes differently when the stored rows stay
     the same, which is how train-time image settings enter the version hash.
     """
+    if split is None:
+        split = Split()
+    if augmentation is None:
+        augmentation = Augmentation()
     payload = {
         "algorithm": CONTENT_ALGORITHM,
         "augmentation": augmentation.to_dict(),
@@ -385,10 +389,14 @@ def canonical_content_bytes(
 
 def content_hash_of(
     episodes: Sequence[CanonicalEpisode],
-    split: Split,
-    augmentation: Augmentation,
+    split: Split | None = None,
+    augmentation: Augmentation | None = None,
 ) -> str:
     """``sha256:`` hash of :func:`canonical_content_bytes`."""
+    if split is None:
+        split = Split()
+    if augmentation is None:
+        augmentation = Augmentation()
     digest = hashlib.sha256(
         canonical_content_bytes(episodes, split, augmentation)
     ).hexdigest()
