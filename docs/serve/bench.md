@@ -39,6 +39,46 @@ with unit `Hz`.
 
 Random inputs have no labels. `accuracy.primary` is `not_measured`.
 
+## Power, memory, and thermal
+
+During the measured iterations (after warmup) a sampler thread reads optional
+sensors at 10 Hz. The first sample is taken when the window opens and another
+when it closes. Each source is detected at runtime and skipped when it is
+not there.
+
+| Source | What it can report |
+| --- | --- |
+| NVML | Accelerator power, device memory, temperature, clocks, throttle bits |
+| tegrastats, or jtop when that binary is absent | Board input power, host RAM, temperature, clocks, throttling |
+| RAPL package energy | CPU package power, from two counter readings |
+| vcgencmd | Temperature, clocks, and the current throttled bits. Not watts |
+
+Headline power prefers board input, then accelerator power, then package
+power. Those domains are not added together. tegrastats power is the
+instantaneous `VDD_IN` rail, or `POM_5V_IN` when that is the input rail.
+Other rails are left out of the headline. vcgencmd voltage is not turned
+into watts.
+
+`telemetry.sensors` always carries:
+
+| Field | Meaning |
+| --- | --- |
+| `power_w_mean`, `power_w_peak` | Headline power in watts, or null |
+| `energy_per_inference_mj` | Mean power times mean latency in milliseconds |
+| `device_memory_mb_peak` | Peak accelerator memory, or null |
+| `host_memory_mb_peak` | Peak host memory from a sensor, otherwise process peak RSS |
+| `temperature_c_max` | Hottest reading, or null |
+| `throttling_events` | Rising edges. Each has `source`, `t_s`, and `detail` |
+| `throttling_flagged` | True when any event was recorded |
+| `clocks_mhz` | Max observed clock per source and name, or null |
+| `reason` | Why a headline field is null. Null when every field was measured |
+| `sources` | One row per source: `id`, `available`, `reason`, `power_domain` |
+
+A missing sensor is null with a reason. The run still validates and exits 0
+when no gate fails. `telemetry.power_w_mean` and
+`telemetry.accelerator_memory_mb_max` are set only for real numbers, because
+ohho.bench/v1 defines those gauges as non-null.
+
 `telemetry.memory_mb_max` is the process peak RSS when the OS reports it, and
 `environment` records the target profile, git SHA, the execution provider that
 ran, and CUDA / TensorRT / ONNX Runtime / driver versions when those are
@@ -66,6 +106,19 @@ requested and this process has no CUDA device, the run falls back to
 `tests/test_bench_harness.py` checks the CPU sum on a pure-Python runner.
 The CUDA event path in that file uses a fake event clock. A development run
 without a CUDA device does not execute events on a GPU.
+
+## Sustained
+
+`--sustained 30` measures for 30 seconds instead of `--iters`. Warmup still
+runs first and is discarded. The result's `sustained` object lists p95 for
+each time window (one second when the run is at least two seconds, otherwise
+two equal windows), `p95_drift_ms` (last window minus first), and
+`throttling_flagged`. Each requested batch size gets its own window. The
+top-level `sustained` object is the primary batch.
+
+```bash
+ohho bench --artifact model.onnx --target x86-cpu --sustained 30 --json out.json
+```
 
 ## Baseline and gates
 
@@ -176,6 +229,64 @@ sees TTFT, inter-token latency, and tokens/s. TPOT is also copied to
 On CPU CI the stand-in is the measured path. The transformers import and the
 external engines are not loaded unless that backend is selected. A 4-bit
 transformers load needs a CUDA device. GPU runs are outside CI.
+
+## Pipeline (`--pipeline`)
+
+`ohho bench --pipeline` times a camera frame through seven stages and writes
+the same [`ohho.bench/v1`](bench-schema.md) document plus a `pipeline` object
+whose `version` is `ohho.bench.pipeline/v1`.
+
+```bash
+ohho bench --pipeline --hz 30 --json out.json
+ohho bench --pipeline --fixture stream.json --sink inprocess --warmup 0 --iters 8
+ohho bench --pipeline --dataset ./dataset --episode 0 --hz 30
+ohho bench --pipeline --bag ./recording --hz 30
+```
+
+Stages, in order: `decode`, `preprocess`, `h2d`, `inference`, `d2h`,
+`postprocess`, `publish`. End-to-end latency is the sum of those seven.
+`latency.p50`, `p95`, and `p99` are that sum. `pipeline.jitter_ms` is
+`latency.std`. `latency.achievable_hz` stays "iterations per second implied
+by the mean latency". The paced control rate is `pipeline.achieved_hz` and
+`throughput` (`frames/s`).
+
+The default source is the in-process simulator (`--source sim`, `--robot sim`).
+Each tick reads a small RGB frame from that sim, runs the built-in `tiny-cpu`
+policy, and publishes a clamped body velocity back into the sim. The result
+is labelled `pipeline.world = sim` and `environment.world = sim`. It does not
+train a model and it does not open hardware. A LeRobot episode recorded by
+`record_sim_episodes` can be replayed with `--dataset`; an episode with no
+stored camera is decoded from a state raster and marked
+`pipeline.frame_origin = state-raster`.
+
+`--fixture` reads `ohho.pipeline.stream/v1` (a JSON list of base64 frames).
+`--bag` reads `ohho.pipeline.rosbag/v1` (`metadata.json` plus `frames.jsonl`,
+or one JSON file). A ROS 2 bag directory or an `.mcap` file is refused: this
+bench does not download rosbag2 and does not decode `sensor_msgs/Image`.
+
+`publish` goes to a sink. `sim` calls `Robot.drive` on the in-process
+simulator. `inprocess` records the action. `ros2` publishes
+`geometry_msgs/Twist` and imports `rclpy` only when that sink is selected.
+`postprocess` clamps vx, vy, and yaw rate to the robot spec (`--robot`,
+default `sim`) before the sink sees them. Non-holonomic vy is zero.
+
+Frames are paced at `--hz` (default 30). A frame is dropped when its
+control period has already elapsed before the pipeline can start it.
+`pipeline.rate_sustained` is true when nothing was dropped and every
+published frame finished inside its period. `pipeline.dropped_frames` is
+the skip count.
+
+H2D and D2H are host copies. `pipeline.device` is `cpu` and
+`pipeline.gpu_follow_up` lists `h2d` and `d2h`. CUDA copies are not timed.
+
+`--source hardware` is refused unless `--allow-hardware` is set. With that
+flag the bench still only replays `--fixture`, `--dataset`, or `--bag`.
+`pipeline.live_robot` is false. A `serial://`, `dds://`, or other device URI
+is refused. This command does not arm a robot and does not set
+`OHHO_ARM_HARDWARE`.
+
+`--artifact` stays the five-stage ONNX bench. Do not pass it with
+`--pipeline`.
 
 ## LLM serving sweep
 

@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.job/v1.json",
+  "$comment": "Single source for ohho.job/v1. Regenerate types with scripts/generate_job_types.py.",
+  "title": "Job",
+  "description": "Shared optimize, parity and bench request (ohho.job/v1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model", "targets", "steps"],
+  "properties": {
+    "schema_version": {
+      "title": "JobSchemaVersion",
+      "description": "Schema id recorded on every validated job.",
+      "type": "string",
+      "const": "ohho.job/v1"
+    },
+    "model": {
+      "$ref": "#/$defs/JobModel"
+    },
+    "targets": {
+      "type": "array",
+      "description": "Target profile ids. Free strings; this schema does not catalog profiles.",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "Steps in execution order.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "title": "JobStep",
+        "type": "string",
+        "enum": ["optimize", "parity", "bench"]
+      }
+    },
+    "precision": {
+      "title": "JobPrecision",
+      "type": "string",
+      "enum": ["fp32", "fp16", "bf16", "int8"]
+    },
+    "backend": {
+      "title": "JobBackend",
+      "type": "string",
+      "enum": ["onnx", "torchscript", "cpu"]
+    },
+    "parity": {
+      "$ref": "#/$defs/JobParity"
+    },
+    "bench": {
+      "$ref": "#/$defs/JobBench"
+    },
+    "budget": {
+      "$ref": "#/$defs/JobBudget"
+    },
+    "outputs": {
+      "$ref": "#/$defs/JobOutputs"
+    }
+  },
+  "$defs": {
+    "JobModel": {
+      "title": "JobModel",
+      "description": "Model version reference.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Repository id, digest, or other non-empty version reference."
+        }
+      }
+    },
+    "JobParity": {
+      "title": "JobParity",
+      "description": "Parity thresholds. Omitted fields stay unset.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_abs_error": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_rel_error": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_cosine": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "JobBench": {
+      "title": "JobBench",
+      "description": "Bench settings. Omitted fields stay unset.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "iterations": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "warmup": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "JobBudget": {
+      "title": "JobBudget",
+      "description": "Budget caps. Omitted fields stay unset.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_gpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "JobWandbExport": {
+      "title": "JobWandbExport",
+      "description": "Weights and Biases export.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "JobPrometheusExport": {
+      "title": "JobPrometheusExport",
+      "description": "Prometheus export.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "job_name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "JobOutputs": {
+      "title": "JobOutputs",
+      "description": "Export targets. Omitted exports stay unset.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wandb": {
+          "$ref": "#/$defs/JobWandbExport"
+        },
+        "prometheus": {
+          "$ref": "#/$defs/JobPrometheusExport"
+        }
+      }
+    }
+  }
+}

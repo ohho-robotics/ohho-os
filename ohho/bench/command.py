@@ -1,8 +1,9 @@
 """``ohho bench`` command: run a benchmark, or validate a result file.
 
-``ohho bench validate FILE`` is the schema check from OHH-473. A run is
-``ohho bench --artifact PATH --target PROFILE``. ``ohho bench`` with neither
-is rejected by the root parser so the historical exit code 2 stays.
+``ohho bench validate FILE`` is the schema check from OHH-473. An artifact
+run is ``ohho bench --artifact PATH --target PROFILE``. A camera-to-action
+run is ``ohho bench --pipeline``. ``ohho bench`` with none of those is
+rejected by the root parser so the historical exit code 2 stays.
 
 OHH-475 adds ``version``, ``launch``, and ``llm`` on the same parser. Those
 talk to external OpenAI-compatible engines and do not replace the harness.
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 import time
 from pathlib import Path
 from typing import Any
@@ -23,9 +25,12 @@ from ohho.bench.cost import (
     price_catalog,
     recompute_cost,
 )
+from ohho.bench.environment import GpuProbe
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.generate import GenerateConfig, execute_generate
 from ohho.bench.harness import BenchConfig, execute
+from ohho.bench.pipeline import PipelineConfig, execute_pipeline
+from ohho.bench.sensors.base import SensorSource
 from ohho.bench.sweep import SweepConfig, execute_sweep, render_pareto_svg
 from ohho.bench.report import (
     dump_result,
@@ -43,8 +48,8 @@ def register_bench(subparsers: Any) -> None:
         "bench",
         help="benchmark an inference artifact, an LLM server, or validate a result",
         description=(
-            "Run an inference benchmark, measure an external LLM server, "
-            "or validate an ohho.bench/v1 result. "
+            "Run an inference benchmark, a camera-to-action pipeline benchmark, "
+            "measure an external LLM server, or validate an ohho.bench/v1 result. "
             "A bare `ohho bench` is not a run."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -54,6 +59,10 @@ def register_bench(subparsers: Any) -> None:
             "--warmup 10 --iters 50 --batch 1,4,8 --inputs random --json out.json\n"
             "  ohho bench --artifact model.onnx --target x86-cpu --baseline prev.json "
             "--slo p95<=200ms --max-regression p95=10%% --markdown summary.md\n"
+            "  ohho bench --artifact model.onnx --target x86-cpu --sustained 30 "
+            "--json out.json\n"
+            "  ohho bench --pipeline --hz 30 --json out.json\n"
+            "  ohho bench --pipeline --fixture stream.json --sink inprocess\n"
             "  ohho bench validate out.json\n"
             "  ohho bench --mode generate --target x86-cpu --workload llm "
             "--slo ttft_p95<=50ms,tpot_p95<=20ms --json out.json\n"
@@ -74,14 +83,14 @@ def register_bench(subparsers: Any) -> None:
     bench.add_argument(
         "--warmup",
         type=int,
-        default=10,
-        help="discarded iterations after the cold start (default 10)",
+        default=None,
+        help="discarded iterations (artifact default 10, pipeline default 1)",
     )
     bench.add_argument(
         "--iters",
         type=int,
-        default=50,
-        help="measured iterations per batch (default 50)",
+        default=None,
+        help="measured iterations (artifact default 50, pipeline default 30)",
     )
     bench.add_argument(
         "--batch",
@@ -139,8 +148,83 @@ def register_bench(subparsers: Any) -> None:
     )
     bench.add_argument(
         "--workload",
-        default="inference",
-        help="workload class stored in run.target (default inference)",
+        default=None,
+        help="workload class stored in run.target (artifact default inference)",
+    )
+    bench.add_argument(
+        "--pipeline",
+        action="store_true",
+        help="replay a camera stream through decode, preprocess, h2d, "
+        "inference, d2h, postprocess, and publish",
+    )
+    bench.add_argument(
+        "--source",
+        choices=("sim", "lerobot", "rosbag", "fixture", "hardware"),
+        default=None,
+        help="pipeline input (default sim, or the path flag that is set)",
+    )
+    bench.add_argument(
+        "--dataset",
+        default=None,
+        help="LeRobot dataset directory for --source lerobot",
+    )
+    bench.add_argument(
+        "--bag",
+        default=None,
+        help="ohho.pipeline.rosbag/v1 file or directory for --source rosbag",
+    )
+    bench.add_argument(
+        "--fixture",
+        default=None,
+        help="ohho.pipeline.stream/v1 JSON file for --source fixture",
+    )
+    bench.add_argument(
+        "--episode",
+        type=int,
+        default=None,
+        help="LeRobot episode index (default 0)",
+    )
+    bench.add_argument(
+        "--hz",
+        type=float,
+        default=None,
+        help="pipeline control rate in Hz (default 30)",
+    )
+    bench.add_argument(
+        "--frames",
+        type=int,
+        default=None,
+        help="cap pipeline frames (default warmup + iters)",
+    )
+    bench.add_argument(
+        "--policy",
+        default=None,
+        help="pipeline policy (builtin tiny-cpu)",
+    )
+    bench.add_argument(
+        "--sink",
+        choices=("inprocess", "sim", "ros2"),
+        default=None,
+        help="where publish sends the action (sim source defaults to sim)",
+    )
+    bench.add_argument(
+        "--robot",
+        default=None,
+        help="sim robot id used for the camera and the publish clamp (default sim)",
+    )
+    bench.add_argument(
+        "--allow-hardware",
+        action="store_true",
+        help="replay a recording labelled hardware; never opens a robot",
+    )
+    bench.add_argument(
+        "--sustained",
+        type=float,
+        default=None,
+        help=(
+            "measure for this many seconds instead of --iters, and report "
+            "p95 latency drift per time window"
+        ),
     )
     bench.add_argument(
         "--mode",
@@ -217,11 +301,128 @@ def run_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_version(args: argparse.Namespace) -> int:
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config: dict[str, object] = {}
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    try:
+        print(open_backend(args.backend).version(config))
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _bench_launch_config(args: argparse.Namespace) -> dict[str, object]:
+    config: dict[str, object] = {
+        "host": args.host,
+        "startup_timeout_s": args.startup_timeout,
+    }
+    if args.port is not None:
+        config["port"] = args.port
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    if args.model_repository:
+        config["model_repository"] = args.model_repository
+    if args.n_gpu_layers is not None:
+        config["n_gpu_layers"] = args.n_gpu_layers
+    if args.ctx_size is not None:
+        config["ctx_size"] = args.ctx_size
+    if args.tp_size is not None:
+        config["tp_size"] = args.tp_size
+    if args.extra_arg:
+        config["extra_args"] = list(args.extra_arg)
+    return config
+
+
+def run_launch(args: argparse.Namespace) -> int:
+    import json
+    import time
+
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config = _bench_launch_config(args)
+    try:
+        backend = open_backend(args.backend)
+        if args.dry_run:
+            config["dry_run"] = True
+            plan = backend.plan(args.model, args.precision, config)
+            json.dump(
+                {
+                    "backend": backend.name,
+                    "commands": [list(command) for command in plan.commands],
+                    "endpoint_url": plan.endpoint_url,
+                    "health_url": plan.health_url,
+                    "version_argv": list(plan.version_argv),
+                    "precision": plan.precision,
+                },
+                sys.stdout,
+                indent=2,
+            )
+            sys.stdout.write("\n")
+            return 0
+        backend.launch(args.model, args.precision, config)
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(backend.endpoint_url())
+    try:
+        while backend.running:
+            time.sleep(0.5)
+        print("error: serving process exited", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        backend.teardown()
+
+
+def run_llm(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from ohho.bench.schema import BenchValidationError
+    from ohho.serve.loadgen import LoadGenError, LoadSpec, run_load, to_bench_result
+
+    spec = LoadSpec(
+        endpoint_url=args.endpoint,
+        model=args.model,
+        prompt=args.prompt,
+        max_tokens=args.max_tokens,
+        concurrency=args.concurrency,
+        requests=args.requests,
+        timeout_s=args.timeout,
+    )
+    try:
+        result = run_load(spec)
+        document = to_bench_result(
+            result,
+            backend=args.backend_name,
+            backend_version=args.backend_version,
+            precision=args.precision,
+        )
+    except (LoadGenError, BenchValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    path = Path(args.output)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {path}")
+    return 0
+
+
 def run_bench_command(
     args: argparse.Namespace,
     *,
     runner: Any = None,
     clock: Any = None,
+    sources: Sequence[SensorSource] | None = None,
+    gpu: GpuProbe | None = None,
 ) -> int:
     """Run the harness from parsed CLI arguments.
 
@@ -232,17 +433,30 @@ def run_bench_command(
     if getattr(args, "mode", "inference") == "generate":
         return _run_generate(args)
     try:
-        config = _config(args)
-        document = execute(
-            config,
-            runner=runner,
-            clock=clock,
-            baseline_path=getattr(args, "baseline", None),
-            slos=_expand_slos(tuple(args.slo or ())),
-            max_regressions=tuple(args.max_regression or ()),
-            parity_path=getattr(args, "parity", None),
-            cost=_cost_overrides(args),
-        )
+        if getattr(args, "pipeline", False):
+            document = execute_pipeline(
+                _pipeline_config(args),
+                clock=clock,
+                baseline_path=getattr(args, "baseline", None),
+                slos=_expand_slos(tuple(args.slo or ())),
+                max_regressions=tuple(args.max_regression or ()),
+                parity_path=getattr(args, "parity", None),
+            )
+        else:
+            _reject_pipeline_flags(args)
+            config = _config(args)
+            document = execute(
+                config,
+                runner=runner,
+                clock=clock,
+                sources=sources,
+                gpu=gpu,
+                baseline_path=getattr(args, "baseline", None),
+                slos=_expand_slos(tuple(args.slo or ())),
+                max_regressions=tuple(args.max_regression or ()),
+                parity_path=getattr(args, "parity", None),
+                cost=_cost_overrides(args),
+            )
         _emit(document, args)
         _print_estimate(document)
     except BenchHarnessError as exc:
@@ -315,7 +529,7 @@ def _run_generate(args: argparse.Namespace) -> int:
 
 def _generate_config(args: argparse.Namespace) -> GenerateConfig:
     workload = args.workload
-    if workload == "inference":
+    if not workload or workload == "inference":
         workload = "llm"
     return GenerateConfig(
         target=args.target or "",
@@ -390,15 +604,105 @@ def _config(args: argparse.Namespace) -> BenchConfig:
         raise BenchHarnessError("--artifact is required")
     if not target:
         raise BenchHarnessError("--target is required")
+    warmup = args.warmup if args.warmup is not None else 10
+    iters = args.iters if args.iters is not None else 50
+    workload = args.workload if args.workload is not None else "inference"
     return BenchConfig(
         artifact=artifact,
         target=target,
-        warmup=args.warmup,
-        iters=args.iters,
+        warmup=warmup,
+        iters=iters,
         batches=_batches(args.batch),
         inputs=args.inputs,
-        workload=args.workload,
+        workload=workload,
+        sustained=getattr(args, "sustained", None),
     )
+
+
+def _pipeline_config(args: argparse.Namespace) -> PipelineConfig:
+    if getattr(args, "artifact", None):
+        raise BenchHarnessError(
+            "--pipeline measures a camera-to-action stream. "
+            "Omit --artifact. The artifact bench remains "
+            "`ohho bench --artifact --target`."
+        )
+    if args.inputs != "random":
+        raise BenchHarnessError(
+            "--inputs applies to the artifact bench, not --pipeline"
+        )
+    if args.batch != "1":
+        raise BenchHarnessError("--batch applies to the artifact bench, not --pipeline")
+    source = _pipeline_source(args)
+    workload = args.workload if args.workload is not None else "pipeline"
+    return PipelineConfig(
+        source=source,
+        target=args.target or "x86-cpu",
+        hz=30.0 if args.hz is None else args.hz,
+        warmup=1 if args.warmup is None else args.warmup,
+        iters=30 if args.iters is None else args.iters,
+        frames=args.frames,
+        episode=0 if args.episode is None else args.episode,
+        robot=args.robot or "sim",
+        dataset=args.dataset,
+        bag=args.bag,
+        fixture=args.fixture,
+        sink=args.sink or "",
+        policy=args.policy or "tiny-cpu",
+        allow_hardware=bool(args.allow_hardware),
+        workload=workload,
+    )
+
+
+def _pipeline_source(args: argparse.Namespace) -> str:
+    source = args.source
+    provided = {
+        "fixture": args.fixture,
+        "lerobot": args.dataset,
+        "rosbag": args.bag,
+    }
+    named = [name for name, value in provided.items() if value]
+    if source is None:
+        if len(named) > 1:
+            raise BenchHarnessError("pass only one of --fixture, --dataset, or --bag")
+        if named:
+            return named[0]
+        return "sim"
+    if source == "sim" and named:
+        raise BenchHarnessError("--source sim does not take a recording path")
+    if source == "hardware":
+        return "hardware"
+    if source in provided and not provided[source]:
+        flag = {"fixture": "--fixture", "lerobot": "--dataset", "rosbag": "--bag"}
+        raise BenchHarnessError(f"--source {source} needs {flag[source]}")
+    return source
+
+
+def _reject_pipeline_flags(args: argparse.Namespace) -> None:
+    used: list[str] = []
+    if args.source:
+        used.append("--source")
+    if args.dataset:
+        used.append("--dataset")
+    if args.bag:
+        used.append("--bag")
+    if args.fixture:
+        used.append("--fixture")
+    if args.hz is not None:
+        used.append("--hz")
+    if args.frames is not None:
+        used.append("--frames")
+    if args.policy:
+        used.append("--policy")
+    if args.sink:
+        used.append("--sink")
+    if args.allow_hardware:
+        used.append("--allow-hardware")
+    if args.episode is not None:
+        used.append("--episode")
+    if args.robot:
+        used.append("--robot")
+    if used:
+        raise BenchHarnessError(f"{', '.join(used)} requires --pipeline")
 
 
 def _batches(text: str) -> tuple[int, ...]:

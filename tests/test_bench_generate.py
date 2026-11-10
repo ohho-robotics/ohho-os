@@ -12,13 +12,17 @@ import unittest
 from io import StringIO
 from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
+from typing import Any
 
 from ohho.bench.agreement import local_top1_agreement, top1_action_agreement
 from ohho.bench.clock import VirtualClock
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.generate import (
     GenerateConfig,
+    MeasureRequest,
+    PointMeasurement,
     RequestSample,
+    _point_row,
     execute_generate,
     image_token_count,
     run_decode,
@@ -323,7 +327,12 @@ class TestAgreementAndDecode(unittest.TestCase):
 
         module.top1_action_agreement = hooked
         previous = sys.modules.get("ohho.parity")
+        parent = sys.modules.get("ohho")
+        had_parent = hasattr(parent, "parity")
+        previous_parent = getattr(parent, "parity", None)
         sys.modules["ohho.parity"] = module
+        if parent is not None:
+            setattr(parent, "parity", module)
         try:
             self.assertEqual(top1_action_agreement([1], [1]), 0.25)
             document = execute_generate(
@@ -334,6 +343,11 @@ class TestAgreementAndDecode(unittest.TestCase):
                 sys.modules.pop("ohho.parity", None)
             else:
                 sys.modules["ohho.parity"] = previous
+            if parent is not None:
+                if had_parent:
+                    setattr(parent, "parity", previous_parent)
+                else:
+                    delattr(parent, "parity")
         self.assertEqual(document["llm"]["agreement"]["value"], 0.25)
 
     def test_decode_clock_and_load_mapping(self) -> None:
@@ -419,6 +433,214 @@ class TestAgreementAndDecode(unittest.TestCase):
                 )
             )
         self.assertIn("not installed", str(caught.exception))
+
+
+class TestBugbotFindingsRegression(unittest.TestCase):
+    def test_serving_rejects_and_skips_4bit_precisions(self) -> None:
+        from ohho.bench.generate import ServingGenerator
+
+        gen = ServingGenerator("vllm", "test/model")
+        for p in ("bnb-int4", "awq", "gptq"):
+            self.assertFalse(gen.supports_precision(p))
+        self.assertTrue(gen.supports_precision("fp16"))
+
+        with self.assertRaises(BenchHarnessError) as caught:
+            execute_generate(
+                _config(
+                    target="x86-cuda",
+                    backend="vllm",
+                    model="test/model",
+                    precisions=("bnb-int4",),
+                    concurrencies=(1,),
+                    prompt_tokens=(8,),
+                ),
+                generator=gen,
+            )
+        self.assertIn("cannot run any requested precision", str(caught.exception))
+
+        def _mock_measure(req: MeasureRequest) -> PointMeasurement:
+            sample = RequestSample(0.01, (0.002,), 0.02, (1, 2), output_tokens=2)
+            return PointMeasurement((sample,), 0.02, None, "unavailable", requests_total=1)
+
+        gen.measure = _mock_measure  # type: ignore[assignment]
+        doc = execute_generate(
+            _config(
+                target="x86-cuda",
+                backend="vllm",
+                model="test/model",
+                precisions=("fp16", "bnb-int4"),
+                concurrencies=(1,),
+                prompt_tokens=(8,),
+            ),
+            generator=gen,
+        )
+        validate(doc)
+        self.assertEqual(doc["llm"]["precision"], "fp16")
+        self.assertIn("skipped_precisions", doc["llm"])
+        skipped = {s["precision"]: s["reason"] for s in doc["llm"]["skipped_precisions"]}
+        self.assertIn("bnb-int4", skipped)
+        self.assertIn("does not support", skipped["bnb-int4"])
+        self.assertIn("bnb-int4", doc["telemetry"]["skipped_precisions"])
+
+    def test_agreement_uses_model_reference_tokens(self) -> None:
+        class _ModelGenerator:
+            name = "mock-model"
+
+            def measure(self, request: MeasureRequest) -> PointMeasurement:
+                if request.precision == "fp16":
+                    tokens = (5001, 5002)
+                else:
+                    tokens = (5001, 9999)
+                sample = RequestSample(0.01, (0.002,), 0.02, tokens, output_tokens=2)
+                return PointMeasurement((sample,), 0.02, None, "unavailable", requests_total=1)
+
+        doc = execute_generate(
+            _config(
+                precisions=("fp16", "bnb-int4"),
+                concurrencies=(1,),
+                prompt_tokens=(8,),
+            ),
+            generator=_ModelGenerator(),
+        )
+        validate(doc)
+        rows = {r["precision"]: r for r in doc["llm"]["precisions"]}
+        self.assertEqual(rows["fp16"]["agreement"]["value"], 1.0)
+        self.assertEqual(rows["bnb-int4"]["agreement"]["value"], 0.5)
+
+    def test_samples_from_load_chunk_counts_and_partial_failures(self) -> None:
+        chunks = ("h", "e", "l", "l", "o", " ", "w", "o", "r", "l", "d")
+        sample_ok = TokenSample(
+            ok=True,
+            ttft_s=0.05,
+            inter_token_s=tuple([0.01] * 10),
+            e2e_s=0.15,
+            output_tokens=11,
+            text="hello world",
+            chunks=chunks,
+        )
+        sample_fail = TokenSample(
+            ok=False,
+            ttft_s=0.0,
+            inter_token_s=(),
+            e2e_s=0.02,
+            output_tokens=0,
+            text="",
+            error="connection refused",
+        )
+        result = LoadResult(
+            samples=(sample_ok, sample_fail),
+            wall_s=0.2,
+            concurrency=2,
+            endpoint_url="http://127.0.0.1:8000/v1",
+            model="m",
+            prompt="p",
+        )
+        mapped = samples_from_load(result)
+        self.assertEqual(len(mapped), 1)
+        self.assertEqual(mapped[0].output_tokens, 11)
+        self.assertEqual(len(mapped[0].tokens), 11)
+
+        point = PointMeasurement(
+            samples=mapped,
+            wall_s=0.2,
+            peak_vram_mb=None,
+            vram_source="unavailable",
+            requests_total=len(result.samples),
+        )
+        req = MeasureRequest("fp16", 8, 0, 0, 2, 2, 11)
+        cfg = _config(precisions=("fp16",), concurrencies=(2,), prompt_tokens=(8,))
+        row = _point_row(cfg, req, point)
+        self.assertEqual(row["requests"], 2)
+        self.assertEqual(row["requests_ok"], 1)
+        self.assertEqual(row["output_tokens"], 11)
+        self.assertAlmostEqual(row["tokens_per_s"], 11 / 0.2)
+
+    def test_transformers_awq_and_gptq_require_packages_and_do_not_fall_back(self) -> None:
+        if (
+            importlib.util.find_spec("torch") is None
+            or importlib.util.find_spec("transformers") is None
+        ):
+            self.skipTest("torch or transformers is not installed")
+        from ohho.bench.generate import TransformersGenerator
+
+        gen = TransformersGenerator("org/model")
+        try:
+            with self.assertRaises(BenchHarnessError) as caught_awq:
+                gen._load("awq")
+            self.assertTrue(
+                "CUDA" in str(caught_awq.exception)
+                or "AWQ" in str(caught_awq.exception)
+                or "could not load" in str(caught_awq.exception)
+            )
+
+            with self.assertRaises(BenchHarnessError) as caught_gptq:
+                gen._load("gptq")
+            self.assertTrue(
+                "CUDA" in str(caught_gptq.exception)
+                or "GPTQ" in str(caught_gptq.exception)
+                or "could not load" in str(caught_gptq.exception)
+            )
+        finally:
+            gen.close()
+
+    def test_transformers_cache_evicts_previous_precision(self) -> None:
+        if (
+            importlib.util.find_spec("torch") is None
+            or importlib.util.find_spec("transformers") is None
+        ):
+            self.skipTest("torch or transformers is not installed")
+        from ohho.bench.generate import TransformersGenerator
+
+        gen = TransformersGenerator("org/model")
+        fake_tok = object()
+        fake_m1 = object()
+        fake_m2 = object()
+        gen._tokenizer = fake_tok
+        gen._loaded_model = fake_m1
+        gen._loaded_precision = "fp16"
+        self.assertEqual(len(gen._cache), 1)
+        self.assertIn("fp16", gen._cache)
+
+        gen._loaded_model = fake_m2
+        gen._loaded_precision = "fp32"
+        self.assertEqual(len(gen._cache), 1)
+        self.assertNotIn("fp16", gen._cache)
+        self.assertIn("fp32", gen._cache)
+
+        gen.close()
+        self.assertEqual(len(gen._cache), 0)
+
+    def test_transformers_batched_concurrency(self) -> None:
+        if importlib.util.find_spec("torch") is None:
+            self.skipTest("torch is not installed")
+        import torch
+        from ohho.bench.generate import _transformers_batch_sample
+
+        class _MockModel:
+            def __call__(
+                self,
+                input_ids: Any,
+                use_cache: bool = True,
+                past_key_values: Any = None,
+            ) -> Any:
+                batch_size = input_ids.shape[0]
+                seq_len = input_ids.shape[1]
+                vocab_size = 32
+                logits = torch.ones((batch_size, seq_len, vocab_size))
+                for b in range(batch_size):
+                    logits[b, -1, b % vocab_size] = 10.0
+                return type(
+                    "Out", (), {"logits": logits, "past_key_values": object()}
+                )()
+
+        prompt = torch.tensor([[1, 2, 3]])
+        samples = _transformers_batch_sample(
+            _MockModel(), torch, prompt, max_tokens=3, device="cpu", batch_size=4
+        )
+        self.assertEqual(len(samples), 4)
+        for i, sample in enumerate(samples):
+            self.assertEqual(len(sample.tokens), 3)
+            self.assertEqual(sample.tokens[0], i % 32)
 
 
 if __name__ == "__main__":

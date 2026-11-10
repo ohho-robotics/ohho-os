@@ -103,6 +103,20 @@ them are required, and none change the type of a field v1 already defined:
 | `gates` | SLO and regression checks. `passed` is false when any check failed. |
 | `batches` | One latency report per requested batch size. |
 | `cost` | Estimated USD from measured throughput. See below. |
+| `pipeline` | Camera-to-action block. Absent on an artifact-only run. Version `ohho.bench.pipeline/v1`. |
+| `environment.world` | `sim`, `recorded`, or `hardware` on a pipeline run. |
+
+`pipeline` is optional. Required keys inside it, when the object is present,
+are `version` (`ohho.bench.pipeline/v1`), `world`, `source`, `target_hz`,
+`achieved_hz`, `rate_sustained`, `dropped_frames`, `frames_presented`,
+`frames_published`, `jitter_ms`, `device`, and `live_robot`. `achieved_hz` is
+the paced control rate. `latency.achievable_hz` is still the rate implied by
+the mean latency. `jitter_ms` matches `latency.std`. Stage rows for a pipeline
+run are `decode`, `preprocess`, `h2d`, `inference`, `d2h`, `postprocess`, and
+`publish`. `live_robot` is false: a hardware label replays a recording and
+does not command a robot. Adding this object does not change ohho.bench/v1.
+A break inside the block is a new pipeline version and a converter, not a
+silent edit of these fields.
 
 ## Cost estimate
 
@@ -128,13 +142,19 @@ The same object may appear on `batches[]`, `llm.points[]`, `llm.precisions[]`,
 and the same price inputs. The price table is `ohho/targets/cost_prices.json`
 (`ohho.bench.cost_prices/v1`), labelled `estimate`. See [`bench.md`](bench.md).
 
-
 `telemetry.gpu_util_percent` and `telemetry.gpu_power_w` are additional
 properties and are JSON `null` when a GPU sample is not available. The typed
 gauges `accelerator_util_mean` and `power_w_mean` stay non-null numbers, so
 they are omitted in that case. Making those gauges nullable would be an
 `ohho.bench/v2` change. `telemetry.memory_mb_max` is the peak process
 memory when it can be read.
+
+`telemetry.sensors` is an additional object written by the harness. Power,
+energy, device memory, temperature, and clocks inside it are JSON `null`
+when no source reported them, and `reason` says why. `throttling_events` is
+an array. `sustained` is an additional top-level object present only for
+`--sustained`. Both stay on v1 because they do not change a field v1 already
+defined.
 
 Checked-in results:
 
@@ -220,3 +240,12 @@ python scripts/generate_bench_types.py --check
 
 `BENCH_SCHEMA_ID` in both outputs is the schema's `const`. The test suite
 runs `--check` and fails when the generated files drift.
+
+## Examples
+
+Runnable Serve examples are in
+[`examples/serve`](../../examples/serve/README.md). The CPU gate runs
+`ohho bench validate` on the schema fixtures shipped with this package. It
+does not treat those fixtures as measured results. The Jetson FP16 TensorRT
+example, the CPU ORT INT8 example, the vLLM bench, and the W&B / Prometheus
+export are placeholders until those commands are on main.

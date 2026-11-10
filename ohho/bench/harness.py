@@ -8,6 +8,11 @@ expressions before the first iteration.
 ``run.target`` is the workload class (``inference`` unless the caller sets
 another). ``--target`` on the command line is the hardware profile id and is
 stored at ``environment.target_profile``.
+
+During the measured iterations a sampler thread reads optional power, memory,
+and thermal sources at 10 Hz. Missing quantities stay null and carry a reason.
+``--sustained`` replaces the iteration count with a timed window and adds
+per-window p95 drift.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,11 +32,16 @@ from ohho.bench.clock import clock_for_providers
 from ohho.bench.compare import compare_results
 from ohho.bench.cost import CostOverrides, attach_cost, require_price
 from ohho.bench.environment import (
+    GpuProbe,
+    MemorySnapshot,
     MemoryTrace,
     collect_environment,
     gpu_telemetry,
     host_block,
 )
+from ohho.bench.sensors.base import SensorSource
+from ohho.bench.sensors.sampler import SensorSampler, WindowSummary
+from ohho.bench.sustained import drift_report
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.gates import check_gate_expressions, evaluate_gates
 from ohho.bench.runner import (
@@ -56,6 +67,7 @@ class BenchConfig:
     batches: tuple[int, ...] = (1,)
     inputs: str = "random"
     workload: str = "inference"
+    sustained: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.artifact, str) or not self.artifact.strip():
@@ -92,6 +104,7 @@ class BenchConfig:
         object.__setattr__(self, "workload", workload)
         object.__setattr__(self, "target", self.target.strip())
         object.__setattr__(self, "batches", tuple(self.batches))
+        object.__setattr__(self, "sustained", _sustained_seconds(self.sustained))
 
 
 def primary_batch_size(batches: Sequence[int]) -> int:
@@ -106,6 +119,8 @@ def run_benchmark(
     *,
     runner: Any = None,
     clock: Any = None,
+    sources: Sequence[SensorSource] | None = None,
+    gpu: GpuProbe | None = None,
     cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
     """Time ``config`` and return a schema-valid ohho.bench/v1 document.
@@ -113,7 +128,8 @@ def run_benchmark(
     Pass ``runner`` to measure a custom five-stage object instead of an ONNX
     session. Pass ``clock`` to force :class:`~ohho.bench.clock.PerfClock`,
     :class:`~ohho.bench.clock.CudaEventClock`, or a
-    :class:`~ohho.bench.clock.VirtualClock`.
+    :class:`~ohho.bench.clock.VirtualClock`. ``sources`` replaces the detected
+    sensor adapters. ``gpu`` replaces the one-shot accelerator probe.
     """
     try:
         profile = get_profile(config.target)
@@ -136,18 +152,39 @@ def run_benchmark(
         clock = clock_for_providers(providers)
     trace = MemoryTrace()
     trace.start()
+    sampler = SensorSampler(sources)
     started = _stamp()
+    built: list[tuple[dict[str, Any], WindowSummary]] = []
     try:
-        reports = [
-            _run_batch(runner, clock, batch, config.warmup, config.iters)
-            for batch in config.batches
-        ]
+        for batch in config.batches:
+            report, summary, stamps, truncated = _run_batch(
+                runner,
+                clock,
+                batch,
+                config.warmup,
+                config.iters,
+                sampler,
+                config.sustained,
+            )
+            block = summary.to_block(mean_latency_ms=report["latency"]["mean"])
+            report["sensors"] = block
+            if config.sustained is not None:
+                report["sustained"] = drift_report(
+                    stamps,
+                    sustained_s=config.sustained,
+                    throttling_flagged=bool(block["throttling_flagged"]),
+                    truncated=truncated,
+                )
+            built.append((report, summary))
         memory = trace.snapshot()
     finally:
         trace.close()
+        sampler.close()
     finished = _stamp()
+    reports = [report for report, _summary in built]
     primary_size = primary_batch_size(config.batches)
     primary = next(item for item in reports if item["batch_size"] == primary_size)
+    primary_summary = next(summary for report, summary in built if report is primary)
     for item in reports:
         item["primary"] = item is primary
     note = _timing_note(
@@ -155,12 +192,13 @@ def run_benchmark(
         clock,
         str(getattr(runner, "provider_note", "") or ""),
     )
-    environment, gpu = collect_environment(
+    environment, gpu_probe = collect_environment(
         profile,
         timing_source=str(getattr(clock, "kind", "perf_counter")),
         execution_provider=providers[0],
         execution_providers=providers,
         timing_note=note,
+        gpu=gpu,
     )
     digest = _file_sha256(path)
     telemetry: dict[str, Any] = {
@@ -168,7 +206,19 @@ def run_benchmark(
         "samples": primary["throughput"]["samples"],
     }
     telemetry.update(memory.as_telemetry())
-    telemetry.update(gpu_telemetry(gpu))
+    telemetry.update(gpu_telemetry(gpu_probe))
+    host_mb, host_source = _host_fallback(memory)
+    sensors = primary_summary.to_block(
+        mean_latency_ms=primary["latency"]["mean"],
+        host_fallback_mb=host_mb,
+        host_fallback_source=host_source,
+    )
+    primary["sensors"] = sensors
+    telemetry["sensors"] = sensors
+    if _measured_number(sensors.get("power_w_mean")):
+        telemetry["power_w_mean"] = sensors["power_w_mean"]
+    if _measured_number(sensors.get("device_memory_mb_peak")):
+        telemetry["accelerator_memory_mb_max"] = sensors["device_memory_mb_peak"]
     document: dict[str, Any] = {
         "schema": SCHEMA_ID,
         "run": {
@@ -191,6 +241,8 @@ def run_benchmark(
         "environment": environment,
         "batches": reports,
     }
+    if config.sustained is not None:
+        document["sustained"] = primary["sustained"]
     attach_cost(document, cost, profile_id=profile.id)
     _require_valid(document)
     return document
@@ -230,6 +282,8 @@ def execute(
     *,
     runner: Any = None,
     clock: Any = None,
+    sources: Sequence[SensorSource] | None = None,
+    gpu: GpuProbe | None = None,
     baseline_path: str | None = None,
     slos: Sequence[str] = (),
     max_regressions: Sequence[str] = (),
@@ -239,10 +293,19 @@ def execute(
     """Measure, then apply baseline, gates, parity, and the cost estimate.
 
     Gate expressions are checked before the runner is called. Cost uses the
-    measured throughput and does not add iterations.
+    measured throughput and does not add iterations. ``sources`` and
+    ``gpu`` are optional stand-ins for the detected sensors and the one-shot
+    accelerator probe.
     """
     check_gate_expressions(slos, max_regressions, has_baseline=bool(baseline_path))
-    document = run_benchmark(config, runner=runner, clock=clock, cost=cost)
+    document = run_benchmark(
+        config,
+        runner=runner,
+        clock=clock,
+        sources=sources,
+        gpu=gpu,
+        cost=cost,
+    )
     return finalize_result(
         document,
         baseline_path=baseline_path,
@@ -252,14 +315,28 @@ def execute(
     )
 
 
-def _run_batch(runner: Any, clock: Any, batch: int, warmup: int, iters: int) -> dict:
+def _run_batch(
+    runner: Any,
+    clock: Any,
+    batch: int,
+    warmup: int,
+    iters: int,
+    sampler: SensorSampler,
+    sustained_s: float | None,
+) -> tuple[dict[str, Any], WindowSummary, list[tuple[float, float]], bool]:
     cold = clock.measure(runner, batch)
     for _ in range(warmup):
         clock.measure(runner, batch)
-    stage_samples = {name: [] for name in STAGE_NAMES}
+    window = sampler.open()
+    try:
+        rows, stamps, truncated = _measured(runner, clock, batch, iters, sustained_s)
+    finally:
+        summary = window.close()
+    if not rows:
+        raise BenchHarnessError("benchmark produced no measured samples")
+    stage_samples: dict[str, list[float]] = {name: [] for name in STAGE_NAMES}
     totals: list[float] = []
-    for _ in range(iters):
-        sample = clock.measure(runner, batch)
+    for sample in rows:
         for name in STAGE_NAMES:
             stage_samples[name].append(float(sample[name]))
         totals.append(sum(float(sample[name]) for name in STAGE_NAMES))
@@ -268,17 +345,86 @@ def _run_batch(runner: Any, clock: Any, batch: int, warmup: int, iters: int) -> 
         stage_samples,
         sum(float(cold[name]) for name in STAGE_NAMES),
     )
-    return {
+    report = {
         "batch_size": batch,
         "latency": latency,
         "throughput": {
             "value": latency["achievable_hz"],
             "unit": "Hz",
-            "samples": iters,
+            "samples": len(totals),
             "batch_size": batch,
             "duration_s": sum(totals),
         },
     }
+    return report, summary, stamps, truncated
+
+
+def _measured(
+    runner: Any,
+    clock: Any,
+    batch: int,
+    iters: int,
+    sustained_s: float | None,
+) -> tuple[list[dict[str, float]], list[tuple[float, float]], bool]:
+    """Time the measured iterations. Warmup has already been discarded."""
+    origin = float(clock.now())
+    rows: list[dict[str, float]] = []
+    stamps: list[tuple[float, float]] = []
+    truncated = False
+
+    def record() -> None:
+        sample = clock.measure(runner, batch)
+        rows.append(sample)
+        total = sum(float(sample[name]) for name in STAGE_NAMES)
+        stamps.append((float(clock.now()) - origin, total * 1000.0))
+
+    if sustained_s is None:
+        for _ in range(iters):
+            record()
+        return rows, stamps, False
+    stalled = 0
+    while float(clock.now()) - origin < sustained_s:
+        before = float(clock.now())
+        record()
+        after = float(clock.now())
+        if after <= before:
+            stalled += 1
+            if stalled >= 2:
+                truncated = True
+                break
+        else:
+            stalled = 0
+        if len(rows) >= 1_000_000:
+            truncated = True
+            break
+    if not rows:
+        record()
+    return rows, stamps, truncated
+
+
+def _sustained_seconds(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+    ):
+        raise BenchHarnessError("--sustained must be a positive number of seconds")
+    return float(value)
+
+
+def _host_fallback(memory: MemorySnapshot) -> tuple[float | None, str | None]:
+    if memory.rss_mb is not None:
+        return memory.rss_mb, "process_peak_rss"
+    if memory.python_alloc_mb is not None:
+        return memory.python_alloc_mb, "tracemalloc"
+    return None, None
+
+
+def _measured_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _latency_report(

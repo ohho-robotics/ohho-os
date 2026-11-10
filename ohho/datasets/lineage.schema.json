@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/lineage.json",
+  "title": "LineageGraph",
+  "description": "Local lineage graph (ohho.lineage.v1). One document maps to the console lineage tables. This file is not part of the transport protocol manifest. Run rows store a run id and a dataset version id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "episodes", "version_episodes", "runs", "models"],
+  "properties": {
+    "schema": {"type": "string", "const": "ohho.lineage.v1"},
+    "episodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^ep_[0-9a-f]{32}$": {"$ref": "#/$defs/episode"}
+      }
+    },
+    "version_episodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^dv_[0-9a-f]{32}$": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^ep_[0-9a-f]{32}$"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "runs": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$": {"$ref": "#/$defs/run"}
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$": {"$ref": "#/$defs/model"}
+      }
+    }
+  },
+  "$defs": {
+    "episode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "content_hash",
+        "task",
+        "fps",
+        "frame_count",
+        "source",
+        "source_index",
+        "deleted",
+        "deleted_at",
+        "delete_warning"
+      ],
+      "properties": {
+        "episode_id": {"type": "string", "pattern": "^ep_[0-9a-f]{32}$"},
+        "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "task": {"type": "string", "maxLength": 4096},
+        "fps": {"type": "string", "minLength": 1, "maxLength": 64},
+        "frame_count": {"type": "integer", "minimum": 1},
+        "source": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "source_index": {"type": "integer", "minimum": 0},
+        "deleted": {"type": "boolean"},
+        "deleted_at": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "delete_warning": {"type": ["string", "null"], "maxLength": 8192}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "dataset_version_id"],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "dataset_version_id": {"type": "string", "pattern": "^dv_[0-9a-f]{32}$"}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_version_id", "run_id"],
+      "properties": {
+        "model_version_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        }
+      }
+    }
+  }
+}

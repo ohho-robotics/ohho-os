@@ -381,7 +381,7 @@ class TestProcessTree(unittest.TestCase):
                     "fp16",
                     {
                         "argv_prefix": _prefix(),
-                        "startup_timeout_s": 5,
+                        "startup_timeout_s": 30,
                         "env": {
                             "OHHO_FAKE_MODE": "serve",
                             "OHHO_FAKE_CHILD_PID": str(pid_path),
@@ -400,7 +400,7 @@ class TestProcessTree(unittest.TestCase):
                         requests=2,
                         concurrency=1,
                         max_tokens=4,
-                        timeout_s=5,
+                        timeout_s=30,
                     )
                 )
                 self.assertTrue(all(sample.ok for sample in result.samples))

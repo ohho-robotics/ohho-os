@@ -39,6 +39,7 @@ __all__ = [
     "LlmSkip",
     "LlmSweep",
     "LlmBench",
+    "PipelineBench",
     "BenchResult",
 ]
 
@@ -237,6 +238,7 @@ class Environment(_EnvironmentRequired, total=False):
     timing_note: str
     execution_provider: str
     driver: str
+    world: Literal["sim", "recorded", "hardware"]
 
 
 class _ComparisonMetricRequired(TypedDict):
@@ -555,6 +557,40 @@ class LlmBench(_LlmBenchRequired, total=False):
     skipped: list[LlmSkip]
 
 
+class _PipelineBenchRequired(TypedDict):
+    version: Literal["ohho.bench.pipeline/v1"]
+    world: Literal["sim", "recorded", "hardware"]
+    source: str
+    target_hz: float
+    achieved_hz: float
+    rate_sustained: bool
+    dropped_frames: int
+    frames_presented: int
+    frames_published: int
+    jitter_ms: float
+    device: Literal["cpu", "cuda"]
+    live_robot: bool
+
+
+class PipelineBench(_PipelineBenchRequired, total=False):
+    """End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on
+    ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline
+    version plus a converter.
+
+    Additional properties are allowed.
+    """
+
+    interval_jitter_ms: float
+    control_period_ms: float
+    sink: str
+    gpu_follow_up: list[str]
+    gpu_note: str
+    policy: str
+    episode: int
+    frame_origin: str
+    recording: str
+
+
 class _BenchResultRequired(TypedDict):
     schema: Literal["ohho.bench/v1"]
     run: BenchRun
@@ -578,3 +614,4 @@ class BenchResult(_BenchResultRequired, total=False):
     batches: list[BatchResult]
     llm: LlmBench
     cost: BenchCost
+    pipeline: PipelineBench
