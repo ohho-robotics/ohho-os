@@ -884,6 +884,41 @@ async def _hold_deadman_until_moved(
             raise AssertionError(f"deadman hold moved {x - x0:.4f} m in {timeout:.1f}s")
 
 
+async def _wait_for_reported_joint(
+    client: Any,
+    name: str,
+    *,
+    min_position: float,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """Newest telemetry once ``name`` has moved past ``min_position``.
+
+    Joints servo at 2 rad/s and the physics thread steps 20 ms, so one tick
+    is 0.04 rad. A fixed sleep can observe that single tick when the thread
+    is starved, which fails a ``> 0.05`` check. Wait until a later tick has
+    been broadcast.
+    """
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        try:
+            last = await _latest_json(
+                client,
+                first_timeout=min(1.0, remaining),
+                quiet_s=min(0.05, remaining),
+            )
+        except TimeoutError:
+            continue
+        position = float((last.get("joints") or {}).get(name, 0.0))
+        if position > min_position:
+            return last
+    observed = (last.get("joints") or {}).get(name, 0.0)
+    raise AssertionError(
+        f"{name} moved to {observed} in {timeout:.1f}s; need > {min_position}"
+    )
+
+
 @unittest.skipUnless(
     _has_websockets(), "websockets not installed — [serve] or [sim-serve] extra"
 )
@@ -1008,8 +1043,11 @@ class TestSimServeDeadmanEdges(unittest.TestCase):
                             {"deadman": True, "joints": {"arm_shoulder_pan": 0.5}}
                         )
                     )
-                    await asyncio.sleep(0.25)
-                    latest = await _latest_json(client)
+                    # One starved 50 Hz tick is 0.04 rad and fails the bound
+                    # below. Wait until the command has actually been integrated.
+                    latest = await _wait_for_reported_joint(
+                        client, "arm_shoulder_pan", min_position=0.05
+                    )
                 self.assertGreater(latest["joints"].get("arm_shoulder_pan", 0.0), 0.05)
                 self.assertEqual(latest["backend"], "sim")
                 self.assertTrue(latest.get("no_camera"))
