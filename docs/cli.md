@@ -61,6 +61,8 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile list` | Hardware deployment profiles |
 | `ohho profile show <name>` | Profile details |
 | `ohho profile detect` | Auto-detect this machine |
+| `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
+| `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
