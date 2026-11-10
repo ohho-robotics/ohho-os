@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/ohho.sweep.v1.json",
   "title": "ohho.sweep/v1",
-  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random with at least one dimension requires budget.max_trials; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points. estimated GPU-hours are an estimate computed from per-trial values in this spec.",
+  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random, tpe, bayesian, or multi with at least one dimension requires budget.max_trials; strategy tpe and strategy bayesian (the built-in Tree-structured Parzen Estimator) require an objective and, when more than one objective is set, a primary; strategy multi (multi-objective TPE) requires at least two objectives; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points. estimated GPU-hours are an estimate computed from per-trial values in this spec.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema"],
@@ -12,11 +12,32 @@
       "type": "integer",
       "minimum": 0,
       "default": 0,
-      "description": "Seed for strategy random. Grid order does not use the seed."
+      "description": "Seed for random, tpe, bayesian, and multi. Grid order does not use the seed."
     },
     "strategy": {
-      "enum": ["grid", "random"],
-      "default": "grid"
+      "enum": ["grid", "random", "tpe", "bayesian", "multi"],
+      "default": "grid",
+      "description": "grid expands the cartesian product. random draws budget.max_trials trials from seed. tpe and bayesian are the built-in Bayesian sampler (Tree-structured Parzen Estimator); bayesian selects that sampler by name. multi is multi-objective TPE and records a Pareto set for the leaderboard."
+    },
+    "sampler": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Knobs for tpe, bayesian, and multi. grid and random ignore them. startup_trials are random draws before the Parzen estimator is fit. gamma is the fraction of completed trials treated as good. candidates is how many draws from the good density are scored per proposal. prior_weight keeps a wide prior in the density.",
+      "properties": {
+        "startup_trials": {"type": "integer", "minimum": 0, "default": 10},
+        "gamma": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.25
+        },
+        "candidates": {"type": "integer", "minimum": 1, "default": 64},
+        "prior_weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1
+        }
+      }
     },
     "parallelism": {
       "type": "integer",
@@ -260,7 +281,7 @@
         "max_trials": {
           "type": "integer",
           "minimum": 0,
-          "description": "Keep this many trials after constraints. Required for strategy random when dimensions is non-empty."
+          "description": "Keep this many trials after constraints. Required for strategy random, tpe, bayesian, and multi when dimensions is non-empty."
         },
         "max_gpu_hours": {
           "type": "number",
