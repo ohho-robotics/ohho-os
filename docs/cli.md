@@ -61,6 +61,8 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile list` | Hardware deployment profiles |
 | `ohho profile show <name>` | Profile details |
 | `ohho profile detect` | Auto-detect this machine |
+| `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
+| `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec into trial recipes ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
@@ -84,6 +86,32 @@ benchmark numbers.
 | `ohho sim-demo --sim --fast` | Scripted Go2 sim demo and eval log (simulation only; see [`sim-demo.md`](sim-demo.md)) |
 | `ohho eval <checkpoint> --suite gazebo-nav-regression` | Seeded sim episodes and an `ohho.eval/v1` report (see [`eval.md`](eval.md)) |
 | `ohho selftest --sim` | Bench diagnostics against simulated hardware (CI-safe) |
+
+## Dataset versions
+
+`ohho dataset` builds an immutable, content-hashed LeRobot dataset from local
+episodes. The version record (query, filters, split, seed, augmentation,
+content hash, stats, licence) is stored under the version directory. Pin
+freezes that directory; a later edit allocates a new version id. Stats printed
+by `ohho dataset stats` are the block stored on the version.
+
+| Command | Description |
+|---------|-------------|
+| `ohho dataset build --source PATH [--source PATH] [--store DIR]` | Materialise a version from local episodes |
+| `ohho dataset pin VERSION [--store DIR]` | Freeze that version |
+| `ohho dataset stats VERSION [--store DIR]` | Print stored episode, frame, and range stats |
+| `ohho dataset import-hf REPO [--revision REV] [--store DIR]` | Import a Hub LeRobot dataset and pin the resolved commit and licence |
+
+`--json` prints the same result as JSON. Paths and the cloud-table mapping are
+in [`dataset-versions.md`](dataset-versions.md). Training code still takes a
+dataset path; `ohho.datasets.resolve_dataset_version` turns a version id into
+that path.
+
+`import-hf` needs the optional `huggingface_hub` package (`pip install
+'ohho-os[datasets]'`). It stores the commit the Hub resolved and the
+dataset-card licence. A non-commercial licence is flagged and printed as
+`warning: licence … is non-commercial`. Episode, run, and model edges are in
+[`dataset-lineage.md`](dataset-lineage.md).
 
 ## Smoke tests
 
