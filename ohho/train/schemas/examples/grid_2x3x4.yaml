@@ -1,0 +1,43 @@
+# ohho.sweep/v1 — 2 x 3 x 4 grid (24 trials).
+schema: ohho.sweep/v1
+seed: 7
+strategy: grid
+parallelism: 4
+recipe:
+  task: push
+  optimizer:
+    lr: 0.001
+    weight_decay: 0.0
+dimensions:
+  - name: model
+    type: categorical
+    values: [small, large]
+  - name: batch_size
+    path: train.batch_size
+    type: int
+    values: [8, 16, 32]
+  - name: lr
+    path: optimizer.lr
+    type: log_uniform
+    low: 1.0e-5
+    high: 1.0e-3
+    n: 4
+objectives:
+  - name: val_loss
+    direction: minimize
+    primary: true
+early_stopping:
+  metric: val_loss
+  patience: 5
+  min_delta: 0.001
+  mode: min
+budget:
+  max_trials: 100
+  max_gpu_hours: 100
+estimate:
+  gpu_hours_per_trial: 0.25
+  by_value:
+    - when:
+        path: model
+        eq: large
+      gpu_hours: 1.0
