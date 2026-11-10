@@ -1156,8 +1156,6 @@ def _cmd_logout(args) -> int:
     return 0
 
 
-_LLM_BACKENDS = ("vllm", "sglang", "tensorrt-llm", "llama-cpp")
-
 
 def _cmd_train(args) -> int:
     from .train.run_cli import execute
@@ -1283,28 +1281,7 @@ def _cmd_eval(args) -> int:
     return 0
 
 
-def _cmd_bench_validate(args) -> int:
-    from .bench.command import run_validate
 
-    return run_validate(args)
-
-
-def _cmd_bench_version(args) -> int:
-    from .bench.command import run_version
-
-    return run_version(args)
-
-
-def _cmd_bench_launch(args) -> int:
-    from .bench.command import run_launch
-
-    return run_launch(args)
-
-
-def _cmd_bench_llm(args) -> int:
-    from .bench.command import run_llm
-
-    return run_llm(args)
 def build_parser() -> argparse.ArgumentParser:
     p = _ArgumentParser(prog="ohho", description="OhhO OS — the open robot engine.")
     p.add_argument(
@@ -2062,11 +2039,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.command == "bench"
             and not getattr(args, "bench_command", None)
             and not getattr(args, "artifact", None)
+            and getattr(args, "mode", None) != "generate"
             and not getattr(args, "pipeline", False)
         ):
             parser.error(
                 "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
-                "or `--pipeline`"
+                "`--mode generate --target PROFILE`, or `--pipeline`"
             )
         if not (
             (args.command == "mcp" and getattr(args, "mcp_command", None) == "connect")

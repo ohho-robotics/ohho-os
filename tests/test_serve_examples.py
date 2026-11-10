@@ -112,8 +112,7 @@ class TestServeExamples(unittest.TestCase):
         self.assertTrue(support.feature_ready("export:metrics"))
         self.assertTrue(support.feature_ready("cli:bench"))
         self.assertEqual(
-            support.bench_commands(),
-            {"validate", "llm", "launch", "version"},
+            support.bench_commands(), {"validate", "version", "launch", "llm"}
         )
         buffer = StringIO()
         with redirect_stdout(buffer):

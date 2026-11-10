@@ -37,7 +37,12 @@ def http_ok(url: str, timeout: float = 0.3) -> bool:
 
 
 def pid_alive(pid: int) -> bool:
-    """True when ``pid`` still refers to a running process."""
+    """True when ``pid`` still refers to a running process.
+
+    On Windows ``OpenProcess`` succeeds for a process that has already
+    exited while its object is still open. That is not a running process.
+    ``GetExitCodeProcess`` returns 259 (``STILL_ACTIVE``) only while it runs.
+    """
     if pid <= 0:
         return False
     if os.name == "nt":
@@ -45,8 +50,13 @@ def pid_alive(pid: int) -> bool:
         handle = kernel32.OpenProcess(0x1000, False, pid)
         if not handle:
             return False
-        kernel32.CloseHandle(handle)
-        return True
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return int(code.value) == 259
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -187,6 +197,11 @@ def _k32() -> ctypes.WinDLL:
     kernel32.TerminateJobObject.restype = ctypes.c_int
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.CloseHandle.restype = ctypes.c_int
+    kernel32.GetExitCodeProcess.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    kernel32.GetExitCodeProcess.restype = ctypes.c_int
     return kernel32
 
 
