@@ -7,6 +7,8 @@ import io
 import json
 import tempfile
 import unittest
+
+import pytest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -120,6 +122,7 @@ class TestYamlSubset(unittest.TestCase):
     def test_pyyaml_fallback_leading_document_separator_and_dash_only_items(
         self,
     ) -> None:
+        pytest.importorskip("yaml")
         doc_sep = "\n".join(
             [
                 "---",
