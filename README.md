@@ -18,7 +18,7 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
 `ohho train <recipe.yaml>` runs a training recipe ([`docs/train/recipes.md`](docs/train/recipes.md)).
 
