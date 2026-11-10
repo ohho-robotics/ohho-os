@@ -2,13 +2,17 @@
 
 ``render_dockerfile`` is the source used by the committed files under
 ``docker/serve-worker``. The files do not install git. The L4T base image
-used for the jetson variant does not ship git.
+used for the jetson variant does not ship git, and it does not ship
+``/etc/nv_tegra_release``. The jetson Dockerfile writes that file from the
+pinned L4T release when the image has no parseable copy.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+from ohho.optimize.toolchain import jetpack_from_tegra_release
+from ohho.worker_images.errors import WorkerImageError
 from ohho.worker_images.matrix import WorkerVariant, get_variant
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +41,31 @@ RUN set -euo pipefail; \\
 """
 
 
+def tegra_release_line(l4t: str) -> str:
+    """``/etc/nv_tegra_release`` line for a pinned ``major.minor[.patch]``.
+
+    ``ohho targets verify`` reads that file through
+    ``jetpack_from_tegra_release``. A pin that would not parse back to the
+    same release is refused.
+    """
+    parts = l4t.split(".")
+    if len(parts) < 2 or not all(part.isdigit() for part in parts):
+        raise WorkerImageError(
+            f"L4T release {l4t!r} must be dotted integers (major.minor.patch)."
+        )
+    major, revision = parts[0], ".".join(parts[1:])
+    line = (
+        f"# R{major} (release), REVISION: {revision}, GCID: 0, "
+        "BOARD: generic, EABI: aarch64, DATE: Thu Jan 1 00:00:00 UTC 1970"
+    )
+    parsed = jetpack_from_tegra_release(line)
+    if parsed != f"R{l4t}":
+        raise WorkerImageError(
+            f"L4T release {l4t} would be read as {parsed or 'unset'}."
+        )
+    return line
+
+
 def dockerfile_path(variant: str) -> Path:
     """Committed Dockerfile for one variant."""
     return _ROOT / "docker" / "serve-worker" / f"Dockerfile.{variant}"
@@ -61,6 +90,7 @@ def render_dockerfile(variant: str) -> str:
         "    PATH=/opt/ohho/bin:$PATH",
         "",
         _APT.rstrip("\n"),
+        *_record_l4t(row),
         "",
         "COPY . /opt/ohho-src",
         "WORKDIR /opt/ohho-src",
@@ -86,6 +116,35 @@ def write_dockerfiles() -> None:
         path = dockerfile_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_dockerfile(name), encoding="utf-8", newline="\n")
+
+
+def _record_l4t(row: WorkerVariant) -> list[str]:
+    """Write the pinned release when the base image has no parseable file.
+
+    ``nvcr.io/nvidia/l4t-base`` does not ship ``/etc/nv_tegra_release``. On a
+    Jetson the NVIDIA runtime bind-mounts the host file, which is the host
+    release. A GitHub arm64 runner has no GPU and does not perform that mount,
+    so ``ohho targets verify`` would otherwise report that the L4T release is
+    not set. A file the base already provides, and that verify can parse, is
+    left in place and still has to match the pin.
+    """
+    if not row.l4t:
+        return []
+    line = tegra_release_line(row.l4t)
+    return [
+        "",
+        "# l4t-base does not ship /etc/nv_tegra_release. The NVIDIA runtime",
+        "# bind-mounts the host file when present. Record the pinned release",
+        "# when this image has no parseable file so targets verify can read",
+        "# it on a runner without that runtime and without a GPU.",
+        "RUN if ! grep -Eq "
+        "'R[0-9]+[[:space:]]*\\(release\\),[[:space:]]*REVISION:"
+        "[[:space:]]*[0-9]+(\\.[0-9]+)*' "
+        "/etc/nv_tegra_release 2>/dev/null; then \\",
+        f"      printf '%s\\n' '{line}' > /etc/nv_tegra_release; \\",
+        "      chmod 644 /etc/nv_tegra_release; \\",
+        "    fi",
+    ]
 
 
 def _env_lines(row: WorkerVariant) -> list[str]:

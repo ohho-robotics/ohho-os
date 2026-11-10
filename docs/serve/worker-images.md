@@ -40,6 +40,14 @@ does not download those wheels. `ohho targets verify` still checks the image
 tag, the CPU architecture, the CUDA image's `CUDA_VERSION`, and the jetson
 image's `/etc/nv_tegra_release` against this matrix.
 
+`nvcr.io/nvidia/l4t-base` does not include `/etc/nv_tegra_release`. On a Jetson
+the NVIDIA container runtime bind-mounts the host file, which is the host
+release rather than the image tag. The jetson Dockerfile writes the pinned L4T
+release to that path when the file is missing or is not the release text
+verify parses, so the check passes on a GitHub arm64 runner without a GPU. A
+parseable file the base image already provides is kept and must still match
+the pin.
+
 A full jetson wheel install uses the CPU torch index. The JetPack GPU wheel
 is not in the public L4T base this image is built from. TensorRT on jetson is
 the BSP pin, not a pip package.

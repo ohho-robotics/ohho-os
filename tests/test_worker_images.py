@@ -26,7 +26,11 @@ from ohho.optimize.toolchain import jetpack_from_tegra_release
 from ohho.registry import get_spec
 from ohho.robot import Robot
 from ohho.runtime import NativeRuntime
-from ohho.worker_images.dockerfiles import dockerfile_path, render_dockerfile
+from ohho.worker_images.dockerfiles import (
+    dockerfile_path,
+    render_dockerfile,
+    tegra_release_line,
+)
 from ohho.worker_images.errors import WorkerImageError
 from ohho.worker_images.matrix import (
     SCHEMA_ID,
@@ -193,6 +197,25 @@ class DockerfileTest(unittest.TestCase):
         self.assertIn("nvcr.io/nvidia/l4t-base:r36.2.0", jetson)
         cuda = render_dockerfile("cuda")
         self.assertIn("tensorrt==10.0.1", cuda)
+
+    def test_jetson_variant_defines_the_l4t_release_verify_reads(self) -> None:
+        row = get_variant("jetson")
+        self.assertEqual(row.cuda_identity, "jetpack")
+        self.assertTrue(row.l4t)
+        line = tegra_release_line(row.l4t or "")
+        parsed = jetpack_from_tegra_release(line)
+        self.assertEqual(parsed, f"R{row.l4t}")
+        report = verify_worker(probe=_probe("jetson", l4t=parsed))
+        self.assertEqual(report.probed["l4t"], row.l4t)
+        rendered = render_dockerfile("jetson")
+        self.assertIn(f"OHHO_WORKER_L4T={row.l4t}", rendered)
+        self.assertIn("/etc/nv_tegra_release", rendered)
+        self.assertIn(line, rendered)
+        self.assertIn("2>/dev/null", rendered)
+        for name in ("cpu", "cuda"):
+            self.assertNotIn("nv_tegra_release", render_dockerfile(name))
+        with self.assertRaises(WorkerImageError):
+            tegra_release_line("not-a-release")
 
 
 class WorkflowTest(unittest.TestCase):
