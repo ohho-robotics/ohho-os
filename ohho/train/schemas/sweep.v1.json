@@ -12,7 +12,7 @@
       "type": "integer",
       "minimum": 0,
       "default": 0,
-      "description": "Seed for random, tpe, bayesian, and multi. Grid order does not use the seed."
+      "description": "Sweep seed. It derives the sampler seed and each trial's training seed. Grid order does not use it. random, tpe, bayesian, and multi draw proposals from the derived sampler seed."
     },
     "strategy": {
       "enum": ["grid", "random", "tpe", "bayesian", "multi"],
