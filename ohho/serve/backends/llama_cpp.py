@@ -26,6 +26,7 @@ from .cmdline import (
     semver_from_text,
 )
 from .errors import ServingBackendError
+from .sweep_support import launch_args
 
 _CACHE = {
     "fp16": "f16",
@@ -86,6 +87,7 @@ class LlamaCppBackend(ServingBackend):
         if threads is not None:
             command.extend(["--threads", str(threads)])
         command.extend(_cache_args(precision))
+        command.extend(launch_args(self.name, config))
         command.extend(extra_args(config))
         return LaunchPlan(
             commands=(tuple(command),),

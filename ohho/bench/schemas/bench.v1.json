@@ -367,7 +367,7 @@
     },
     "llm": {
       "title": "LlmBench",
-      "description": "LLM serving measurements (ohho.bench.llm/v1). Optional on the parent ohho.bench/v1 result. Required fields are the primary point: time to first token, inter-token latency, token throughput, and request throughput at one concurrency. Optional tpot, points, and precisions record a generate-mode sweep.",
+      "description": "LLM serving measurements (ohho.bench.llm/v1). Optional on the parent ohho.bench/v1 result. Required fields are the primary point: time to first token, inter-token latency, token throughput, and request throughput at one concurrency. Optional tpot, points, and precisions record a generate-mode sweep. Optional sweep, pareto, recommendation, recommendations, and skipped record an llm --sweep run.",
       "type": "object",
       "additionalProperties": true,
       "required": [
@@ -446,13 +446,30 @@
         "agreement": {"$ref": "#/$defs/metric"},
         "points": {
           "type": "array",
-          "description": "One row per precision, prompt length, image size, and concurrency.",
+          "description": "One row per precision, prompt length, image size, and concurrency. An llm --sweep run stores one row per measured cell.",
           "items": {"$ref": "#/$defs/llm_point"}
         },
         "precisions": {
           "type": "array",
           "description": "Precision comparison at the primary prompt, image size, and concurrency.",
           "items": {"$ref": "#/$defs/llm_precision"}
+        },
+        "sweep": {"$ref": "#/$defs/llm_sweep"},
+        "pareto": {
+          "type": "array",
+          "description": "Non-dominated cells: lower p95 TTFT and higher tokens/s, compared within one workload.",
+          "items": {"$ref": "#/$defs/llm_pareto_point"}
+        },
+        "recommendation": {"$ref": "#/$defs/llm_recommendation"},
+        "recommendations": {
+          "type": "array",
+          "description": "Best throughput under the TTFT target, one row per workload.",
+          "items": {"$ref": "#/$defs/llm_recommendation"}
+        },
+        "skipped": {
+          "type": "array",
+          "description": "Sweep options the backend did not run, each with a reason. A skip is not a failed run.",
+          "items": {"$ref": "#/$defs/llm_skip"}
         }
       }
     },
@@ -488,7 +505,13 @@
         "output_tokens": {"type": "integer", "minimum": 0},
         "peak_vram_mb": {"type": "number", "minimum": 0},
         "vram_source": {"type": "string", "minLength": 1},
-        "agreement": {"$ref": "#/$defs/metric"}
+        "agreement": {"$ref": "#/$defs/metric"},
+        "workload": {"type": "string", "minLength": 1},
+        "prefix_cache": {"type": "boolean"},
+        "max_batch_tokens": {"type": "integer", "minimum": 1},
+        "chunked_prefill": {"type": "boolean"},
+        "speculative_decoding": {"type": "boolean"},
+        "pareto": {"type": "boolean"}
       }
     },
     "llm_precision": {
@@ -517,6 +540,95 @@
         "concurrency": {"type": "integer", "minimum": 1},
         "prompt_tokens": {"type": "integer", "minimum": 0},
         "image_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "llm_sweep": {
+      "title": "LlmSweep",
+      "description": "Batching, prefix-cache, chunked-prefill, and speculative-decoding grid. engine_launched is false when this command did not start an engine.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["workloads", "cells", "timing_source", "engine_launched"],
+      "properties": {
+        "workloads": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "cells": {"type": "integer", "minimum": 0},
+        "timing_source": {"type": "string", "minLength": 1},
+        "engine_launched": {"type": "boolean"},
+        "note": {"type": "string", "minLength": 1},
+        "primary": {"type": "string", "minLength": 1},
+        "chart": {"type": "string", "minLength": 1},
+        "concurrencies": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1}
+        },
+        "max_batch_tokens": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1}
+        },
+        "prefix_cache": {
+          "type": "array",
+          "items": {"type": "boolean"}
+        },
+        "chunked_prefill": {
+          "type": "array",
+          "items": {"type": "boolean"}
+        },
+        "speculative_decoding": {
+          "type": "array",
+          "items": {"type": "boolean"}
+        }
+      }
+    },
+    "llm_pareto_point": {
+      "title": "LlmParetoPoint",
+      "description": "One non-dominated cell: p95 time to first token against tokens/s.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["workload", "ttft_p95_ms", "tokens_per_s"],
+      "properties": {
+        "workload": {"type": "string", "minLength": 1},
+        "concurrency": {"type": "integer", "minimum": 1},
+        "ttft_p95_ms": {"type": "number", "minimum": 0},
+        "tokens_per_s": {"type": "number", "minimum": 0},
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "image_tokens": {"type": "integer", "minimum": 0},
+        "max_batch_tokens": {"type": "integer", "minimum": 1},
+        "prefix_cache": {"type": "boolean"},
+        "chunked_prefill": {"type": "boolean"},
+        "speculative_decoding": {"type": "boolean"}
+      }
+    },
+    "llm_recommendation": {
+      "title": "LlmRecommendation",
+      "description": "The configuration at or under a p95 TTFT target with the highest tokens/s. met is false when no cell qualifies.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["target_p95_ttft_ms", "met", "workload", "reason"],
+      "properties": {
+        "target_p95_ttft_ms": {"type": "number", "minimum": 0},
+        "met": {"type": "boolean"},
+        "workload": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "concurrency": {"type": "integer", "minimum": 1},
+        "max_batch_tokens": {"type": "integer", "minimum": 1},
+        "prefix_cache": {"type": "boolean"},
+        "chunked_prefill": {"type": "boolean"},
+        "speculative_decoding": {"type": "boolean"},
+        "ttft_p95_ms": {"type": "number", "minimum": 0},
+        "tokens_per_s": {"type": "number", "minimum": 0}
+      }
+    },
+    "llm_skip": {
+      "title": "LlmSkip",
+      "description": "One sweep option that was not measured, with the reason. A skip does not fail the run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["option", "reason"],
+      "properties": {
+        "option": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
       }
     },
     "pipeline": {

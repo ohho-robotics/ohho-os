@@ -30,8 +30,12 @@ __all__ = [
     "GateCheck",
     "Gates",
     "BatchResult",
+    "LlmParetoPoint",
     "LlmPoint",
     "LlmPrecision",
+    "LlmRecommendation",
+    "LlmSkip",
+    "LlmSweep",
     "LlmBench",
     "PipelineBench",
     "BenchResult",
@@ -303,6 +307,27 @@ class BatchResult(TypedDict):
     throughput: Throughput
 
 
+class _LlmParetoPointRequired(TypedDict):
+    workload: str
+    ttft_p95_ms: float
+    tokens_per_s: float
+
+
+class LlmParetoPoint(_LlmParetoPointRequired, total=False):
+    """One non-dominated cell: p95 time to first token against tokens/s.
+
+    Additional properties are allowed.
+    """
+
+    concurrency: int
+    prompt_tokens: int
+    image_tokens: int
+    max_batch_tokens: int
+    prefix_cache: bool
+    chunked_prefill: bool
+    speculative_decoding: bool
+
+
 class _LlmPointRequired(TypedDict):
     concurrency: int
     prompt_tokens: int
@@ -329,6 +354,12 @@ class LlmPoint(_LlmPointRequired, total=False):
     peak_vram_mb: float
     vram_source: str
     agreement: Metric
+    workload: str
+    prefix_cache: bool
+    max_batch_tokens: int
+    chunked_prefill: bool
+    speculative_decoding: bool
+    pareto: bool
 
 
 class _LlmPrecisionRequired(TypedDict):
@@ -354,6 +385,64 @@ class LlmPrecision(_LlmPrecisionRequired, total=False):
     image_tokens: int
 
 
+class _LlmRecommendationRequired(TypedDict):
+    target_p95_ttft_ms: float
+    met: bool
+    workload: str
+    reason: str
+
+
+class LlmRecommendation(_LlmRecommendationRequired, total=False):
+    """The configuration at or under a p95 TTFT target with the highest tokens/s.
+    met is false when no cell qualifies.
+
+    Additional properties are allowed.
+    """
+
+    concurrency: int
+    max_batch_tokens: int
+    prefix_cache: bool
+    chunked_prefill: bool
+    speculative_decoding: bool
+    ttft_p95_ms: float
+    tokens_per_s: float
+
+
+class LlmSkip(TypedDict):
+    """One sweep option that was not measured, with the reason. A skip does not
+    fail the run.
+
+    Additional properties are allowed.
+    """
+
+    option: str
+    reason: str
+
+
+class _LlmSweepRequired(TypedDict):
+    workloads: list[str]
+    cells: int
+    timing_source: str
+    engine_launched: bool
+
+
+class LlmSweep(_LlmSweepRequired, total=False):
+    """Batching, prefix-cache, chunked-prefill, and speculative-decoding grid.
+    engine_launched is false when this command did not start an engine.
+
+    Additional properties are allowed.
+    """
+
+    note: str
+    primary: str
+    chart: str
+    concurrencies: list[int]
+    max_batch_tokens: list[int]
+    prefix_cache: list[bool]
+    chunked_prefill: list[bool]
+    speculative_decoding: list[bool]
+
+
 class _LlmBenchRequired(TypedDict):
     schema: Literal["ohho.bench.llm/v1"]
     backend: str
@@ -369,7 +458,8 @@ class LlmBench(_LlmBenchRequired, total=False):
     ohho.bench/v1 result. Required fields are the primary point: time to first
     token, inter-token latency, token throughput, and request throughput at one
     concurrency. Optional tpot, points, and precisions record a generate-mode
-    sweep.
+    sweep. Optional sweep, pareto, recommendation, recommendations, and skipped
+    record an llm --sweep run.
 
     Additional properties are allowed.
     """
@@ -393,6 +483,11 @@ class LlmBench(_LlmBenchRequired, total=False):
     agreement: Metric
     points: list[LlmPoint]
     precisions: list[LlmPrecision]
+    sweep: LlmSweep
+    pareto: list[LlmParetoPoint]
+    recommendation: LlmRecommendation
+    recommendations: list[LlmRecommendation]
+    skipped: list[LlmSkip]
 
 
 class _PipelineBenchRequired(TypedDict):
