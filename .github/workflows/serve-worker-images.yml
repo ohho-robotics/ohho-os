@@ -57,7 +57,8 @@ jobs:
         id: tag
         run: |
           set -euo pipefail
-          tag=$(python -c 'import json,sys; d=json.load(open("ohho/worker_images/worker_matrix.json")); v=sys.argv[1]; print(next(i["tag"] for i in d["variants"] if i["variant"]==v))' "${{ matrix.variant }}")
+          # Tag is repository:variant-version. The matrix does not store a tag field.
+          tag=$(python -c 'import json,sys; d=json.load(open("ohho/worker_images/worker_matrix.json")); v=sys.argv[1]; row=next(i for i in d["variants"] if i["variant"]==v); print(d["repository"] + ":" + row["variant"] + "-" + d["version"])' "${{ matrix.variant }}")
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Build worker image

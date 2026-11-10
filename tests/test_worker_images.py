@@ -229,6 +229,44 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(item["signature"], f"{item['variant']}.image.sig.bundle")
             self.assertEqual(item["job_result"], "worker-job-result.json")
 
+    def test_resolve_step_reads_fields_present_on_every_variant(self) -> None:
+        text = (ROOT / ".github" / "workflows" / "serve-worker-images.yml").read_text(
+            encoding="utf-8"
+        )
+        scripts = re.findall(r"python -c '([^']+)'", text)
+        matrix_scripts = [item for item in scripts if "worker_matrix.json" in item]
+        self.assertEqual(len(matrix_scripts), 1)
+        script = matrix_scripts[0]
+        document = json.loads(matrix_text())
+        row_keys = set(re.findall(r'(?:i|row)\["([^"]+)"\]', script))
+        row_keys.update(re.findall(r"(?:i|row)\['([^']+)'\]", script))
+        doc_keys = set(re.findall(r'd\["([^"]+)"\]', script))
+        doc_keys.update(re.findall(r"d\['([^']+)'\]", script))
+        self.assertIn("variant", row_keys)
+        for key in doc_keys:
+            self.assertIn(key, document)
+        rows = document["variants"]
+        self.assertEqual(
+            [item["variant"] for item in rows],
+            [row.variant for row in variants()],
+        )
+        for item in rows:
+            for key in row_keys:
+                self.assertIn(key, item)
+            completed = subprocess.run(
+                [sys.executable, "-c", script, item["variant"]],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            expected = (
+                f"{document['repository']}:{item['variant']}-{document['version']}"
+            )
+            self.assertEqual(completed.stdout.strip(), expected)
+            self.assertEqual(completed.stdout.strip(), get_variant(item["variant"]).tag)
+
 
 class VerifyTest(unittest.TestCase):
     def test_platform_images_pass_on_their_arch(self) -> None:
