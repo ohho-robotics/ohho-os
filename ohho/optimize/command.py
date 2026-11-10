@@ -9,6 +9,7 @@ from typing import Any
 
 from ohho.optimize.errors import OptimizeError
 from ohho.optimize.plan import OptimizeRequest
+from ohho.parity.errors import ParityError, ParityFailed
 
 
 def register_optimize(subparsers: Any) -> None:
@@ -29,7 +30,11 @@ def register_optimize(subparsers: Any) -> None:
             "--calib-max-images 32 --calib-cache build/int8.cache --out build/int8\n"
             "\n"
             "TensorRT, the CUDA execution provider, AWQ, GPTQ, bitsandbytes, "
-            "and FP8 fail fast when they are not installed. That is a GPU follow-up."
+            "and FP8 fail fast when they are not installed. That is a GPU follow-up.\n"
+            "\n"
+            "The parity gate runs after the export. A mean absolute difference "
+            "above 0.05 refuses to publish unless --allow-parity-fail is set. "
+            "That flag is recorded in the manifest."
         ),
     )
     parser.add_argument("--model", required=True, help="checkpoint path or registry id")
@@ -89,6 +94,38 @@ def register_optimize(subparsers: Any) -> None:
     )
     parser.add_argument("--out", required=True, help="output directory")
     parser.add_argument(
+        "--allow-parity-fail",
+        action="store_true",
+        help="publish even when the parity gate fails; recorded in the manifest",
+    )
+    parser.add_argument(
+        "--parity-inputs",
+        default="random",
+        help="parity inputs: random, a LeRobot dataset, or recorded",
+    )
+    parser.add_argument(
+        "--parity-n", type=int, default=256, help="parity sample count (default 256)"
+    )
+    parser.add_argument(
+        "--parity-seed", type=int, default=0, help="seed for parity inputs"
+    )
+    parser.add_argument(
+        "--parity-mean-abs",
+        type=float,
+        default=None,
+        help="override the parity mean absolute difference limit (default 0.05)",
+    )
+    parser.add_argument(
+        "--parity-thresholds",
+        default=None,
+        help="JSON file of per-family and per-target parity limits",
+    )
+    parser.add_argument(
+        "--parity-family",
+        default=None,
+        help="model family for the parity gate (default: the model kind)",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="print the manifest as JSON"
     )
     parser.set_defaults(func=run_optimize)
@@ -113,11 +150,30 @@ def run_optimize(args: argparse.Namespace) -> int:
         max_batch=args.max_batch,
         dynamic_batch=bool(args.dynamic_batch),
         submodule=args.submodule,
+        allow_parity_fail=bool(args.allow_parity_fail),
+        parity_inputs=args.parity_inputs,
+        parity_n=args.parity_n,
+        parity_seed=args.parity_seed,
+        parity_mean_abs=args.parity_mean_abs,
+        parity_thresholds=args.parity_thresholds,
+        parity_family=args.parity_family,
     )
     try:
         from ohho.optimize.engine import optimize
 
         document = optimize(request)
+    except ParityFailed as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc), "parity": exc.report}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except ParityError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
     except OptimizeError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}))
@@ -132,5 +188,7 @@ def run_optimize(args: argparse.Namespace) -> int:
     print(f"  provider: {document['execution_provider']}")
     for item in document["outputs"]:
         print(f"  {item['role']}: {item['path']}")
+    parity = document.get("parity") or {}
+    print(f"  parity: {parity.get('result', 'unknown')}")
     print("  manifest: manifest.json")
     return 0

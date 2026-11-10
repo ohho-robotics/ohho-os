@@ -84,6 +84,46 @@ def render_markdown(document: dict[str, Any]) -> str:
                 max=_num(stage.get("max", 0)),
             )
         )
+    llm = document.get("llm")
+    if isinstance(llm, dict) and isinstance(llm.get("points"), list) and llm["points"]:
+        lines.append("")
+        lines.append("### Generate")
+        lines.append("")
+        lines.append("| Precision | Conc | Prompt | TTFT p95 | TPOT p95 | tokens/s |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        for point in llm["points"]:
+            lines.append(
+                "| {precision} | {concurrency} | {prompt} | {ttft} | {tpot} | {rate} |".format(
+                    precision=_cell(point.get("precision", "")),
+                    concurrency=point.get("concurrency", ""),
+                    prompt=point.get("prompt_tokens", ""),
+                    ttft=_num(point.get("ttft", {}).get("p95", 0)),
+                    tpot=_num(point.get("tpot", {}).get("p95", 0)),
+                    rate=_num(point.get("tokens_per_s", 0)),
+                )
+            )
+    pipeline = document.get("pipeline")
+    if isinstance(pipeline, dict):
+        lines.append("")
+        lines.append("### Pipeline")
+        lines.append("")
+        lines.append("| Field | Value |")
+        lines.append("| --- | --- |")
+        lines.append(f"| World | {_cell(pipeline.get('world', ''))} |")
+        lines.append(f"| Source | {_cell(pipeline.get('source', ''))} |")
+        lines.append(f"| Device | {_cell(pipeline.get('device', ''))} |")
+        lines.append(f"| Target Hz | {_num(pipeline.get('target_hz', 0))} |")
+        lines.append(f"| Achieved Hz | {_num(pipeline.get('achieved_hz', 0))} |")
+        lines.append(f"| Dropped frames | {pipeline.get('dropped_frames', '')} |")
+        sustained = "yes" if pipeline.get("rate_sustained") else "no"
+        lines.append(f"| Rate sustained | {sustained} |")
+        lines.append(f"| Jitter ms | {_num(pipeline.get('jitter_ms', 0))} |")
+        lines.append(
+            f"| Interval jitter ms | {_num(pipeline.get('interval_jitter_ms', 0))} |"
+        )
+        lines.append(
+            f"| Live robot | {'yes' if pipeline.get('live_robot') else 'no'} |"
+        )
     batches = document.get("batches")
     if isinstance(batches, list) and batches:
         lines.append("")
@@ -108,6 +148,12 @@ def render_markdown(document: dict[str, Any]) -> str:
         lines.append(f"| peak memory MiB | {_num(telemetry['memory_mb_max'])} |")
     lines.append(f"| GPU util % | {_optional(telemetry.get('gpu_util_percent'))} |")
     lines.append(f"| GPU power W | {_optional(telemetry.get('gpu_power_w'))} |")
+    sensors = telemetry.get("sensors")
+    if isinstance(sensors, dict):
+        lines.extend(_sensor_rows(sensors))
+    sustained = document.get("sustained")
+    if isinstance(sustained, dict):
+        lines.extend(_sustained_rows(sustained))
     gates = document.get("gates")
     if isinstance(gates, dict):
         lines.append("")
@@ -179,12 +225,43 @@ def render_prometheus(document: dict[str, Any]) -> str:
             f'{{target="{profile}",workload="{workload}"}} '
             f"{float(document['telemetry']['memory_mb_max'])}"
         )
+    sensors = document.get("telemetry", {}).get("sensors")
+    if isinstance(sensors, dict):
+        for name, key in (
+            ("ohho_bench_power_w_mean", "power_w_mean"),
+            ("ohho_bench_power_w_peak", "power_w_peak"),
+            ("ohho_bench_energy_mj_per_inference", "energy_per_inference_mj"),
+            ("ohho_bench_temperature_c_max", "temperature_c_max"),
+        ):
+            value = sensors.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            lines.append(
+                f'{name}{{target="{profile}",workload="{workload}"}} {float(value)}'
+            )
     gates = document.get("gates")
     if isinstance(gates, dict):
         lines.append(
             "ohho_bench_gate_passed"
             f'{{target="{profile}",workload="{workload}"}} '
             f"{1 if gates.get('passed') else 0}"
+        )
+    pipeline = document.get("pipeline")
+    if isinstance(pipeline, dict):
+        lines.append(
+            "ohho_bench_pipeline_dropped_frames"
+            f'{{target="{profile}",workload="{workload}"}} '
+            f"{int(pipeline.get('dropped_frames', 0))}"
+        )
+        lines.append(
+            "ohho_bench_pipeline_rate_sustained"
+            f'{{target="{profile}",workload="{workload}"}} '
+            f"{1 if pipeline.get('rate_sustained') else 0}"
+        )
+        lines.append(
+            "ohho_bench_pipeline_jitter_ms"
+            f'{{target="{profile}",workload="{workload}"}} '
+            f"{float(pipeline.get('jitter_ms', 0))}"
         )
     lines.append("")
     return "\n".join(lines)
@@ -259,6 +336,50 @@ def _load_wandb() -> Any:
     import wandb
 
     return wandb
+
+
+def _sensor_rows(sensors: dict[str, Any]) -> list[str]:
+    rows = [
+        ("power mean W", sensors.get("power_w_mean")),
+        ("power peak W", sensors.get("power_w_peak")),
+        ("energy mJ/inference", sensors.get("energy_per_inference_mj")),
+        ("device memory MiB", sensors.get("device_memory_mb_peak")),
+        ("host memory MiB", sensors.get("host_memory_mb_peak")),
+        ("max temperature C", sensors.get("temperature_c_max")),
+    ]
+    lines = [f"| {label} | {_optional(value)} |" for label, value in rows]
+    throttled = "yes" if sensors.get("throttling_flagged") else "no"
+    lines.append(f"| throttling | {throttled} |")
+    reason = sensors.get("reason")
+    if isinstance(reason, str) and reason:
+        lines.append(f"| sensor note | {_cell(reason)} |")
+    return lines
+
+
+def _sustained_rows(sustained: dict[str, Any]) -> list[str]:
+    lines = [
+        "",
+        "### Sustained",
+        "",
+        "| Window | t0 s | t1 s | p95 ms | samples |",
+        "| ---: | ---: | ---: | ---: | ---: |",
+    ]
+    windows = sustained.get("windows")
+    if isinstance(windows, list):
+        for window in windows:
+            if not isinstance(window, dict):
+                continue
+            lines.append(
+                f"| {window.get('index', '')} | {_num(window.get('t0_s', 0))} "
+                f"| {_num(window.get('t1_s', 0))} | {_num(window.get('p95_ms', 0))} "
+                f"| {window.get('samples', '')} |"
+            )
+    lines.append("")
+    flagged = "yes" if sustained.get("throttling_flagged") else "no"
+    lines.append(
+        f"p95 drift: {_num(sustained.get('p95_drift_ms', 0))} ms. Throttling: {flagged}."
+    )
+    return lines
 
 
 def _num(value: object) -> str:

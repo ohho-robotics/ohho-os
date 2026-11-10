@@ -359,6 +359,7 @@ class TestImportAndSchema(unittest.TestCase):
             "--out",
             "--json",
             "--submodule",
+            "--allow-parity-fail",
         ):
             self.assertIn(flag, text)
 
@@ -905,11 +906,13 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
         graph = helper.make_graph(
             [helper.make_node("Gemm", ["input", "W"], ["output"])],
             "gemm",
-            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2])],
-            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 2])],
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 2])],
+            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 2])],
             [weight],
         )
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+        model = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
+        )
         rewritten = insert_qdq(model.SerializeToString(), 0.02)
         parsed = onnx.load_from_string(rewritten)
         ops = {node.op_type for node in parsed.graph.node}
@@ -929,11 +932,13 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
         graph = helper.make_graph(
             [helper.make_node("Gemm", ["input", "W"], ["output"])],
             "gemm",
-            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 2])],
-            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 2])],
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 2])],
+            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 2])],
             [weight],
         )
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+        model = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
+        )
         trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 2))
         trt.__version__ = "10.2.0"
         trt.NetworkDefinitionCreationFlag = SimpleNamespace(
@@ -991,15 +996,31 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
             self.assertIsNone(trt.last_config.int8_calibrator)
 
     def test_qdq_onnx_engine_does_not_attach_a_calibrator(self) -> None:
-        trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 4))
+        from onnx import TensorProto, helper
+
+        trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 2))
         trt.__version__ = "10.2.0"
         trt.NetworkDefinitionCreationFlag = SimpleNamespace(
             EXPLICIT_BATCH=0, STRONGLY_TYPED=1
         )
+        weight = helper.make_tensor(
+            "W", TensorProto.FLOAT, [2, 2], [1.0, 0.0, 0.0, 1.0]
+        )
+        graph = helper.make_graph(
+            [helper.make_node("Gemm", ["input", "W"], ["output"])],
+            "gemm",
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 2])],
+            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 2])],
+            [weight],
+        )
+        model = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
+        )
+        qdq_bytes = insert_qdq(model.SerializeToString(), 1.0)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             onnx = root / "model.onnx"
-            onnx.write_bytes(b"QuantizeLinear DequantizeLinear")
+            onnx.write_bytes(qdq_bytes)
             document = optimize(
                 _request(
                     model=str(onnx),

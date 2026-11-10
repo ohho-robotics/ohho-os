@@ -41,6 +41,12 @@ class PerfClock:
     def now(self) -> float:
         return time.perf_counter()
 
+    def sleep_until(self, target: float) -> None:
+        """Sleep until ``perf_counter`` reaches ``target``. A past target returns."""
+        delay = float(target) - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+
     def measure(self, runner: Any, batch: int) -> dict[str, float]:
         return _stamp(runner, batch, self.now)
 
@@ -66,6 +72,12 @@ class VirtualClock:
             raise ValueError("virtual clock cannot move backwards")
         self._seconds += float(seconds)
 
+    def sleep_until(self, target: float) -> None:
+        """Advance to ``target`` without sleeping. A past target returns."""
+        delay = float(target) - self._seconds
+        if delay > 0:
+            self.advance(delay)
+
     def measure(self, runner: Any, batch: int) -> dict[str, float]:
         return _stamp(runner, batch, self.now)
 
@@ -84,6 +96,10 @@ class CudaEventClock:
         if cuda is None:
             cuda = _load_torch_cuda()
         self._cuda = cuda
+
+    def now(self) -> float:
+        """Wall time for a sustained window. Stage spans stay on CUDA events."""
+        return time.perf_counter()
 
     def measure(self, runner: Any, batch: int) -> dict[str, float]:
         prepared, preprocess = _cpu_span(lambda: runner.preprocess(batch))

@@ -57,12 +57,17 @@ class OptimizeBackends:
     ``trt_module`` replaces the TensorRT import. ``available_providers``
     replaces the ONNX Runtime provider probe. ``cuda`` overrides the CUDA
     device probe. ``None`` means probe the real machine.
+
+    ``before_parity`` is called with the output directory after the export
+    and before the parity gate. Tests use it to swap the artifact. Production
+    leaves it empty.
     """
 
     trt_module: Any = None
     ort_module: Any = None
     available_providers: tuple[str, ...] | None = None
     cuda: bool | None = None
+    before_parity: Any = None
 
 
 def optimize(
@@ -137,6 +142,71 @@ def optimize(
         )
         session_providers = [str(item) for item in session.get_providers()]
 
+    return _gate_and_publish(
+        request,
+        plan,
+        loaded,
+        out,
+        outputs,
+        session_providers,
+        standins,
+        wrote_onnx=wrote_onnx,
+        quantization=quantization,
+    )
+
+
+def _gate_and_publish(
+    request: OptimizeRequest,
+    plan: OptimizePlan,
+    loaded,
+    out: Path,
+    outputs: list[dict[str, Any]],
+    session_providers: list[str],
+    standins: OptimizeBackends,
+    *,
+    wrote_onnx: bool,
+    quantization: str | None = None,
+) -> dict[str, Any]:
+    """Run the parity gate, then write the manifest or discard the export.
+
+    A failing report is not published unless ``allow_parity_fail`` is set.
+    The flag is stored on the manifest either way. TensorRT engines stay
+    unchecked; the ONNX or TorchScript file is what this process can execute.
+    """
+    import json
+
+    from ohho.parity.errors import ParityError, ParityFailed
+    from ohho.parity.gate import compare_export
+
+    try:
+        if standins.before_parity is not None:
+            standins.before_parity(out)
+            outputs = [
+                file_record(out / str(item["path"]), str(item["role"]), out)
+                for item in outputs
+            ]
+        report = compare_export(
+            out,
+            outputs,
+            reference=request.model,
+            inputs=request.parity_inputs,
+            n=request.parity_n,
+            seed=request.parity_seed,
+            family=request.parity_family,
+            target=plan.profile.id,
+            precision=plan.precision,
+            mean_abs=request.parity_mean_abs,
+            thresholds=request.parity_thresholds,
+            submodule=request.submodule,
+            record_dir=str(out / "parity-inputs"),
+        )
+    except (ParityError, OptimizeError):
+        _discard(out, outputs)
+        raise
+    report["allow_parity_fail"] = bool(request.allow_parity_fail)
+    if report["result"] != "pass" and not request.allow_parity_fail:
+        _discard(out, outputs)
+        raise ParityFailed(report)
     document = build_manifest(
         model={
             "ref": loaded.ref,
@@ -165,6 +235,7 @@ def optimize(
             "quantization": quantization,
             "opset": ONNX_OPSET if wrote_onnx else None,
             "submodule": request.submodule,
+            "allow_parity_fail": bool(request.allow_parity_fail),
         },
         inputs={
             "model": request.model,
@@ -182,13 +253,35 @@ def optimize(
             "calib_batch": request.calib_batch,
             "calib_max_images": request.calib_max_images,
             "submodule": request.submodule,
+            "allow_parity_fail": bool(request.allow_parity_fail),
         },
         outputs=outputs,
         session_providers=session_providers,
+        parity=report,
         versions=package_versions(),
+    )
+    (out / "parity.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
     write_manifest(out, document)
     return document
+
+
+def _discard(out: Path, outputs: list[dict[str, Any]]) -> None:
+    """Remove this run's outputs so a failed gate leaves nothing published."""
+    for item in outputs:
+        path = out / str(item.get("path", ""))
+        if path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    for name in ("manifest.json", "parity.json"):
+        path = out / name
+        if path.is_file():
+            path.unlink()
+    recorded = out / "parity-inputs"
+    if recorded.exists():
+        shutil.rmtree(recorded)
 
 
 def _assert_ready(plan: OptimizePlan, standins: OptimizeBackends) -> None:

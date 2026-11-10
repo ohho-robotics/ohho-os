@@ -17,6 +17,33 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **`ohho parity`** — numerical gate between a reference model and an optimized
+  artifact (`ohho.parity/v1`). Reports mean absolute difference, max absolute
+  difference, RMSE, and cosine similarity per output; action heads also report
+  per-joint and action-chunk error; classifiers and LLMs also report top-1
+  agreement and logit KL. The default fail is mean absolute difference above
+  0.05, configurable per model family and target. Inputs are seeded random, a
+  LeRobot dataset, or a sim-loop episode. `ohho optimize` runs the gate before
+  it writes `manifest.json` and exits 1 without publishing when the gate fails,
+  unless `--allow-parity-fail` is set (recorded in the manifest). Docs:
+  [`docs/serve/parity.md`](docs/serve/parity.md).
+- **Generate-mode bench** (OHH-436) — `ohho bench --mode generate` measures
+  TTFT, TPOT (mean, median, p95), end-to-end latency, and tokens/s for an
+  autoregressive workload (`llm`, `vlm`, `vla`). The default CPU stand-in
+  sweeps concurrency and prompt or image size and compares FP16 / BF16 with
+  bitsandbytes 4-bit, AWQ, and GPTQ (latency, weight memory, top-1
+  action-token agreement). `--slo ttft_p95<=...` and `--slo tpot_p95<=...`
+  gate the primary cell. Optional `transformers` and the vLLM, SGLang, and
+  TensorRT-LLM adapters are used only when selected and the target supports
+  them.
+- **LLM serving backends** (OHH-475) — `ServingBackend` adapters for vLLM,
+  SGLang, TensorRT-LLM (`trtllm-serve` or `tritonserver`), and llama.cpp.
+  Each builds a launch command and parses a version. The engines stay
+  external programs and are not base dependencies. A failed launch reports
+  the exit or the health timeout and stops the process tree. `ohho bench llm`
+  measures time to first token, inter-token latency, tokens/s, and request
+  throughput against an OpenAI-compatible stream and writes `ohho.bench/v1`
+  with an optional `llm` block (`ohho.bench.llm/v1`).
 - **`ohho optimize`** — ONNX opset 17 export (dynamic batch, submodule
   selection, ACT-style and MLP policies, TorchScript), TensorRT FP16/INT8/FP8
   builds with an entropy calibrator attached before the build, ONNX Runtime
@@ -42,6 +69,14 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   `bayesian`), and multi-objective TPE (`strategy: multi`). `SweepSampler`
   proposes trials from completed objectives, stores an
   `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep early stopping** — `early_stopping.rule` `asha` (successive
+  halving at rungs) and `median`, plus the existing `patience` rule.
+  `SweepRun.report` records an intermediate metric and `SweepRun.decide`
+  returns continue or stop. A stopped trial stays `pruned`, keeps its last
+  checkpoint and metrics, and is distinct from `failed`. Resume keeps that
+  status. A 32-trial synthetic ASHA benchmark uses under half the
+  trial-steps of the same sweep with no stopping rule.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
   tags (`python examples/serve/run_cpu.py`). A failed example fails the
