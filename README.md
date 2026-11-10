@@ -305,6 +305,20 @@ future v2 converter are in
 harness: latency stats, per-stage timing, an optional baseline comparison,
 and SLO / regression gates. See [`docs/serve/bench.md`](docs/serve/bench.md).
 
+`ohho bench launch --backend vllm --model <id> --dry-run` prints the engine
+command. `ohho bench llm --endpoint http://127.0.0.1:8000/v1 --model <id>
+--output result.json` measures a running OpenAI-compatible server (time to
+first token, inter-token latency, tokens/s, request throughput) and writes
+`ohho.bench/v1` with an optional `ohho.bench.llm/v1` block. vLLM, SGLang,
+TensorRT-LLM, and llama.cpp are external programs, not package dependencies.
+See [`docs/serve/llm-backends.md`](docs/serve/llm-backends.md).
+`ohho bench --mode generate --target x86-cpu` measures time to first token,
+time per output token, and tokens/s for an autoregressive model. The default
+backend is a CPU stand-in. It sweeps concurrency and prompt length, and it
+compares FP16 with 4-bit precisions (latency, weight memory, and top-1
+action-token agreement). `--slo ttft_p95<=50ms,tpot_p95<=20ms` gates the
+primary cell. See [`docs/serve/bench.md`](docs/serve/bench.md).
+
 Runnable Serve examples, with the hardware, runtime, and expected output for
 each one, are in [`examples/serve`](examples/serve/README.md). CPU examples
 run in CI and on release tags. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and

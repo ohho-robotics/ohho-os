@@ -30,6 +30,10 @@ __all__ = [
     "GateCheck",
     "Gates",
     "BatchResult",
+    "LlmPoint",
+    "LlmPrecision",
+    "LlmBench",
+    "PipelineBench",
     "BenchResult",
 ]
 
@@ -228,6 +232,7 @@ class Environment(_EnvironmentRequired, total=False):
     timing_note: str
     execution_provider: str
     driver: str
+    world: Literal["sim", "recorded", "hardware"]
 
 
 class _ComparisonMetricRequired(TypedDict):
@@ -298,6 +303,132 @@ class BatchResult(TypedDict):
     throughput: Throughput
 
 
+class _LlmPointRequired(TypedDict):
+    concurrency: int
+    prompt_tokens: int
+    image_tokens: int
+    precision: str
+    ttft: LatencyStats
+    tpot: LatencyStats
+    e2e: LatencyStats
+    tokens_per_s: float
+    tokens_per_request_s: float
+
+
+class LlmPoint(_LlmPointRequired, total=False):
+    """One generate-mode cell: latency, throughput, and optional memory and
+    agreement.
+
+    Additional properties are allowed.
+    """
+
+    image_size: int
+    requests_per_s: float
+    requests: int
+    output_tokens: int
+    peak_vram_mb: float
+    vram_source: str
+    agreement: Metric
+
+
+class _LlmPrecisionRequired(TypedDict):
+    precision: str
+    ttft: LatencyStats
+    tpot: LatencyStats
+    e2e: LatencyStats
+    tokens_per_s: float
+    tokens_per_request_s: float
+
+
+class LlmPrecision(_LlmPrecisionRequired, total=False):
+    """One precision compared at the primary prompt, image size, and concurrency.
+
+    Additional properties are allowed.
+    """
+
+    peak_vram_mb: float
+    vram_source: str
+    agreement: Metric
+    concurrency: int
+    prompt_tokens: int
+    image_tokens: int
+
+
+class _LlmBenchRequired(TypedDict):
+    schema: Literal["ohho.bench.llm/v1"]
+    backend: str
+    concurrency: int
+    ttft: LatencyStats
+    inter_token: LatencyStats
+    tokens_per_s: float
+    requests_per_s: float
+
+
+class LlmBench(_LlmBenchRequired, total=False):
+    """LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
+    ohho.bench/v1 result. Required fields are the primary point: time to first
+    token, inter-token latency, token throughput, and request throughput at one
+    concurrency. Optional tpot, points, and precisions record a generate-mode
+    sweep.
+
+    Additional properties are allowed.
+    """
+
+    backend_version: str
+    precision: str
+    model: str
+    model_sha_of: str
+    prompt: str
+    output_tokens: int
+    requests: int
+    requests_ok: int
+    workload: str
+    tpot: LatencyStats
+    e2e: LatencyStats
+    tokens_per_request_s: float
+    prompt_tokens: int
+    image_tokens: int
+    peak_vram_mb: float
+    vram_source: str
+    agreement: Metric
+    points: list[LlmPoint]
+    precisions: list[LlmPrecision]
+
+
+class _PipelineBenchRequired(TypedDict):
+    version: Literal["ohho.bench.pipeline/v1"]
+    world: Literal["sim", "recorded", "hardware"]
+    source: str
+    target_hz: float
+    achieved_hz: float
+    rate_sustained: bool
+    dropped_frames: int
+    frames_presented: int
+    frames_published: int
+    jitter_ms: float
+    device: Literal["cpu", "cuda"]
+    live_robot: bool
+
+
+class PipelineBench(_PipelineBenchRequired, total=False):
+    """End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on
+    ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline
+    version plus a converter.
+
+    Additional properties are allowed.
+    """
+
+    interval_jitter_ms: float
+    control_period_ms: float
+    sink: str
+    gpu_follow_up: list[str]
+    gpu_note: str
+    policy: str
+    episode: int
+    frame_origin: str
+    recording: str
+
+
 class _BenchResultRequired(TypedDict):
     schema: Literal["ohho.bench/v1"]
     run: BenchRun
@@ -319,3 +450,5 @@ class BenchResult(_BenchResultRequired, total=False):
     comparison: Comparison
     gates: Gates
     batches: list[BatchResult]
+    llm: LlmBench
+    pipeline: PipelineBench

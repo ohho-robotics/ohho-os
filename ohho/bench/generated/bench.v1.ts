@@ -159,6 +159,7 @@ export interface Environment {
   timing_note?: string;
   execution_provider?: string;
   driver?: string;
+  world?: "sim" | "recorded" | "hardware";
 }
 
 /**
@@ -219,6 +220,116 @@ export interface BatchResult {
 }
 
 /**
+ * One generate-mode cell: latency, throughput, and optional memory and
+ * agreement.
+ * Additional properties are allowed.
+ */
+export interface LlmPoint {
+  concurrency: number;
+  prompt_tokens: number;
+  image_tokens: number;
+  image_size?: number;
+  precision: string;
+  ttft: LatencyStats;
+  tpot: LatencyStats;
+  e2e: LatencyStats;
+  tokens_per_s: number;
+  tokens_per_request_s: number;
+  requests_per_s?: number;
+  requests?: number;
+  output_tokens?: number;
+  peak_vram_mb?: number;
+  vram_source?: string;
+  agreement?: Metric;
+}
+
+/**
+ * One precision compared at the primary prompt, image size, and concurrency.
+ * Additional properties are allowed.
+ */
+export interface LlmPrecision {
+  precision: string;
+  ttft: LatencyStats;
+  tpot: LatencyStats;
+  e2e: LatencyStats;
+  tokens_per_s: number;
+  tokens_per_request_s: number;
+  peak_vram_mb?: number;
+  vram_source?: string;
+  agreement?: Metric;
+  concurrency?: number;
+  prompt_tokens?: number;
+  image_tokens?: number;
+}
+
+/**
+ * LLM serving measurements (ohho.bench.llm/v1). Optional on the parent
+ * ohho.bench/v1 result. Required fields are the primary point: time to first
+ * token, inter-token latency, token throughput, and request throughput at one
+ * concurrency. Optional tpot, points, and precisions record a generate-mode
+ * sweep.
+ * Additional properties are allowed.
+ */
+export interface LlmBench {
+  schema: "ohho.bench.llm/v1";
+  backend: string;
+  backend_version?: string;
+  precision?: string;
+  model?: string;
+  model_sha_of?: string;
+  prompt?: string;
+  concurrency: number;
+  ttft: LatencyStats;
+  inter_token: LatencyStats;
+  tokens_per_s: number;
+  requests_per_s: number;
+  output_tokens?: number;
+  requests?: number;
+  requests_ok?: number;
+  workload?: string;
+  tpot?: LatencyStats;
+  e2e?: LatencyStats;
+  tokens_per_request_s?: number;
+  prompt_tokens?: number;
+  image_tokens?: number;
+  peak_vram_mb?: number;
+  vram_source?: string;
+  agreement?: Metric;
+  points?: LlmPoint[];
+  precisions?: LlmPrecision[];
+}
+
+/**
+ * End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on
+ * ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline
+ * version plus a converter.
+ * Additional properties are allowed.
+ */
+export interface PipelineBench {
+  version: "ohho.bench.pipeline/v1";
+  world: "sim" | "recorded" | "hardware";
+  source: string;
+  target_hz: number;
+  achieved_hz: number;
+  rate_sustained: boolean;
+  dropped_frames: number;
+  frames_presented: number;
+  frames_published: number;
+  jitter_ms: number;
+  interval_jitter_ms?: number;
+  control_period_ms?: number;
+  sink?: string;
+  device: "cpu" | "cuda";
+  live_robot: boolean;
+  gpu_follow_up?: string[];
+  gpu_note?: string;
+  policy?: string;
+  episode?: number;
+  frame_origin?: string;
+  recording?: string;
+}
+
+/**
  * Serve benchmark result (ohho.bench/v1). Objects allow additional properties.
  * Removing, renaming, or retyping a field requires ohho.bench/v2 and a
  * converter.
@@ -235,4 +346,6 @@ export interface BenchResult {
   comparison?: Comparison;
   gates?: Gates;
   batches?: BatchResult[];
+  llm?: LlmBench;
+  pipeline?: PipelineBench;
 }

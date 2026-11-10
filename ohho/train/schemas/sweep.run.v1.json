@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.sweep.run.v1.json",
+  "title": "ohho.sweep.run/v1",
+  "description": "Persisted OhhO training sweep. sampler is ohho.sweep.sampler/v1. trials is the trial table. Each trial seed is the training seed derived from the sweep seed and the trial index. values null means the trial was proposed and not told. Restoring this document continues the sampler from the saved generator without repeating a trial index.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "sampler_seed", "sampler", "trials"],
+  "properties": {
+    "schema": {"const": "ohho.sweep.run/v1"},
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "sampler_seed": {"type": "integer", "minimum": 0},
+    "sampler": {"type": "object"},
+    "trials": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/trial"}
+    }
+  },
+  "$defs": {
+    "trial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "seed",
+        "overrides",
+        "sets",
+        "recipe",
+        "estimated_gpu_hours",
+        "values"
+      ],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Training seed derived from the sweep seed and this trial index."
+        },
+        "overrides": {"type": "object"},
+        "sets": {"type": "array", "items": {"type": "string"}},
+        "recipe": {"type": "object"},
+        "estimated_gpu_hours": {"type": "number", "minimum": 0},
+        "values": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": {"type": "number"}}
+          ]
+        }
+      }
+    }
+  }
+}
