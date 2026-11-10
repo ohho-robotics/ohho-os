@@ -97,6 +97,8 @@ ohho = [
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",
+  "serve/job/schema.json",
+  "serve/job/examples/*.yaml",
   "bench/schemas/*.json",
   "bench/examples/*.json",
   "eval/schemas/*.json",

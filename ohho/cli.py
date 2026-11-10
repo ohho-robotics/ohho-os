@@ -980,6 +980,12 @@ def _cmd_sweep(args) -> int:
         return 1
 
 
+def _cmd_job(args) -> int:
+    from .serve.job.command import main as job_command
+
+    return job_command(args)
+
+
 def _cmd_eval(args) -> int:
     from .eval import EvalError, EvalValidationError, run_eval
 
@@ -1642,6 +1648,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the plan as JSON",
     )
     plan.set_defaults(func=_cmd_sweep)
+
+    job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
+    job_sub = job.add_subparsers(dest="job_command", required=True)
+    for name, help_text in (
+        ("validate", "validate a job spec and record schema_version"),
+        ("run", "run a job spec locally"),
+    ):
+        jp = job_sub.add_parser(name, help=help_text)
+        jp.add_argument(
+            "spec",
+            metavar="SPEC",
+            help="path to a job spec (.yaml or .json)",
+        )
+        jp.add_argument(
+            "--json",
+            action="store_true",
+            help="print a JSON result on stdout",
+        )
+        jp.set_defaults(func=_cmd_job)
     ev = sub.add_parser(
         "eval",
         help="score a checkpoint on a Proof sim suite (ohho.eval/v1)",

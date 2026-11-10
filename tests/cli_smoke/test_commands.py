@@ -262,6 +262,24 @@ scenarios:
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertIn("overall_status", data)
 
+    def test_job_validate_and_run(self):
+        spec = (
+            Path(__file__).resolve().parents[2]
+            / "ohho"
+            / "serve"
+            / "job"
+            / "examples"
+            / "full.yaml"
+        )
+        code, out, err = _run_cli(["job", "validate", str(spec)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("schema_version: ohho.job/v1", out)
+        code, out, err = _run_cli(["job", "run", str(spec)])
+        self.assertEqual(code, 2, err + out)
+        self.assertIn("optimize is not available in this build", out)
+        self.assertIn("parity is not available in this build", out)
+        self.assertIn("bench is not available in this build", out)
+
     def test_sim_serve_not_built(self):
         for backend in ("isaac", "mujoco"):
             code, out, err = _run_cli(["sim-serve", "--backend", backend])

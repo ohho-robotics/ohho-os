@@ -24,6 +24,12 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   `when` matches. Constraints drop invalid combinations. The plan prints the
   trial count and estimated GPU-hours, computed from per-trial values in the
   spec. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
+  tags (`python examples/serve/run_cpu.py`). A failed example fails the
+  release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
+  W&B/Prometheus export are placeholders until those commands are on main,
+  and they do not publish benchmark numbers. GPU examples run nightly on a
+  self-hosted runner when one is online.
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
