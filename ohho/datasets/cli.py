@@ -12,6 +12,9 @@ from .hf_import import import_hf_dataset
 from .model import (
     Augmentation,
     AxisRange,
+    CameraToggle,
+    ColorJitter,
+    Crop,
     DatasetSpec,
     DatasetStats,
     DatasetVersionError,
@@ -19,6 +22,7 @@ from .model import (
     SourceQuery,
     Split,
 )
+from .split import SPLIT_STRATEGIES
 from .store import pin_version, resolve_dataset_version, version_stats
 
 
@@ -67,6 +71,19 @@ def add_dataset_parser(sub: Any) -> None:
     build.add_argument("--val-fraction", type=float, default=0.0)
     build.add_argument("--test-fraction", type=float, default=0.0)
     build.add_argument(
+        "--split-strategy",
+        choices=SPLIT_STRATEGIES,
+        default="episode",
+        help="group episodes by episode, session/day, task, or scene",
+    )
+    build.add_argument(
+        "--held-out-scene",
+        action="append",
+        default=None,
+        metavar="SCENE",
+        help="scene placed entirely in test (repeatable; strategy scene)",
+    )
+    build.add_argument(
         "--seed", type=int, default=0, help="split shuffle and noise seed"
     )
     build.add_argument("--action-scale", type=float, default=1.0)
@@ -77,6 +94,30 @@ def add_dataset_parser(sub: Any) -> None:
     build.add_argument("--state-noise", type=float, default=0.0)
     build.add_argument(
         "--copies", type=int, default=1, help="repeat the selected episodes"
+    )
+    build.add_argument("--crop-height", type=int, default=None)
+    build.add_argument("--crop-width", type=int, default=None)
+    build.add_argument("--resize-height", type=int, default=None)
+    build.add_argument("--resize-width", type=int, default=None)
+    build.add_argument("--brightness", type=float, default=0.0)
+    build.add_argument("--contrast", type=float, default=0.0)
+    build.add_argument("--saturation", type=float, default=0.0)
+    build.add_argument("--hue", type=float, default=0.0)
+    build.add_argument(
+        "--blur", type=float, default=0.0, help="Gaussian blur sigma in pixels"
+    )
+    build.add_argument(
+        "--temporal-stride",
+        type=int,
+        default=1,
+        help="train-time stride; keep every Nth frame (default: 1)",
+    )
+    build.add_argument(
+        "--camera-off",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="copy this camera through at train time (repeatable)",
     )
     build.add_argument(
         "--licence", default="unspecified", help="licence string stored on the version"
@@ -139,6 +180,14 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="print JSON on stdout")
 
 
+def _image_size(height: int | None, width: int | None, label: str) -> Crop | None:
+    if height is None and width is None:
+        return None
+    if height is None or width is None:
+        raise DatasetVersionError(f"{label} needs both height and width")
+    return Crop(height=height, width=width)
+
+
 def _build(args: argparse.Namespace) -> int:
     spec = DatasetSpec(
         source_query=SourceQuery(tuple(args.sources)),
@@ -154,6 +203,8 @@ def _build(args: argparse.Namespace) -> int:
             train=args.train_fraction,
             val=args.val_fraction,
             test=args.test_fraction,
+            strategy=args.split_strategy,
+            held_out_scenes=tuple(args.held_out_scene or ()),
         ),
         seed=args.seed,
         augmentation=Augmentation(
@@ -164,6 +215,20 @@ def _build(args: argparse.Namespace) -> int:
             action_noise=args.action_noise,
             state_noise=args.state_noise,
             copies=args.copies,
+            crop=_image_size(args.crop_height, args.crop_width, "crop"),
+            resize=_image_size(args.resize_height, args.resize_width, "resize"),
+            color_jitter=ColorJitter(
+                brightness=args.brightness,
+                contrast=args.contrast,
+                saturation=args.saturation,
+                hue=args.hue,
+            ),
+            blur=args.blur,
+            temporal_stride=args.temporal_stride,
+            cameras=tuple(
+                CameraToggle(name=name, enabled=False)
+                for name in (args.camera_off or ())
+            ),
         ),
         licence=args.licence,
     )

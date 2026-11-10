@@ -1,0 +1,19 @@
+schema: ohho.recipe/v1
+name: tiny-act-cpu
+family: act
+base_weights:
+  uri: local:act-init
+dataset:
+  path: datasets/sim-loop
+hyperparameters:
+  train_steps: 200
+  batch_size: 8
+  lr: 0.0001
+  chunk_size: 10
+  seed: 0
+precision: fp32
+device: cpu
+compression_hooks: []
+eval_hooks: []
+output:
+  dir: checkpoints/act

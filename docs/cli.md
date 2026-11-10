@@ -77,6 +77,12 @@ and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
 export are not in this tree; those examples are placeholders and do not print
 benchmark numbers.
 
+## Training recipes
+
+| Command | Description |
+|---------|-------------|
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+
 ## Simulation services
 
 | Command | Description |
@@ -92,9 +98,13 @@ benchmark numbers.
 
 `ohho dataset` builds an immutable, content-hashed LeRobot dataset from local
 episodes. The version record (query, filters, split, seed, augmentation,
-content hash, stats, licence) is stored under the version directory. Pin
-freezes that directory; a later edit allocates a new version id. Stats printed
-by `ohho dataset stats` are the block stored on the version.
+content hash, stats, licence) is stored under the version directory. The
+content hash covers the episode rows and the split and augmentation config.
+Pin freezes that directory; a later edit allocates a new version id. Stats
+printed by `ohho dataset stats` are the block stored on the version.
+`--split-strategy` groups episodes by episode, session/day, task, or scene.
+Image crop, colour jitter, blur, temporal stride, and per-camera toggles are
+stored for train time. See [`dataset-versions.md`](dataset-versions.md).
 
 | Command | Description |
 |---------|-------------|
