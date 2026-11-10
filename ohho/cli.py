@@ -1156,6 +1156,7 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+
 def _cmd_train(args) -> int:
     from .train.run_cli import execute
 
@@ -1278,6 +1279,7 @@ def _cmd_eval(args) -> int:
     if args.out:
         print(f"wrote {args.out}")
     return 0
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2017,7 +2019,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ev.set_defaults(func=_cmd_eval)
     add_dataset_parser(sub)
-
     from .bench.command import register_bench
 
     register_bench(sub)

@@ -2,8 +2,9 @@
 
 The JSON Schema, validator, and converter live in :mod:`ohho.bench.schema`.
 The harness times a five-stage runner and writes a document that validates
-against that schema. Import the harness from here so another package can
-call :func:`execute` without going through the CLI.
+against that schema. During the measured window it samples optional power,
+memory, and thermal sources. Import the harness from here so another package
+can call :func:`execute` without going through the CLI.
 
 ``execute_generate`` measures TTFT, TPOT, and tokens/s for an autoregressive
 model.
