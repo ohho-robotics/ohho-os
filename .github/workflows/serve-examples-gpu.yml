@@ -1,0 +1,48 @@
+name: Serve GPU examples
+
+# Nightly GPU examples. The probe job asks GitHub for an online self-hosted
+# runner labeled linux and gpu. When none is online, or the API refuses the
+# token, the GPU job is skipped. The example scripts do not call the network.
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    name: Look for a self-hosted GPU runner
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Probe runners
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python examples/serve/gpu_runner_probe.py
+
+  gpu:
+    name: GPU serve examples
+    needs: probe
+    if: needs.probe.outputs.available == 'true'
+    runs-on: [self-hosted, linux, gpu]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e .
+      - name: Run GPU serve examples
+        run: python examples/serve/run_gpu.py

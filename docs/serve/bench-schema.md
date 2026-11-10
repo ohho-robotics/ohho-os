@@ -189,3 +189,12 @@ python scripts/generate_bench_types.py --check
 
 `BENCH_SCHEMA_ID` in both outputs is the schema's `const`. The test suite
 runs `--check` and fails when the generated files drift.
+
+## Examples
+
+Runnable Serve examples are in
+[`examples/serve`](../../examples/serve/README.md). The CPU gate runs
+`ohho bench validate` on the schema fixtures shipped with this package. It
+does not treat those fixtures as measured results. The Jetson FP16 TensorRT
+example, the CPU ORT INT8 example, the vLLM bench, and the W&B / Prometheus
+export are placeholders until those commands are on main.

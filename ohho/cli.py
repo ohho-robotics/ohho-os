@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from . import __version__
@@ -15,6 +17,16 @@ from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .adapters.errors import AdapterUnavailable
 from .agent import Agent
+from .datasets.cli import add_dataset_parser
+from .config import (
+    ConfigError,
+    RobotProfile,
+    default_home,
+    format_resolved,
+    load_robot_profile,
+    resolve_profile_transport,
+    resolve_robot_id,
+)
 from .hardware import resolve_device
 from .plugins import plugin_environment_lines, plugin_text, uri_is_hardware
 from .registry import UnknownRobot, list_specs
@@ -23,10 +35,114 @@ from .runtime import available_runtimes
 from .safety import SafetyGate
 from .sim_serve import DEFAULT_PORT
 
+_ROBOT_HELP = "robot id (omit to use OHHO_ROBOT, ~/.ohho/config.toml, or sim)"
+
 
 def _cmd_version(args) -> int:
     print(f"OhhO OS {__version__}  (protocol {PROTOCOL_VERSION})")
     return 0
+
+
+def _explicit_robot(args) -> Optional[str]:
+    if not hasattr(args, "robot"):
+        return None
+    value = args.robot
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _normalize_robot_args(args) -> None:
+    """Keep ``ohho agent ROBOT GOAL`` working when the robot positional is optional.
+
+    One positional on ``agent`` is the goal. One positional on ``market run`` is
+    the skill. One positional on ``memory where`` is the label.
+    """
+    command = getattr(args, "command", None)
+    robot = _explicit_robot(args)
+    if command == "agent" and getattr(args, "goal", None) is None and robot:
+        args.goal = robot
+        args.robot = None
+    elif (
+        command in {"market", "skills"}
+        and getattr(args, "action", None) == "run"
+        and getattr(args, "skill_name", None) is None
+        and robot
+    ):
+        args.skill_name = robot
+        args.robot = None
+    elif (
+        command == "memory"
+        and getattr(args, "action", None) == "where"
+        and getattr(args, "label", None) is None
+        and robot
+    ):
+        args.label = robot
+        args.robot = None
+
+
+def _wants_profile(args) -> bool:
+    command = getattr(args, "command", None)
+    action = getattr(args, "action", None)
+    if command in {
+        "doctor",
+        "config",
+        "connect",
+        "sim",
+        "drive",
+        "agent",
+        "sim-serve",
+        "sim-loop",
+        "selftest",
+        "look",
+    }:
+        return True
+    if command in {"market", "skills"} and action == "run":
+        return True
+    if command == "nav" and action in {"goto", "explore", "map"}:
+        return True
+    if command == "memory" and action in {"show", "where", "near", "clear"}:
+        return True
+    return False
+
+
+def _bind_robot(args) -> None:
+    """Resolve the robot once for this invocation and attach it to ``args``."""
+    _normalize_robot_args(args)
+    flag = _explicit_robot(args)
+    home = default_home()
+    resolved = resolve_robot_id(flag, home=home)
+    args.resolved_robot = resolved
+    if hasattr(args, "robot") and flag is None:
+        args.robot = resolved.robot_id
+    if _wants_profile(args):
+        args.robot_profile = load_robot_profile(
+            resolved.robot_id, home=home, cwd=Path.cwd()
+        )
+    else:
+        args.robot_profile = RobotProfile(resolved.robot_id)
+
+
+def _connect_kwargs(args, transport: Optional[str], *, use_profile_transport: bool):
+    """Transport plus profile fields. Empty profiles add no keyword arguments.
+
+    ``network_interface`` is written into a DDS URI here. ``sim://`` and an
+    omitted transport are left alone.
+    """
+    profile = getattr(args, "robot_profile", None)
+    extra: dict = {}
+    if isinstance(profile, RobotProfile):
+        transport = resolve_profile_transport(
+            transport, profile, use_profile_transport=use_profile_transport
+        )
+        if profile.sim_backend:
+            extra["sim_backend"] = profile.sim_backend
+        if profile.asset_path:
+            extra["asset_path"] = profile.asset_path
+        if profile.safety_overrides:
+            extra["safety_overrides"] = dict(profile.safety_overrides)
+    return transport, extra
 
 
 def _cmd_doctor(args) -> int:
@@ -41,6 +157,10 @@ def _cmd_doctor(args) -> int:
 
     from .brains import harness_available
 
+    resolved = getattr(args, "resolved_robot", None)
+    if resolved is None:
+        resolved = resolve_robot_id(_explicit_robot(args), home=default_home())
+
     def have(mod: str) -> bool:
         return importlib.util.find_spec(mod) is not None
 
@@ -51,6 +171,10 @@ def _cmd_doctor(args) -> int:
     print(f"  adapters    : {', '.join(available_adapters())}  (others via extras)")
     print(f"  device      : {resolve_device('auto')}")
     print(f"  robots      : {', '.join(s.id for s in list_specs())}")
+    print(f"  robot       : {resolved.robot_id} ({resolved.source})")
+    profile = getattr(args, "robot_profile", None)
+    if isinstance(profile, RobotProfile) and profile.source:
+        print(f"  profile     : {profile.source}")
     brain = (
         "harness -- full perceive->reason->act->reflect"
         if harness_available()
@@ -118,13 +242,15 @@ def _cmd_list(args) -> int:
 
 
 def _connect(args) -> Robot:
+    transport, extra = _connect_kwargs(args, args.transport, use_profile_transport=True)
     bot = Robot.connect(
         args.robot,
-        transport=args.transport,
+        transport=transport,
         runtime=args.runtime,
         safety_config=args.safety_config,
         estop_damp=args.estop_damp,
         read_only=getattr(args, "read_only", False),
+        **extra,
     )
     if bot.gated:
         if args.arm:
@@ -207,8 +333,9 @@ def _cmd_connect(args) -> int:
 
 
 def _cmd_sim(args) -> int:
+    transport, extra = _connect_kwargs(args, "sim://", use_profile_transport=False)
     try:
-        bot = Robot.connect(args.robot, transport="sim://", runtime="native")
+        bot = Robot.connect(args.robot, transport=transport, runtime="native", **extra)
     except UnknownRobot as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -308,6 +435,9 @@ def _cmd_drive(args) -> int:
 
 
 def _cmd_agent(args) -> int:
+    if not getattr(args, "goal", None):
+        print('usage: ohho agent [ROBOT] "goal"', file=sys.stderr)
+        return 2
     try:
         bot = _connect(args)
     except UnknownRobot as e:
@@ -398,6 +528,7 @@ def _cmd_sim_serve(args) -> int:
             port=args.port,
             rosbridge=args.rosbridge,
             rate_hz=args.rate,
+            home=default_home(),
             ssl_cert=args.ssl_cert,
             ssl_key=args.ssl_key,
         )
@@ -422,6 +553,7 @@ def _cmd_sim_loop(args) -> int:
             device=args.device,
             output_dir=args.output_dir,
             mock=args.mock,
+            home=str(default_home()),
         )
         return 0
     except Exception as e:
@@ -464,6 +596,9 @@ def _cmd_market(args) -> int:
             )
         return 0
     if args.action == "run":
+        if not getattr(args, "skill_name", None):
+            print("usage: ohho market run [ROBOT] SKILL", file=sys.stderr)
+            return 1
         try:
             bot = _connect(args)
         except Exception as e:
@@ -681,6 +816,12 @@ def _cmd_look(args) -> int:
 def _cmd_memory(args) -> int:
     from .memory import SpatialMemory, default_memory_path
 
+    if not getattr(args, "action", None):
+        print("usage: ohho memory [show|where|near|clear]")
+        return 1
+    if args.action == "where" and not getattr(args, "label", None):
+        print("usage: ohho memory where [ROBOT] LABEL", file=sys.stderr)
+        return 1
     memory = SpatialMemory(path=default_memory_path(args.robot))
     if args.action == "show":
         print(memory.describe())
@@ -800,9 +941,7 @@ def _default_robot() -> str:
 
 
 def _add_mcp_serve_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--robot", default=_default_robot(), help="default robot id for tools"
-    )
+    parser.add_argument("--robot", default=None, help="robot id for tools")
     parser.add_argument(
         "--transport",
         default="",
@@ -836,6 +975,25 @@ def _cmd_selftest(args) -> int:
 
     allow_spin = getattr(args, "allow_spin", False)
     allow_stand = getattr(args, "allow_stand", False)
+    profile = getattr(args, "robot_profile", None)
+    transport_uri = str(getattr(args, "transport", "") or "").strip()
+    explicit_transport = bool(transport_uri)
+    sim_backend = None
+    asset_path = None
+    safety_overrides = None
+    network_interface = None
+    if isinstance(profile, RobotProfile):
+        ports_set = bool(
+            str(getattr(args, "base_port", "") or "").strip()
+            or str(getattr(args, "arm_port", "") or "").strip()
+        )
+        if not explicit_transport and not ports_set and profile.transport:
+            transport_uri = profile.transport
+        sim_backend = profile.sim_backend
+        asset_path = profile.asset_path
+        network_interface = profile.network_interface
+        if profile.safety_overrides:
+            safety_overrides = dict(profile.safety_overrides)
     spec = get_spec(args.robot)
     if not args.sim and spec.category != "legged" and not allow_spin:
         if sys.stdin.isatty():
@@ -863,7 +1021,12 @@ def _cmd_selftest(args) -> int:
             base_port=getattr(args, "base_port", ""),
             arm_port=getattr(args, "arm_port", ""),
             camera_idx=getattr(args, "camera_idx", 0),
-            transport_uri=getattr(args, "transport", "") or "",
+            transport_uri=transport_uri,
+            sim_backend=sim_backend,
+            asset_path=asset_path,
+            safety_overrides=safety_overrides,
+            network_interface=network_interface,
+            replace_network_interface=not explicit_transport,
         )
     except Exception as e:
         print(f"error running selftest: {e}", file=sys.stderr)
@@ -885,10 +1048,24 @@ def _cmd_selftest(args) -> int:
     return 0
 
 
+def _cmd_config(args) -> int:
+    if getattr(args, "action", None) != "show":
+        print("usage: ohho config show")
+        return 1
+    resolved = getattr(args, "resolved_robot", None)
+    if resolved is None:
+        resolved = resolve_robot_id(_explicit_robot(args), home=default_home())
+    profile = getattr(args, "robot_profile", None)
+    if profile is None:
+        profile = load_robot_profile(resolved.robot_id, home=default_home())
+    print(format_resolved(resolved, profile))
+    return 0
+
+
 def _add_robot_args(
     sp: argparse.ArgumentParser, transport_default: Optional[str] = None
 ) -> None:
-    sp.add_argument("robot", help="robot id (see `ohho list`)")
+    sp.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     sp.add_argument(
         "--transport",
         default=transport_default,
@@ -970,34 +1147,123 @@ def _cmd_logout(args) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="ohho", description="OhhO OS — the open robot engine."
+def _cmd_train(args) -> int:
+    from .train.run_cli import execute
+
+    return execute(args.recipe, getattr(args, "set", None))
+
+
+def _cmd_sweep(args) -> int:
+    from .train.sweep import SweepError, run_plan
+
+    try:
+        return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+    except (SweepError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """Accept a second optional positional that follows options.
+
+    Python 3.10 and 3.11 mark a ``nargs='?'`` positional as consumed when it
+    matches no tokens and the next token is an option (CPython gh-59317). The
+    goal or skill name in ``ohho agent ROBOT --transport sim:// GOAL`` is then
+    an unrecognized argument. 3.12 leaves that empty match for later. This
+    class applies that 3.12 rule on older interpreters. Subparsers inherit it
+    (``parser_class`` defaults to ``type(self)``).
+    """
+
+    if sys.version_info < (3, 12):
+
+        def _match_arguments_partial(self, actions, arg_strings_pattern):
+            for i in range(len(actions), 0, -1):
+                actions_slice = actions[:i]
+                pattern = "".join(
+                    self._get_nargs_pattern(action) for action in actions_slice
+                )
+                match = re.match(pattern, arg_strings_pattern)
+                if match is None:
+                    continue
+                result = [len(group) for group in match.groups()]
+                # Next token is an option. Drop trailing positionals that
+                # matched nothing so they can still take a later argument.
+                if (
+                    match.end() < len(arg_strings_pattern)
+                    and arg_strings_pattern[match.end()] == "O"
+                ):
+                    while result and not result[-1]:
+                        del result[-1]
+                return result
+            return []
+
+
+def _cmd_job(args) -> int:
+    from .serve.job.command import main as job_command
+
+    return job_command(args)
+
+
+def _cmd_eval(args) -> int:
+    from .eval import EvalError, EvalValidationError, run_eval
+
+    try:
+        report = run_eval(
+            args.checkpoint,
+            args.suite,
+            episodes=args.episodes,
+            seed=args.seed,
+            scenarios=args.scenarios or None,
+            videos=args.videos or None,
+            out=args.out or None,
+        )
+    except (EvalError, EvalValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    interval = report["success_ci95"]
+    modes = report["failure_modes"]
+    failure_text = ""
+    if modes:
+        counted = ", ".join(f"{name}:{count}" for name, count in modes.items())
+        failure_text = f"  failures={counted}"
+    print(
+        f"ohho.eval/v1 suite={report['suite']} "
+        f"success_rate={report['success_rate']:.3f} "
+        f"ci95=[{interval['low']:.3f}, {interval['high']:.3f}] "
+        f"episodes={interval['trials']}{failure_text}"
     )
+    if args.out:
+        print(f"wrote {args.out}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = _ArgumentParser(prog="ohho", description="OhhO OS — the open robot engine.")
     p.add_argument(
         "-V", "--version", action="store_true", help="print version and exit"
     )
     sub = p.add_subparsers(dest="command")
 
-    doc = sub.add_parser(
+    doctor = sub.add_parser(
         "doctor", help="show environment, runtimes, adapters and robots"
     )
-    doc.add_argument(
+    doctor.add_argument("--robot", default=None, help=_ROBOT_HELP)
+    doctor.add_argument(
         "--agent",
         action="store_true",
         help="agent-setup readiness (CLI, login, rules, MCP, sim://)",
     )
-    doc.add_argument(
+    doctor.add_argument(
         "--json",
         action="store_true",
         help="with --agent, print the readiness report as JSON (see docs/cli.md)",
     )
-    doc.add_argument(
+    doctor.add_argument(
         "--online",
         action="store_true",
         help="with --agent, call the console whoami endpoint",
     )
-    doc.set_defaults(func=_cmd_doctor)
+    doctor.set_defaults(func=_cmd_doctor)
     verify = sub.add_parser(
         "verify",
         help="drive a robot on sim:// and report the distance moved",
@@ -1014,8 +1280,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--robot",
-        default=_default_robot(),
-        help="robot id to simulate",
+        default=None,
+        help="robot id to simulate (omit to use the resolver)",
     )
     verify.add_argument(
         "--console",
@@ -1043,6 +1309,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     listed.set_defaults(func=_cmd_list)
     sub.add_parser("version", help="print version").set_defaults(func=_cmd_version)
+
+    cfg = sub.add_parser("config", help="show the resolved robot id")
+    cfg_sub = cfg.add_subparsers(dest="action")
+    cfg_show = cfg_sub.add_parser(
+        "show", help="print the resolved robot and where it came from"
+    )
+    cfg_show.add_argument("--robot", default=None, help=_ROBOT_HELP)
+    cfg_show.set_defaults(action="show")
+    cfg.set_defaults(func=_cmd_config)
 
     login_p = sub.add_parser(
         "login", help="sign in to the OhhO console with a device code"
@@ -1076,7 +1351,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=_cmd_connect)
 
     s = sub.add_parser("sim", help="run a robot in simulation")
-    s.add_argument("--robot", default=_default_robot())
+    s.add_argument("--robot", default=None, help=_ROBOT_HELP)
     s.add_argument("--seconds", type=float, default=8.0)
     s.set_defaults(func=_cmd_sim)
 
@@ -1090,7 +1365,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("agent", help="hand a natural-language goal to the agent")
     _add_robot_args(a)
-    a.add_argument("goal", help='the goal, e.g. "explore the room"')
+    a.add_argument(
+        "goal",
+        nargs="?",
+        default=None,
+        help='the goal, e.g. "explore the room"',
+    )
     a.set_defaults(func=_cmd_agent)
 
     sv = sub.add_parser("serve", help="serve a trained policy over REST")
@@ -1150,8 +1430,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ss.add_argument(
         "--robot",
-        default=_default_robot(),
-        help="robot spec id (sim or robot backend)",
+        default=None,
+        help=_ROBOT_HELP + " (spec id for the sim or robot backend)",
     )
     ss.add_argument(
         "--transport",
@@ -1186,9 +1466,7 @@ def build_parser() -> argparse.ArgumentParser:
         "sim-loop",
         help="run nightly CPU sim loop (record -> validate -> train ACT -> serve -> drive sim)",
     )
-    sl.add_argument(
-        "--robot", default=_default_robot(), help="robot spec ID to simulate"
-    )
+    sl.add_argument("--robot", default=None, help=_ROBOT_HELP)
     sl.add_argument(
         "--episodes", type=int, default=5, help="number of episodes to record"
     )
@@ -1279,7 +1557,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
         mk_run = mk_sub.add_parser("run", help="run a skill on a robot")
         _add_robot_args(mk_run)
-        mk_run.add_argument("skill_name", help="skill name (see 'ohho skills list')")
+        mk_run.add_argument(
+            "skill_name",
+            nargs="?",
+            default=None,
+            help="skill name (see 'ohho skills list')",
+        )
         mk_run.set_defaults(action="run")
         mk.set_defaults(func=_cmd_market)
 
@@ -1319,20 +1602,20 @@ def build_parser() -> argparse.ArgumentParser:
     me = sub.add_parser("memory", help="query the robot's spatio-temporal memory")
     me_sub = me.add_subparsers(dest="action")
     me_show = me_sub.add_parser("show", help="summarize everything remembered")
-    me_show.add_argument("robot")
+    me_show.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     me_show.set_defaults(action="show")
     me_where = me_sub.add_parser("where", help="recall an object's last position")
-    me_where.add_argument("robot")
-    me_where.add_argument("label")
+    me_where.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
+    me_where.add_argument("label", nargs="?", default=None)
     me_where.set_defaults(action="where")
     me_near = me_sub.add_parser("near", help="remembered objects near a point")
-    me_near.add_argument("robot")
+    me_near.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     me_near.add_argument("--x", type=float, required=True)
     me_near.add_argument("--y", type=float, required=True)
     me_near.add_argument("--radius", type=float, default=1.5)
     me_near.set_defaults(action="near")
     me_clear = me_sub.add_parser("clear", help="forget everything")
-    me_clear.add_argument("robot")
+    me_clear.add_argument("robot", nargs="?", default=None, help=_ROBOT_HELP)
     me_clear.set_defaults(action="clear")
     me.set_defaults(func=_cmd_memory)
 
@@ -1354,8 +1637,8 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
         "--robot",
-        default=_default_robot(),
-        help="robot to self-test",
+        default=None,
+        help=_ROBOT_HELP,
     )
     st.add_argument(
         "--sim",
@@ -1575,6 +1858,90 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
 
+    train = sub.add_parser(
+        "train",
+        help="train from an ohho.recipe/v1 file",
+    )
+    train.add_argument("recipe", help="path to a recipe file (.yaml or .json)")
+    train.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="k=v",
+        help="override a dotted field before validation (repeatable)",
+    )
+    train.set_defaults(func=_cmd_train)
+
+    sweep = sub.add_parser(
+        "sweep",
+        help="expand a training sweep into trial recipes",
+    )
+    sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
+    plan = sweep_sub.add_parser(
+        "plan",
+        help="print trials (the startup batch for tpe, bayesian, and multi)",
+    )
+    plan.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="print the plan as JSON",
+    )
+    plan.set_defaults(func=_cmd_sweep)
+
+    job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
+    job_sub = job.add_subparsers(dest="job_command", required=True)
+    for name, help_text in (
+        ("validate", "validate a job spec and record schema_version"),
+        ("run", "run a job spec locally"),
+    ):
+        jp = job_sub.add_parser(name, help=help_text)
+        jp.add_argument(
+            "spec",
+            metavar="SPEC",
+            help="path to a job spec (.yaml or .json)",
+        )
+        jp.add_argument(
+            "--json",
+            action="store_true",
+            help="print a JSON result on stdout",
+        )
+        jp.set_defaults(func=_cmd_job)
+    ev = sub.add_parser(
+        "eval",
+        help="score a checkpoint on a Proof sim suite (ohho.eval/v1)",
+    )
+    ev.add_argument("checkpoint", help="checkpoint file or directory")
+    ev.add_argument(
+        "--suite",
+        required=True,
+        help="suite name (gazebo-nav-regression), or any name with --scenarios",
+    )
+    ev.add_argument(
+        "--episodes",
+        type=int,
+        default=5,
+        help="seeded episodes per scenario (default: 5)",
+    )
+    ev.add_argument("--seed", type=int, default=0, help="base seed (default: 0)")
+    ev.add_argument(
+        "--scenarios",
+        default="",
+        help="Proof scenario YAML to load instead of the suite checkout",
+    )
+    ev.add_argument(
+        "--videos",
+        default="",
+        help="directory for optional pose traces (omit to leave videos empty)",
+    )
+    ev.add_argument(
+        "--out",
+        default="",
+        help="write the ohho.eval/v1 JSON report to this path",
+    )
+    ev.set_defaults(func=_cmd_eval)
+    add_dataset_parser(sub)
+
     from .bench.command import register_bench
 
     register_bench(sub)
@@ -1601,7 +1968,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
                 "or `--mode generate --target PROFILE`"
             )
+        if not (
+            args.command == "mcp" and getattr(args, "mcp_command", None) == "connect"
+        ):
+            _bind_robot(args)
         return args.func(args)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except BrokenPipeError:
         # stdout was closed early (e.g. piped into `head`) — exit quietly.
         import os
