@@ -162,3 +162,61 @@ document = execute(
 A custom runner implements `preprocess`, `h2d`, `inference`, `d2h`, and
 `postprocess`. Pass it as `execute(config, runner=runner)`. That is the
 surface another package can call.
+
+## Pipeline (`--pipeline`)
+
+`ohho bench --pipeline` times a camera frame through seven stages and writes
+the same [`ohho.bench/v1`](bench-schema.md) document plus a `pipeline` object
+whose `version` is `ohho.bench.pipeline/v1`.
+
+```bash
+ohho bench --pipeline --hz 30 --json out.json
+ohho bench --pipeline --fixture stream.json --sink inprocess --warmup 0 --iters 8
+ohho bench --pipeline --dataset ./dataset --episode 0 --hz 30
+ohho bench --pipeline --bag ./recording --hz 30
+```
+
+Stages, in order: `decode`, `preprocess`, `h2d`, `inference`, `d2h`,
+`postprocess`, `publish`. End-to-end latency is the sum of those seven.
+`latency.p50`, `p95`, and `p99` are that sum. `pipeline.jitter_ms` is
+`latency.std`. `latency.achievable_hz` stays "iterations per second implied
+by the mean latency". The paced control rate is `pipeline.achieved_hz` and
+`throughput` (`frames/s`).
+
+The default source is the in-process simulator (`--source sim`, `--robot sim`).
+Each tick reads a small RGB frame from that sim, runs the built-in `tiny-cpu`
+policy, and publishes a clamped body velocity back into the sim. The result
+is labelled `pipeline.world = sim` and `environment.world = sim`. It does not
+train a model and it does not open hardware. A LeRobot episode recorded by
+`record_sim_episodes` can be replayed with `--dataset`; an episode with no
+stored camera is decoded from a state raster and marked
+`pipeline.frame_origin = state-raster`.
+
+`--fixture` reads `ohho.pipeline.stream/v1` (a JSON list of base64 frames).
+`--bag` reads `ohho.pipeline.rosbag/v1` (`metadata.json` plus `frames.jsonl`,
+or one JSON file). A ROS 2 bag directory or an `.mcap` file is refused: this
+bench does not download rosbag2 and does not decode `sensor_msgs/Image`.
+
+`publish` goes to a sink. `sim` calls `Robot.drive` on the in-process
+simulator. `inprocess` records the action. `ros2` publishes
+`geometry_msgs/Twist` and imports `rclpy` only when that sink is selected.
+`postprocess` clamps vx, vy, and yaw rate to the robot spec (`--robot`,
+default `sim`) before the sink sees them. Non-holonomic vy is zero.
+
+Frames are paced at `--hz` (default 30). A frame is dropped when its
+control period has already elapsed before the pipeline can start it.
+`pipeline.rate_sustained` is true when nothing was dropped and every
+published frame finished inside its period. `pipeline.dropped_frames` is
+the skip count.
+
+H2D and D2H are host copies. `pipeline.device` is `cpu` and
+`pipeline.gpu_follow_up` lists `h2d` and `d2h`. CUDA copies are not timed.
+
+`--source hardware` is refused unless `--allow-hardware` is set. With that
+flag the bench still only replays `--fixture`, `--dataset`, or `--bag`.
+`pipeline.live_robot` is false. A `serial://`, `dds://`, or other device URI
+is refused. This command does not arm a robot and does not set
+`OHHO_ARM_HARDWARE`.
+
+`--artifact` stays the five-stage ONNX bench. Do not pass it with
+`--pipeline`.

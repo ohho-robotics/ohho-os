@@ -61,6 +61,20 @@ them are required, and none change the type of a field v1 already defined:
 | `comparison` | Per-metric delta against a baseline result. |
 | `gates` | SLO and regression checks. `passed` is false when any check failed. |
 | `batches` | One latency report per requested batch size. |
+| `pipeline` | Camera-to-action block. Absent on an artifact-only run. Version `ohho.bench.pipeline/v1`. |
+| `environment.world` | `sim`, `recorded`, or `hardware` on a pipeline run. |
+
+`pipeline` is optional. Required keys inside it, when the object is present,
+are `version` (`ohho.bench.pipeline/v1`), `world`, `source`, `target_hz`,
+`achieved_hz`, `rate_sustained`, `dropped_frames`, `frames_presented`,
+`frames_published`, `jitter_ms`, `device`, and `live_robot`. `achieved_hz` is
+the paced control rate. `latency.achievable_hz` is still the rate implied by
+the mean latency. `jitter_ms` matches `latency.std`. Stage rows for a pipeline
+run are `decode`, `preprocess`, `h2d`, `inference`, `d2h`, `postprocess`, and
+`publish`. `live_robot` is false: a hardware label replays a recording and
+does not command a robot. Adding this object does not change ohho.bench/v1.
+A break inside the block is a new pipeline version and a converter, not a
+silent edit of these fields.
 
 `telemetry.gpu_util_percent` and `telemetry.gpu_power_w` are additional
 properties and are JSON `null` when a GPU sample is not available. The typed

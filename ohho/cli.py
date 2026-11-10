@@ -190,6 +190,15 @@ def _cmd_doctor(args) -> int:
     print(
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
+    optimize_ready = have("torch") and have("onnx") and have("onnxruntime")
+    print(
+        "  optimize    : "
+        + (
+            "onnx export and ORT CPU ready  (TensorRT, CUDA EP, AWQ, GPTQ, FP8 need a GPU)"
+            if optimize_ready
+            else "needs [optimize] extra  (torch, onnx, onnxruntime)"
+        )
+    )
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
@@ -1155,9 +1164,43 @@ def _cmd_train(args) -> int:
 
 def _cmd_sweep(args) -> int:
     from .train.sweep import SweepError, run_plan
+    from .train.sweep_run import (
+        format_resume,
+        format_start,
+        resume_as_dict,
+        resume_sweep,
+        start_sweep,
+    )
 
+    command = getattr(args, "sweep_command", "plan")
     try:
-        return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+        if command == "plan":
+            return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+        if command == "start":
+            run = start_sweep(args.spec, sweep_id=getattr(args, "id", None))
+            if getattr(args, "json", False):
+                json.dump(run.document(), sys.stdout, indent=2, sort_keys=True)
+                sys.stdout.write("\n")
+            else:
+                sys.stdout.write(format_start(run))
+            return 0
+        if command == "resume":
+            count = getattr(args, "count", 1)
+            run = resume_sweep(args.sweep_id)
+            proposed = run.ask(count)
+            if getattr(args, "json", False):
+                json.dump(
+                    resume_as_dict(run, proposed),
+                    sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
+                sys.stdout.write("\n")
+            else:
+                sys.stdout.write(format_resume(run, proposed))
+            return 0
+        print(f"error: unknown sweep command {command}", file=sys.stderr)
+        return 1
     except (SweepError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1634,6 +1677,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_targets(sub)
 
+    from .optimize.command import register_optimize
+
+    register_optimize(sub)
+
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
         "--robot",
@@ -1874,7 +1921,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sweep = sub.add_parser(
         "sweep",
-        help="expand a training sweep into trial recipes",
+        help="plan, start, or resume a training sweep",
     )
     sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
     plan = sweep_sub.add_parser(
@@ -1888,6 +1935,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the plan as JSON",
     )
     plan.set_defaults(func=_cmd_sweep)
+    start = sweep_sub.add_parser(
+        "start",
+        help="persist a new sweep run (sampler state and an empty trial table)",
+    )
+    start.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
+    start.add_argument(
+        "--id",
+        default=None,
+        help="sweep id (default: a generated id). Stored under OHHO_SWEEP_DIR or ~/.ohho/sweeps",
+    )
+    start.add_argument("--json", action="store_true", help="print the run as JSON")
+    start.set_defaults(func=_cmd_sweep)
+    resume = sweep_sub.add_parser(
+        "resume",
+        help="propose the next trials of a stopped sweep without repeating one",
+    )
+    resume.add_argument("sweep_id", help="id passed to ohho sweep start")
+    resume.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="how many new trials to propose (default 1)",
+    )
+    resume.add_argument(
+        "--json",
+        action="store_true",
+        help="print the new trials as JSON",
+    )
+    resume.set_defaults(func=_cmd_sweep)
 
     job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
     job_sub = job.add_subparsers(dest="job_command", required=True)
@@ -1962,12 +2038,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.command == "bench"
             and not getattr(args, "bench_command", None)
             and not getattr(args, "artifact", None)
+            and not getattr(args, "pipeline", False)
         ):
             parser.error(
-                "bench needs `validate FILE` or `--artifact PATH --target PROFILE`"
+                "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
+                "or `--pipeline`"
             )
         if not (
-            args.command == "mcp" and getattr(args, "mcp_command", None) == "connect"
+            (args.command == "mcp" and getattr(args, "mcp_command", None) == "connect")
+            or (args.command == "bench" and not getattr(args, "pipeline", False))
         ):
             _bind_robot(args)
         return args.func(args)
