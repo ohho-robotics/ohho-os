@@ -1,0 +1,172 @@
+name: Serve worker images
+
+# OHH-484: build ohho-serve-worker:{cpu,cuda,jetson}-<version>, run
+# `ohho targets verify`, write an SBOM, scan it, and on a v* tag sign the
+# image digest and attach the SBOM and signature to the GitHub release.
+# OHHO_WORKER_STACK=platform skips the torch / ORT / TensorRT wheels. Those
+# pins stay in the image and the matrix. The runners have no GPU, the unit
+# test job has no torch, and the L4T base image has no git.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serve-worker-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  image:
+    name: ${{ matrix.variant }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - variant: cuda
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - variant: jetson
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ohho-os
+        run: python -m pip install -e .
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          tag=$(python -c 'import json,sys; d=json.load(open("ohho/worker_images/worker_matrix.json")); v=sys.argv[1]; print(next(i["tag"] for i in d["variants"] if i["variant"]==v))' "${{ matrix.variant }}")
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Build worker image
+        run: |
+          set -euo pipefail
+          docker build \
+            --platform "${{ matrix.platform }}" \
+            --file "docker/serve-worker/Dockerfile.${{ matrix.variant }}" \
+            --build-arg OHHO_WORKER_STACK=platform \
+            --tag "${{ steps.tag.outputs.tag }}" \
+            .
+
+      - name: Run ohho targets verify
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform "${{ matrix.platform }}" \
+            -e NVIDIA_VISIBLE_DEVICES= \
+            -e NVIDIA_DRIVER_CAPABILITIES= \
+            "${{ steps.tag.outputs.tag }}" \
+            targets verify
+
+      - name: Record image digest
+        run: |
+          set -euo pipefail
+          digest=$(docker image inspect --format '{{.Id}}' "${{ steps.tag.outputs.tag }}")
+          python scripts/record_worker_job.py \
+            --job-id "${{ github.run_id }}-${{ matrix.variant }}" \
+            --status verified \
+            --image "${{ steps.tag.outputs.tag }}" \
+            --digest "${digest}" \
+            --out worker-job-result.json
+          {
+            echo "### ${{ matrix.variant }}"
+            echo ""
+            echo "image ${{ steps.tag.outputs.tag }}"
+            echo "image_digest ${digest}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.tag.outputs.tag }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.variant }}.cdx.json
+          upload-release-assets: false
+
+      - name: SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.tag.outputs.tag }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.variant }}.spdx.json
+          upload-release-assets: false
+
+      - name: Vulnerability scan
+        uses: anchore/scan-action@v7
+        with:
+          sbom: sbom-${{ matrix.variant }}.cdx.json
+          fail-build: false
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: json
+          output-file: scan-${{ matrix.variant }}.json
+
+      - name: Fail on fixed CRITICAL findings
+        run: python scripts/worker_vuln_gate.py "scan-${{ matrix.variant }}.json" --python-only
+
+      - name: Upload SBOM, scan, and job result
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-image-${{ matrix.variant }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            sbom-${{ matrix.variant }}.cdx.json
+            sbom-${{ matrix.variant }}.spdx.json
+            scan-${{ matrix.variant }}.json
+            worker-job-result.json
+
+  publish:
+    name: sign ${{ matrix.variant }}
+    needs: image
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, cuda, jetson]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: worker-image-${{ matrix.variant }}-${{ github.run_id }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image digest
+        run: |
+          set -euo pipefail
+          python -c 'import json; print(json.load(open("worker-job-result.json"))["image_digest"], end="")' > digest.txt
+          cosign sign-blob --yes --bundle ${{ matrix.variant }}.image.sig.bundle digest.txt
+
+      - name: Attach SBOM and signature to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sbom-${{ matrix.variant }}.cdx.json
+            sbom-${{ matrix.variant }}.spdx.json
+            ${{ matrix.variant }}.image.sig.bundle
+            worker-job-result.json

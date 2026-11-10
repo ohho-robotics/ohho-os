@@ -98,7 +98,7 @@ ort-int8 = "ohho.optimize.quantizers.ort_int8:backend"
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "targets/profiles/*.json", "targets/*.json", "optimize/*.json"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "targets/profiles/*.json", "targets/*.json", "optimize/*.json", "worker_images/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

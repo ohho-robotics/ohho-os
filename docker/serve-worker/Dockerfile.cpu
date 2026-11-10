@@ -1,0 +1,66 @@
+# Generated from ohho/worker_images/worker_matrix.json. Do not edit by hand.
+# ohho-serve-worker:cpu-1.2.0
+# CI passes --build-arg OHHO_WORKER_STACK=platform.
+# The default full stack installs the pinned wheels.
+ARG BASE_IMAGE=python:3.12-slim-bookworm
+FROM ${BASE_IMAGE}
+
+ARG OHHO_WORKER_STACK=full
+ENV OHHO_WORKER_IMAGE=ohho-serve-worker:cpu-1.2.0 \
+    OHHO_WORKER_VARIANT=cpu \
+    OHHO_WORKER_TORCH=2.5.1 \
+    OHHO_WORKER_ORT=1.20.1 \
+    OHHO_WORKER_TENSORRT= \
+    OHHO_WORKER_CUDA= \
+    OHHO_WORKER_JETPACK= \
+    OHHO_WORKER_L4T= \
+    OHHO_WORKER_BASE=python:3.12-slim-bookworm
+ENV OHHO_WORKER_STACK=$OHHO_WORKER_STACK \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/opt/ohho/bin:$PATH
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN set -euo pipefail; \
+    if ! apt-get update -qq; then \
+      echo "apt-get update failed. Commenting NVIDIA apt entries and retrying."; \
+      shopt -s nullglob; \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do \
+        if [ -f "${f}" ]; then \
+          sed -i -E '/nvidia|repo\.download\.nvidia|jetson/s/^/# ohho-ci /' "${f}"; \
+        fi; \
+      done; \
+      shopt -u nullglob; \
+      apt-get update -qq; \
+    fi; \
+    apt-get install -y -qq --no-install-recommends \
+      python3 \
+      python3-pip \
+      python3-venv \
+      ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    id ohho >/dev/null 2>&1 || useradd --create-home --uid 10001 --user-group ohho
+
+COPY . /opt/ohho-src
+WORKDIR /opt/ohho-src
+
+RUN python3 -m venv /opt/ohho \
+    && /opt/ohho/bin/pip install --upgrade pip setuptools \
+    && /opt/ohho/bin/pip install --no-cache-dir /opt/ohho-src \
+    && if [ "$OHHO_WORKER_STACK" != "full" ] && [ "$OHHO_WORKER_STACK" != "platform" ]; then \
+         echo "OHHO_WORKER_STACK must be full or platform" >&2; \
+         exit 1; \
+       fi \
+    && if [ "$OHHO_WORKER_STACK" = "full" ]; then \
+         /opt/ohho/bin/pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.5.1' \
+         && /opt/ohho/bin/pip install --no-cache-dir 'onnxruntime==1.20.1'; \
+       fi
+
+RUN mkdir -p /etc/ohho \
+    && python -c "from ohho.worker_images.stamp import write_image_stamp; write_image_stamp('/etc/ohho/worker-image.json')"
+
+USER ohho
+WORKDIR /home/ohho
+ENTRYPOINT ["ohho"]
+CMD ["targets", "verify"]

@@ -317,6 +317,12 @@ def _cmd_drive(args) -> int:
 
 
 def _cmd_agent(args) -> int:
+    from ohho.worker_images.policy import refusal_for_environment
+
+    reason = refusal_for_environment()
+    if reason is not None:
+        print(f"error: refused: {reason}", file=sys.stderr)
+        return 2
     try:
         bot = _connect(args)
     except UnknownRobot as e:
@@ -335,8 +341,14 @@ def _cmd_agent(args) -> int:
 
 
 def _cmd_serve(args) -> int:
+    from ohho.worker_images.policy import refusal_for_environment
+
     from .serve import serve, ServeUnavailable
 
+    reason = refusal_for_environment()
+    if reason is not None:
+        print(f"error: refused: {reason}", file=sys.stderr)
+        return 2
     try:
         serve(
             checkpoint=args.checkpoint,

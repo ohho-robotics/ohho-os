@@ -130,3 +130,7 @@ TensorRT are still reported.
 
 `ohho optimize` compiles a model for one of these profiles. See
 [optimize.md](../optimize.md).
+
+`ohho targets verify` checks the running process against a pinned
+`ohho-serve-worker` image. The version matrix is
+[worker-images.md](worker-images.md).
