@@ -18,7 +18,7 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
 `ohho train <recipe.yaml>` runs a training recipe ([`docs/train/recipes.md`](docs/train/recipes.md)). `ohho run show <run-dir>` prints the `ohho.run/v1` manifest ([`docs/train/run-manifest.md`](docs/train/run-manifest.md)).
 
@@ -190,6 +190,8 @@ python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200
 
 The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run this pipeline on CPU-only runners, verify LeRobotDataset loading, and upload the trained checkpoint and dataset artifacts (first run pending).
 
+`ohho sweep plan` expands an `ohho.sweep/v1` spec (grid, random, TPE, or multi-objective) into trial recipes and an estimated GPU-hour total. Adaptive strategies plan a startup batch; `SweepSampler` proposes the rest and records a Pareto set. See [`docs/train/sweeps.md`](docs/train/sweeps.md).
+
 ## Simulation WebSocket Server (`sim-serve`)
 
 `ohho sim-serve` exposes a JSON WebSocket session for teleoperation and telemetry streaming. It supports the in-process simulator (`sim://`), a live robot via the unified `Robot` API (`--backend robot --transport <uri>`), or ROS 2 through rosbridge.
@@ -298,6 +300,12 @@ See [`docs/selftest.md`](docs/selftest.md) for full usage, safety invariants, an
 (`ohho/bench/schemas/bench.v1.json`). Rules for additive fields and for a
 future v2 converter are in
 [`docs/serve/bench-schema.md`](docs/serve/bench-schema.md).
+
+Runnable Serve examples, with the hardware, runtime, and expected output for
+each one, are in [`examples/serve`](examples/serve/README.md). CPU examples
+run in CI and on release tags. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
+W&B/Prometheus export stay placeholders until those commands are on main.
+They do not publish benchmark numbers.
 
 ## TypeScript
 
