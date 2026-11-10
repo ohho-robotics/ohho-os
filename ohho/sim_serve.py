@@ -15,6 +15,13 @@ Client JSON:
     - ``estop``: boolean. ``true`` latches; only ``false`` clears it.
     - ``mode`` (optional): ``"stand"`` | ``"lie_down"`` | ``"recover"`` — mapped to
       allowlisted high-level actions on a connected :class:`~ohho.robot.Robot`.
+    - ``frame``: aircraft setpoint frame (``BODY_FRD``, ``LOCAL_NED``, or
+      ``LOCAL_ENU``). Ground sessions ignore it. There is no default frame.
+      Positive ``linear.z`` in ``BODY_FRD`` is down; this server does not
+      invert stick-up into climb.
+    - ``flight`` (aircraft): ``{"request": "takeoff"|"land"|"rtl"|"hold"|"arm"|"disarm",
+      "alt_m": metres, "confirm": "<arm phrase>"}``. ``arm`` asks the autopilot
+      to arm motors. It does not arm the SafetyGate.
 
 Server JSON:
     - ``odom``: ``{"x": float, "y": float, "yaw": float}``
@@ -22,6 +29,8 @@ Server JSON:
     - ``protocolVersion``: ``ohho.PROTOCOL_VERSION``
     - ``backend``: ``"sim"``, ``"ros2"``, or ``"robot"``
     - ``posture`` / ``battery`` (optional, when the robot reports them)
+    - ``drone``: the ``custom["drone"]`` object when the robot publishes one
+    - ``streaming`` / ``frame`` / ``flight_status`` for an aircraft session
     - ``camera``: base64 JPEG when a front-camera frame has arrived, otherwise
       ``no_camera: true`` (never both)
 
@@ -32,7 +41,16 @@ Safety:
     - A missing ``deadman`` field commands zero immediately.
     - A dropped socket commands zero immediately when no client remains, and
       always within 300 ms.
-    - ``estop`` latches until a message with ``estop: false`` arrives.
+    - On an aircraft that zero is one offboard velocity, then the server stops
+      the setpoint stream. It does not keep publishing the last non-zero
+      command, and it does not land.
+    - ``estop`` latches until a message with ``estop: false`` arrives, and
+      calls ``emergency_stop``. No further setpoint is published while the
+      latch is set.
+    - ``takeoff`` and ``arm`` on ``backend=robot`` with a non-sim URI require
+      the SafetyGate arm phrase and ``OHHO_ARM_HARDWARE=1`` already set in the
+      process environment. The WebSocket payload cannot set that variable and
+      cannot arm the gate.
 """
 
 from __future__ import annotations
@@ -40,18 +58,31 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import math
 import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
+from .aerial import Frame
+from .capabilities import AERIAL
 from .protocol import PROTOCOL_VERSION
+from .safety import ARM_ENV, ARM_PHRASE, DRONE_TAKEOFF_ALT_M
 from .schema import Telemetry
+
+log = logging.getLogger("ohho.sim_serve")
 
 # Commanded velocity is zero once this long has passed with no client message.
 DEADMAN_TIMEOUT_S = 0.300
+# Same window. Aircraft publish one zero, then stop the offboard stream.
+SETPOINT_SILENCE_S = DEADMAN_TIMEOUT_S
+
+_FLIGHT_REQUESTS = frozenset({"takeoff", "land", "rtl", "hold", "arm", "disarm"})
+# Human phrase + process env. land/rtl/hold/disarm stay available without it.
+_CONFIRM_REQUESTS = frozenset({"takeoff", "arm"})
+_SIM_SCHEMES = frozenset({"sim", "simulated"})
 
 NOT_IMPLEMENTED_BACKENDS = ("isaac", "mujoco")
 
@@ -115,18 +146,38 @@ def _coerce_bool(value: Any) -> Optional[bool]:
 DEFAULT_PORT = 8790
 
 
-def parse_velocity(val: Any) -> tuple[float, float, float]:
-    """Extract (vx, vy, w) from a velocity object.
+def _vertical(value: Any) -> float:
+    """``linear.z``. Unusable values are 0 so a null climb does not drop the socket."""
+    if value is None or isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+    if not math.isfinite(number):
+        return 0.0
+    return number
 
-    Supports nested ROS Twist style (``{"linear": {"x": ...}, "angular": {"z": ...}}``),
-    dotted keys (``{"linear.x": ...}``), flat keys (``{"linear_x": ...}``),
-    Connect console fields (``{"linearX": ...}``), or coordinate keys
-    (``{"x": ..., "y": ..., "z": ...}``).
+
+def parse_twist(val: Any) -> tuple[float, float, float, float]:
+    """Extract ``(vx, vy, vz, yaw_rate)`` from a velocity object.
+
+    ``vx``, ``vy``, and yaw use the same keys as :func:`parse_velocity`,
+    including Connect console fields. ``vz`` is ``linear.z``, ``linear.z``,
+    or ``linear_z`` only. A bare ``z`` stays yaw, which is what ground teleop
+    already sends.
+
+    The numbers are in the frame named by the client message. This function
+    does not negate ``vz`` and does not negate yaw. In ``BODY_FRD``, positive
+    ``vz`` is down and positive yaw rate is nose-right.
     """
     if not isinstance(val, dict):
-        return 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0
 
-    vx, vy, w = 0.0, 0.0, 0.0
+    vx, vy, vz, w = 0.0, 0.0, 0.0, 0.0
 
     # Nested ROS-style: {"linear": {"x": ...}, "angular": {"z": ...}}
     if "linear" in val or "angular" in val:
@@ -134,6 +185,7 @@ def parse_velocity(val: Any) -> tuple[float, float, float]:
         if isinstance(lin, dict):
             vx = float(lin.get("x", 0.0))
             vy = float(lin.get("y", 0.0))
+            vz = _vertical(lin.get("z", 0.0))
         elif isinstance(lin, (int, float)) and not isinstance(lin, bool):
             vx = float(lin)
 
@@ -148,6 +200,8 @@ def parse_velocity(val: Any) -> tuple[float, float, float]:
         vx = float(val["linear.x"])
     if "linear.y" in val:
         vy = float(val["linear.y"])
+    if "linear.z" in val:
+        vz = _vertical(val["linear.z"])
     if "angular.z" in val:
         w = float(val["angular.z"])
 
@@ -156,6 +210,8 @@ def parse_velocity(val: Any) -> tuple[float, float, float]:
         vx = float(val["linear_x"])
     if "linear_y" in val:
         vy = float(val["linear_y"])
+    if "linear_z" in val:
+        vz = _vertical(val["linear_z"])
     if "angular_z" in val:
         w = float(val["angular_z"])
 
@@ -167,7 +223,7 @@ def parse_velocity(val: Any) -> tuple[float, float, float]:
     if "angularZ" in val:
         w = float(val["angularZ"])
 
-    # Short coordinate keys
+    # Short coordinate keys. Bare ``z`` is yaw, not climb.
     if "x" in val and "linear" not in val:
         vx = float(val["x"])
     if "y" in val and "linear" not in val:
@@ -175,7 +231,90 @@ def parse_velocity(val: Any) -> tuple[float, float, float]:
     if "z" in val and "angular" not in val:
         w = float(val["z"])
 
+    return vx, vy, vz, w
+
+
+def parse_velocity(val: Any) -> tuple[float, float, float]:
+    """Extract (vx, vy, w) from a velocity object.
+
+    Supports nested ROS Twist style (``{"linear": {"x": ...}, "angular": {"z": ...}}``),
+    dotted keys (``{"linear.x": ...}``), flat keys (``{"linear_x": ...}``),
+    Connect console fields (``{"linearX": ...}``), or coordinate keys
+    (``{"x": ..., "y": ..., "z": ...}``). ``linear.z`` is not part of this
+    tuple; aerial teleop reads it from :func:`parse_twist`.
+    """
+    vx, vy, _vz, w = parse_twist(val)
     return vx, vy, w
+
+
+def parse_frame(value: Any) -> Optional[Frame]:
+    """A client frame string, or ``None`` when it is not a :class:`Frame`.
+
+    There is no default. ``BODY_FRD``, ``LOCAL_NED``, and ``LOCAL_ENU`` are
+    the only names. Matching is case-insensitive.
+    """
+    if isinstance(value, Frame):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return Frame(value.strip().upper())
+    except ValueError:
+        return None
+
+
+def is_sim_transport_uri(uri: Optional[str]) -> bool:
+    """True when ``uri`` uses the ``sim`` or ``simulated`` scheme."""
+    if not uri:
+        return False
+    scheme = uri.split("://", 1)[0].strip().lower()
+    return scheme in _SIM_SCHEMES
+
+
+def requires_flight_confirmation(backend: str, transport: Optional[str]) -> bool:
+    """True when takeoff/arm need the arm phrase and ``OHHO_ARM_HARDWARE``.
+
+    ``backend=sim`` does not. ``backend=robot`` with ``sim://`` does not.
+    Any other robot-backend URI does.
+    """
+    return backend == "robot" and not is_sim_transport_uri(transport)
+
+
+def normalize_phrase(value: Any) -> str:
+    """Fold a confirmation phrase the way SafetyGate folds ``ARM_PHRASE``."""
+    return " ".join(str(value).split()).casefold().rstrip(".")
+
+
+def privileged_flight_block(confirm: Any, environ: Mapping[str, str]) -> str:
+    """``''`` when a takeoff or arm request may be forwarded.
+
+    ``environ`` must be the process environment. This does not write it, and
+    it does not look at a WebSocket payload for variable names. A missing
+    ``OHHO_ARM_HARDWARE=1`` or a phrase other than ``ARM_PHRASE`` is refused.
+    """
+    if environ.get(ARM_ENV) != "1":
+        return "env"
+    if normalize_phrase(confirm) != normalize_phrase(ARM_PHRASE):
+        return "not_confirmed"
+    return ""
+
+
+def parse_takeoff_altitude(alt_m: Any) -> tuple[Optional[float], str]:
+    """Teleop takeoff altitude in metres, positive up.
+
+    Omitted ``alt_m`` uses the 3 m teleop ceiling. A higher request is
+    refused. The reason is ``''`` when ``alt_m`` is usable.
+    """
+    if alt_m is None:
+        return DRONE_TAKEOFF_ALT_M, ""
+    if isinstance(alt_m, bool) or not isinstance(alt_m, (int, float)):
+        return None, "bad_altitude"
+    if not math.isfinite(alt_m) or alt_m <= 0.0:
+        return None, "bad_altitude"
+    altitude = float(alt_m)
+    if altitude > DRONE_TAKEOFF_ALT_M:
+        return None, "altitude"
+    return altitude, ""
 
 
 @dataclass(frozen=True)
@@ -351,14 +490,20 @@ def camera_jpeg_from_ros(topic: str, msg: Any) -> Optional[str]:
     return None
 
 
-def cmd_vel_rosbridge(vx: float, vy: float, w: float) -> dict[str, Any]:
-    """rosbridge publish for ``/cmd_vel``, matching the Connect console Twist."""
+def cmd_vel_rosbridge(
+    vx: float, vy: float, w: float, vz: float = 0.0
+) -> dict[str, Any]:
+    """rosbridge publish for ``/cmd_vel``, matching the Connect console Twist.
+
+    ``vz`` is ``linear.z``. Ground callers leave it at 0. The ros2 backend has
+    no offboard stream, so a loss still publishes a zero Twist.
+    """
     return {
         "op": "publish",
         "topic": CMD_VEL_TOPIC,
         "type": "geometry_msgs/Twist",
         "msg": {
-            "linear": {"x": float(vx), "y": float(vy), "z": 0.0},
+            "linear": {"x": float(vx), "y": float(vy), "z": float(vz)},
             "angular": {"x": 0.0, "y": 0.0, "z": float(w)},
         },
     }
@@ -421,6 +566,9 @@ def telemetry_extras(t: Telemetry) -> dict[str, Any]:
     posture = posture_from_telemetry(t)
     if posture is not None:
         out["posture"] = posture
+    drone = (t.custom or {}).get("drone")
+    if isinstance(drone, dict):
+        out["drone"] = drone
     return out
 
 
@@ -476,8 +624,15 @@ class SimServe:
         self._estopped: bool = False
         self._target_vx: float = 0.0
         self._target_vy: float = 0.0
+        self._target_vz: float = 0.0
         self._target_w: float = 0.0
+        self._frame: Optional[Frame] = None
         self._target_joints: dict[str, float] = {}
+        self._aerial: bool = False
+        self._aerial_stream_open: bool = False
+        self._flight_status: Optional[dict[str, Any]] = None
+        self._command_error: Optional[str] = None
+        self._last_drone_step: Optional[float] = None
         self._timeout_handle: Optional[asyncio.TimerHandle] = None
 
         # Telemetry state
@@ -520,6 +675,7 @@ class SimServe:
             uri = "sim://" if self.backend == "sim" else self._transport_uri
             assert uri is not None
             self._bot = Robot.connect(self.robot_id, transport=uri, runtime="native")
+            self._aerial = self._detect_aerial()
             await self._arm_sim_link()
         elif self.backend == "ros2":
             self._rosbridge_ws = await websockets.connect(self.rosbridge_url)
@@ -677,8 +833,28 @@ class SimServe:
         # Missing deadman is not held, so velocity goes to zero on this message.
         self._deadman = command.deadman
 
-        if command.velocity is not None:
-            self._target_vx, self._target_vy, self._target_w = command.velocity
+        # Aircraft frame. Ground sessions ignore it. An unknown name does not
+        # become BODY_FRD, and it does not consume the velocity in this message.
+        frame_rejected = False
+        if self._aerial and "frame" in data:
+            parsed = parse_frame(data["frame"])
+            if parsed is None:
+                self._command_error = "frame"
+                frame_rejected = True
+            else:
+                self._frame = parsed
+                if self._command_error == "frame":
+                    self._command_error = None
+
+        if command.velocity is not None and not frame_rejected:
+            vx, vy, vz, w = parse_twist(data.get("velocity"))
+            self._target_vx = vx
+            self._target_vy = vy
+            self._target_vz = vz
+            self._target_w = w
+
+        if "flight" in data:
+            self._on_flight(data["flight"])
 
         if command.joints is not None and not self._estopped:
             self._target_joints = command.joints
@@ -737,12 +913,184 @@ class SimServe:
                 msg.update(telemetry_extras(self._bot.telemetry()))
             except Exception:
                 pass
+        if self._flight_status is not None:
+            msg["flight_status"] = dict(self._flight_status)
+        if self._aerial:
+            msg["streaming"] = self._aerial_stream_open
+            if self._frame is not None:
+                msg["frame"] = self._frame.value
+        if self._command_error:
+            msg["command_error"] = self._command_error
         return msg
+
+    def _command_live(self, now: Optional[float] = None) -> bool:
+        """Same gate as :func:`gated_velocity`, without reading the setpoint."""
+        if not self._running:
+            return False
+        if now is None:
+            now = time.monotonic()
+        fresh = self._last_msg_time > 0.0 and (now - self._last_msg_time) < DEADMAN_TIMEOUT_S
+        return bool(
+            self._deadman
+            and not self._estopped
+            and len(self._clients) > 0
+            and self._command_window_open
+            and fresh
+        )
+
+    def _detect_aerial(self) -> bool:
+        bot = self._bot
+        if bot is None:
+            return False
+        has = getattr(bot, "has", None)
+        if not callable(has):
+            return False
+        try:
+            return bool(has(AERIAL))
+        except Exception:
+            return False
+
+    def _set_flight_status(self, request: str, accepted: bool, reason: str) -> None:
+        self._flight_status = {
+            "request": request,
+            "accepted": accepted,
+            "reason": reason,
+        }
+
+    def _on_flight(self, flight: Any) -> None:
+        """Forward one flight request. Never writes ``os.environ`` and never calls ``Robot.arm``."""
+        if not isinstance(flight, dict):
+            self._set_flight_status("", False, "bad_request")
+            return
+        raw = flight.get("request")
+        request = raw.strip().lower() if isinstance(raw, str) else ""
+        if request not in _FLIGHT_REQUESTS:
+            self._set_flight_status(request, False, "unknown_request")
+            return
+        if not self._aerial or self._bot is None:
+            self._set_flight_status(request, False, "not_aerial")
+            return
+        if self._estopped:
+            self._set_flight_status(request, False, "estop")
+            return
+        altitude: Optional[float] = None
+        if request == "takeoff":
+            altitude, why = parse_takeoff_altitude(flight.get("alt_m"))
+            if why or altitude is None:
+                self._set_flight_status(request, False, why or "bad_altitude")
+                return
+        if request in _CONFIRM_REQUESTS and requires_flight_confirmation(
+            self.backend, self._transport_uri
+        ):
+            # Phrase comes from ``confirm``. The env var is the process environment
+            # only — payload keys are not consulted and are not copied into os.environ.
+            why = privileged_flight_block(flight.get("confirm"), os.environ)
+            if why:
+                log.warning("sim-serve: %s refused: %s", request, why)
+                self._set_flight_status(request, False, why)
+                return
+        self._invoke_flight(request, altitude)
+
+    def _invoke_flight(self, request: str, altitude: Optional[float]) -> None:
+        bot = self._bot
+        if bot is None:
+            self._set_flight_status(request, False, "not_aerial")
+            return
+        try:
+            if request == "takeoff":
+                bot.takeoff(DRONE_TAKEOFF_ALT_M if altitude is None else altitude)
+            elif request == "land":
+                bot.land()
+            elif request == "rtl":
+                bot.rtl()
+            elif request == "hold":
+                bot.hold()
+            elif request == "arm":
+                bot.arm_flight()
+            elif request == "disarm":
+                bot.disarm_flight()
+            else:
+                self._set_flight_status(request, False, "unknown_request")
+                return
+        except (TypeError, ValueError):
+            self._set_flight_status(request, False, "bad_arguments")
+            return
+        if getattr(bot, "gated", False):
+            reason = getattr(getattr(bot, "transport", None), "last_error", None)
+            if reason:
+                self._set_flight_status(request, False, str(reason))
+                return
+        self._set_flight_status(request, True, "")
+
+    def _open_aerial_stream(self) -> None:
+        frame = self._frame
+        if frame is None or self._bot is None:
+            self._command_error = "frame"
+            return
+        if self._command_error == "frame":
+            self._command_error = None
+        self._aerial_stream_open = True
+        self._send_offboard(
+            self._target_vx, self._target_vy, self._target_vz, self._target_w, frame
+        )
+
+    def _close_aerial_stream(self) -> None:
+        """One zero velocity, then silence. Does not land. Drops the retained setpoint.
+
+        An e-stop already owns the vehicle, so this only stops the stream and
+        does not publish another setpoint on top of ``emergency_stop``.
+        """
+        was_open = self._aerial_stream_open
+        self._aerial_stream_open = False
+        frame = self._frame
+        self._target_vx = 0.0
+        self._target_vy = 0.0
+        self._target_vz = 0.0
+        self._target_w = 0.0
+        if self._estopped or not was_open or frame is None or self._bot is None:
+            return
+        self._send_offboard(0.0, 0.0, 0.0, 0.0, frame)
+
+    def _send_offboard(
+        self, vx: float, vy: float, vz: float, yaw_rate: float, frame: Frame
+    ) -> None:
+        if not all(math.isfinite(v) for v in (vx, vy, vz, yaw_rate)):
+            self._command_error = "bad_velocity"
+            return
+        bot = self._bot
+        if bot is None:
+            return
+        try:
+            bot.offboard_velocity(vx, vy, vz, yaw_rate, frame)
+        except (TypeError, ValueError):
+            self._command_error = "bad_velocity"
+        except Exception:
+            log.error("sim-serve: offboard_velocity failed", exc_info=True)
+
+    def _step_drone_sim(self, dt: float) -> None:
+        """Advance the in-process drone stub. Ground sims keep their own thread."""
+        if dt <= 0.0 or not math.isfinite(dt) or self._bot is None:
+            return
+        transport = getattr(self._bot, "transport", None)
+        if getattr(transport, "backend", None) != "drone-sim":
+            return
+        step = getattr(transport, "step", None)
+        if not callable(step):
+            return
+        try:
+            step(dt)
+        except Exception:
+            log.error("sim-serve: drone-sim step failed", exc_info=True)
 
     async def _broadcast_loop(self) -> None:
         interval = 1.0 / max(1.0, self.rate_hz)
+        last_step = time.monotonic()
         while self._running:
+            now = time.monotonic()
+            dt = min(max(now - last_step, 0.0), 0.1)
+            last_step = now
             await self._send_velocity()
+            self._step_drone_sim(dt)
             payload = json.dumps(self._telemetry_message())
             if self._clients:
                 aws = [ws.send(payload) for ws in list(self._clients)]
@@ -763,15 +1111,24 @@ class SimServe:
             command(action)
 
     async def _send_velocity(self) -> None:
+        live = self._command_live()
+        if self._aerial:
+            if live:
+                self._open_aerial_stream()
+            else:
+                self._close_aerial_stream()
+            return
         vx, vy, w = self._current_velocity()
+        vz = self._target_vz if live else 0.0
         if self.backend in ("sim", "robot"):
             if self._bot is not None:
+                # Planar base command. Aircraft setpoints go through offboard_velocity.
                 self._bot.drive(vx=vx, vy=vy, w=w)
         elif self.backend == "ros2":
             if self._rosbridge_ws is not None:
                 try:
                     await self._rosbridge_ws.send(
-                        json.dumps(cmd_vel_rosbridge(vx, vy, w))
+                        json.dumps(cmd_vel_rosbridge(vx, vy, w, vz))
                     )
                 except Exception:
                     pass
