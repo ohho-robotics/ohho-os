@@ -327,7 +327,12 @@ class TestAgreementAndDecode(unittest.TestCase):
 
         module.top1_action_agreement = hooked
         previous = sys.modules.get("ohho.parity")
+        parent = sys.modules.get("ohho")
+        had_parent = hasattr(parent, "parity")
+        previous_parent = getattr(parent, "parity", None)
         sys.modules["ohho.parity"] = module
+        if parent is not None:
+            setattr(parent, "parity", module)
         try:
             self.assertEqual(top1_action_agreement([1], [1]), 0.25)
             document = execute_generate(
@@ -338,6 +343,11 @@ class TestAgreementAndDecode(unittest.TestCase):
                 sys.modules.pop("ohho.parity", None)
             else:
                 sys.modules["ohho.parity"] = previous
+            if parent is not None:
+                if had_parent:
+                    setattr(parent, "parity", previous_parent)
+                else:
+                    delattr(parent, "parity")
         self.assertEqual(document["llm"]["agreement"]["value"], 0.25)
 
     def test_decode_clock_and_load_mapping(self) -> None:

@@ -18,7 +18,7 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). `ohho optimize` exports ONNX and, on a TensorRT machine, builds an engine for one of those profiles ([`docs/optimize.md`](docs/optimize.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). `ohho optimize` exports ONNX and, on a TensorRT machine, builds an engine for one of those profiles ([`docs/optimize.md`](docs/optimize.md)). `ohho parity` compares that artifact to the reference model and `ohho optimize` will not publish a result that misses the numerical limit ([`docs/serve/parity.md`](docs/serve/parity.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
 `ohho train <recipe.yaml>` runs a training recipe ([`docs/train/recipes.md`](docs/train/recipes.md)). `ohho run show <run-dir>` prints the `ohho.run/v1` manifest ([`docs/train/run-manifest.md`](docs/train/run-manifest.md)).
 
