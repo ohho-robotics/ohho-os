@@ -1,0 +1,39 @@
+{
+  "examples": [
+    {
+      "id": "act-jetson-fp16",
+      "kind": "gpu",
+      "script": "act_jetson_fp16/run.py",
+      "notebook": "act_jetson_fp16/run.ipynb",
+      "readme": "act_jetson_fp16/README.md"
+    },
+    {
+      "id": "ort-int8-cpu",
+      "kind": "cpu",
+      "script": "ort_int8_cpu/run.py",
+      "notebook": "ort_int8_cpu/run.ipynb",
+      "readme": "ort_int8_cpu/README.md"
+    },
+    {
+      "id": "vlm-vllm",
+      "kind": "gpu",
+      "script": "vlm_vllm/run.py",
+      "notebook": "vlm_vllm/run.ipynb",
+      "readme": "vlm_vllm/README.md"
+    },
+    {
+      "id": "ci-gate",
+      "kind": "cpu",
+      "script": "ci_gate/run.py",
+      "notebook": "ci_gate/run.ipynb",
+      "readme": "ci_gate/README.md"
+    },
+    {
+      "id": "export-wandb-prometheus",
+      "kind": "cpu",
+      "script": "export_wandb_prometheus/run.py",
+      "notebook": "export_wandb_prometheus/run.ipynb",
+      "readme": "export_wandb_prometheus/README.md"
+    }
+  ]
+}

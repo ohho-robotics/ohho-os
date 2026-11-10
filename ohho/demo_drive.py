@@ -12,6 +12,12 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from .config import (
+    default_home,
+    load_robot_profile,
+    resolve_profile_transport,
+    resolve_robot_id,
+)
 from .registry import UnknownRobot
 from .robot import Robot
 
@@ -143,7 +149,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "(change --transport only; runtime defaults per transport)."
         )
     )
-    p.add_argument("--robot", default=None, help="robot spec id")
+    p.add_argument(
+        "--robot",
+        default=None,
+        help="robot spec id (else OHHO_ROBOT, ~/.ohho/config.toml, or sim)",
+    )
     p.add_argument(
         "--transport",
         default="sim://",
@@ -182,17 +192,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    if not args.robot:
-        from .plugins import preferred_robot_id
-
-        args.robot = preferred_robot_id()
-    runtime = args.runtime or default_runtime_for_transport(args.transport)
+    resolved = resolve_robot_id(args.robot, home=default_home())
+    profile = load_robot_profile(resolved.robot_id, home=default_home())
+    transport = (
+        resolve_profile_transport(args.transport, profile, use_profile_transport=False)
+        or args.transport
+    )
+    runtime = args.runtime or default_runtime_for_transport(transport)
     print(
-        f"demo_drive: robot={args.robot} transport={args.transport} runtime={runtime} "
+        f"demo_drive: robot={resolved.robot_id} transport={transport} runtime={runtime} "
         f"vx={args.vx} for {args.seconds}s"
     )
     try:
-        bot = Robot.connect(args.robot, transport=args.transport, runtime=runtime)
+        bot = Robot.connect(
+            resolved.robot_id,
+            transport=transport,
+            runtime=runtime,
+            sim_backend=profile.sim_backend,
+            asset_path=profile.asset_path,
+            safety_overrides=dict(profile.safety_overrides) or None,
+        )
     except UnknownRobot as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

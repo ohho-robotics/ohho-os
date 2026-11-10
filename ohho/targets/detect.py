@@ -4,7 +4,8 @@ Board checks reuse :func:`ohho.profiles._is_jetson`,
 :func:`ohho.profiles._is_raspberry_pi` and
 :func:`ohho.profiles._is_apple_silicon`. The device string reuses
 :func:`ohho.hardware.resolve_device`. GPU name and memory come from a
-``nvidia-smi`` query. Nothing here writes a file, opens a robot, or sets
+``nvidia-smi`` query. Device nodes under ``/dev/nvidia*`` provide a
+fallback check. Nothing here writes a file, opens a robot, or sets
 ``OHHO_ARM_HARDWARE``.
 """
 
@@ -81,6 +82,7 @@ class MachineProbe:
     nvidia_gpu_name: str = ""
     nvidia_memory_mib: int = 0
     nvidia_smi_detail: str = "nvidia-smi was not found"
+    nvidia_device_nodes: bool = False
     ort_providers: tuple[str, ...] | None = None
     tensorrt_version: str = ""
     trtexec: bool = False
@@ -242,6 +244,18 @@ def _default_nvidia_smi() -> tuple[str, int, str]:
     return parts[0], memory, f"nvidia-smi reported {parts[0]}"
 
 
+def _default_nvidia_device_nodes() -> bool:
+    dev = Path("/dev")
+    try:
+        if not dev.is_dir():
+            return False
+        if (dev / "nvidiactl").exists() or (dev / "nvidia0").exists():
+            return True
+        return any(dev.glob("nvidia*"))
+    except OSError:
+        return False
+
+
 def _default_tensorrt() -> str:
     try:
         import tensorrt as trt
@@ -268,6 +282,7 @@ class ProbeSources:
     apple_silicon: Callable[[], bool] = _default_apple
     torch_probe: Callable[[], tuple[str, str]] = _default_torch
     nvidia_smi: Callable[[], tuple[str, int, str]] = _default_nvidia_smi
+    nvidia_device_nodes: Callable[[], bool] = _default_nvidia_device_nodes
     ort_providers: Callable[[], tuple[str, ...] | None] = installed_execution_providers
     tensorrt_version: Callable[[], str] = _default_tensorrt
     trtexec: Callable[[], bool] = _default_trtexec
@@ -292,6 +307,7 @@ def probe_machine(sources: ProbeSources | None = None) -> MachineProbe:
         nvidia_gpu_name=name.strip(),
         nvidia_memory_mib=memory,
         nvidia_smi_detail=smi_detail,
+        nvidia_device_nodes=bool(src.nvidia_device_nodes()),
         ort_providers=src.ort_providers(),
         tensorrt_version=src.tensorrt_version().strip(),
         trtexec=bool(src.trtexec()),
@@ -319,34 +335,53 @@ def _jetson_profile(model: str) -> str | None:
     return None
 
 
-def _cuda_seen(probe: MachineProbe) -> bool:
-    if probe.torch_device == "cuda" or probe.nvidia_gpu_name:
+def _is_pi_5(model: str) -> bool:
+    lowered = model.lower()
+    if "raspberry pi 5" in lowered:
         return True
-    return CUDA_PROVIDER in (probe.ort_providers or ())
+    if "compute module 5" in lowered:
+        return True
+    if "raspberry pi" in lowered and re.search(r"\bcm5\b", lowered):
+        return True
+    return False
+
+
+def _cuda_seen(probe: MachineProbe) -> bool:
+    return bool(
+        probe.torch_device == "cuda"
+        or probe.nvidia_gpu_name
+        or probe.nvidia_device_nodes
+        or probe.jetson
+    )
 
 
 def _cuda_status(probe: MachineProbe, jetson_board: bool) -> ComponentStatus:
-    reasons: list[str] = []
+    device_reasons: list[str] = []
     if probe.torch_device == "cuda" and probe.torch_detail:
-        reasons.append(probe.torch_detail)
+        device_reasons.append(probe.torch_detail)
     if probe.nvidia_gpu_name:
         detail = probe.nvidia_smi_detail
         if not detail or "not found" in detail:
             detail = f"GPU {probe.nvidia_gpu_name} was reported"
-        reasons.append(detail)
-    if CUDA_PROVIDER in (probe.ort_providers or ()):
-        reasons.append("ONNX Runtime lists CUDAExecutionProvider")
+        device_reasons.append(detail)
+    if probe.nvidia_device_nodes:
+        device_reasons.append("/dev/nvidia* was found")
     if jetson_board:
-        reasons.append("Jetson board detected")
-    if reasons:
+        device_reasons.append("Jetson board detected")
+    if device_reasons:
+        reasons = list(device_reasons)
+        if CUDA_PROVIDER in (probe.ort_providers or ()):
+            reasons.append("ONNX Runtime lists CUDAExecutionProvider")
         return ComponentStatus(
             "present", "CUDA is present (" + "; ".join(reasons) + ")."
         )
     parts = [part for part in (probe.torch_detail, probe.nvidia_smi_detail) if part]
     if probe.ort_providers is None:
         parts.append("onnxruntime is not installed")
-    else:
+    elif CUDA_PROVIDER not in (probe.ort_providers or ()):
         parts.append("ONNX Runtime has no CUDAExecutionProvider")
+    else:
+        parts.append("no CUDA device was detected")
     return ComponentStatus("missing", "CUDA is missing (" + "; ".join(parts) + ").")
 
 
@@ -408,9 +443,9 @@ def _select(
             "or AGX Orin. No target profile was selected."
         )
         return None, notes
-    lowered = model.lower()
-    if "raspberry pi 5" in lowered:
+    if _is_pi_5(model):
         return "rpi5-cpu", notes
+    lowered = model.lower()
     if probe.raspberry_pi or "raspberry pi" in lowered:
         notes.append(
             "Raspberry Pi detected, but it is not a Pi 5. rpi5-cpu was not selected."
