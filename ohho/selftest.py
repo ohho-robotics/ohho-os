@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -1149,6 +1151,76 @@ def _run_profile_checks(
     return results
 
 
+def _limit_selftest_motion(
+    transport: Transport, spec: RobotSpec, overrides: Mapping[str, Any]
+) -> Transport:
+    """Clamp self-test motion to the profile's tighter caps.
+
+    Raw ``send_motor`` ignores velocity caps, so it is hidden and the wheel
+    check uses ``send_velocity``. Sport names outside the tightened allowlist
+    are not forwarded. ``--allow-spin`` and ``--allow-stand`` stay the consent
+    for this path; the commands those flags send cannot exceed the profile.
+    """
+    from .config import RobotProfile, merge_safety_overrides
+    from .safety import SafetyConfig, normalize_action
+    from .safety_policy import prepare_gate_profile
+
+    checked = RobotProfile(spec.id, safety_overrides=dict(overrides))
+    cleaned = checked.safety_overrides
+    if not cleaned:
+        return transport
+    config = merge_safety_overrides(SafetyConfig(), spec.id, dict(cleaned))
+    policy, base = prepare_gate_profile(spec, config=config)
+    policy = policy.bind(base)
+    raw_velocity = transport.send_velocity
+    previous = (0.0, 0.0, 0.0)
+    last_t: list[float | None] = [None]
+
+    def send_velocity(vel: Velocity) -> None:
+        nonlocal previous
+        requested = (float(vel.linear_x), float(vel.linear_y), float(vel.angular_z))
+        if not all(math.isfinite(part) for part in requested):
+            previous = (0.0, 0.0, 0.0)
+            raw_velocity(Velocity())
+            return
+        now = time.monotonic()
+        if last_t[0] is None:
+            dt = float(policy.profile.cmd_timeout_s)
+        else:
+            dt = now - last_t[0]
+        last_t[0] = now
+        decision = policy.clamp("velocity", (requested, previous, dt), None)
+        applied = decision.applied
+        if decision.reject or len(applied) != 3:
+            applied = (0.0, 0.0, 0.0)
+        previous = (float(applied[0]), float(applied[1]), float(applied[2]))
+        raw_velocity(Velocity(*previous))
+
+    transport.send_velocity = send_velocity  # type: ignore[method-assign]
+
+    raw_sport = getattr(transport, "sport_command", None)
+    if callable(raw_sport):
+
+        def sport_command(action: str, *args: float, **kwargs: Any) -> Any:
+            name = normalize_action(str(action))
+            if policy.denied(name) or (
+                name != "stop_move" and name not in policy.allowlist
+            ):
+                return False
+            if name == "euler":
+                decision = policy.clamp("euler", args, None)
+                if decision.reject:
+                    return False
+                return raw_sport(action, *decision.applied)
+            return raw_sport(action, *args, **kwargs)
+
+        transport.sport_command = sport_command  # type: ignore[method-assign]
+
+    if callable(getattr(transport, "send_motor", None)):
+        transport.send_motor = None  # type: ignore[attr-defined]
+    return transport
+
+
 # ── Full Self-Test Runner ─────────────────────────────────────────────────────
 
 
@@ -1164,8 +1236,20 @@ def run_selftest(
     camera_idx: int = 0,
     transport_uri: str = "",
     transport: Optional[Transport] = None,
+    sim_backend: str | None = None,
+    asset_path: str | None = None,
+    safety_overrides: Mapping[str, Any] | None = None,
+    network_interface: str | None = None,
+    replace_network_interface: bool = False,
 ) -> SelfTestReport:
-    """Run all hardware self-test checks and return a complete SelfTestReport."""
+    """Run all hardware self-test checks and return a complete SelfTestReport.
+
+    ``sim_backend`` and ``asset_path`` come from a robot profile and select
+    the sim link. ``transport_uri`` is the hardware URI. ``network_interface``
+    is written into a DDS URI; ``replace_network_interface`` also replaces a
+    default host. ``safety_overrides`` clamp hardware motion to the tighter
+    caps. A simulated link is not wrapped.
+    """
     if not robot:
         from .plugins import preferred_robot_id
 
@@ -1173,6 +1257,10 @@ def run_selftest(
     start_time = datetime.datetime.now(datetime.timezone.utc)
     t_start = time.monotonic()
     spec = get_spec(robot)
+    if sim_backend or asset_path:
+        from .config import spec_with_overrides
+
+        spec = spec_with_overrides(spec, sim_backend=sim_backend, asset_path=asset_path)
     profile = profile_for_robot(spec)
     tp = transport
     owned_transport = False
@@ -1181,9 +1269,15 @@ def run_selftest(
     if tp is None:
         owned_transport = True
         if sim:
-            tp = SimTransport(spec)
+            if str(spec.sim_backend or "").strip():
+                from .adapters import resolve_transport
+
+                tp = resolve_transport("sim://", spec)
+            else:
+                tp = SimTransport(spec)
         else:
             from .adapters import resolve_transport
+            from .config import apply_network_interface
 
             uri = default_hardware_transport_uri(
                 spec,
@@ -1191,6 +1285,14 @@ def run_selftest(
                 base_port=base_port,
                 arm_port=arm_port,
             )
+            if network_interface:
+                rewritten = apply_network_interface(
+                    uri,
+                    network_interface,
+                    replace=replace_network_interface,
+                )
+                if isinstance(rewritten, str) and rewritten:
+                    uri = rewritten
             try:
                 tp = resolve_transport(uri, spec)
             except Exception as e:
@@ -1222,6 +1324,13 @@ def run_selftest(
                 if out_path:
                     save_report_json(report, out_path)
                 raise RuntimeError(err_msg) from e
+
+    if (
+        tp is not None
+        and safety_overrides
+        and getattr(tp, "protocol", "") != "simulated"
+    ):
+        tp = _limit_selftest_motion(tp, spec, safety_overrides)
 
     try:
         connect_fn = getattr(tp, "connect", None)

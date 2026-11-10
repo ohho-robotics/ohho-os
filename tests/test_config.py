@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -19,10 +20,12 @@ from ohho.config import (
     ResolvedRobot,
     RobotProfile,
     SafetyCapError,
+    apply_network_interface,
     apply_profile_to_spec,
     format_resolved,
     load_robot_profile,
     merge_safety_overrides,
+    resolve_profile_transport,
     resolve_robot_id,
     spec_with_overrides,
 )
@@ -32,7 +35,7 @@ from ohho.robot import Robot
 from ohho.runtime import NativeRuntime
 from ohho.safety import SafetyConfig, profile_for
 from ohho.session import RobotSession
-from ohho.sim_loop import record_sim_episodes
+from ohho.sim_loop import _open_sim_robot, record_sim_episodes
 from ohho.sim_serve import SimServe
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -609,6 +612,256 @@ class TestCli(unittest.TestCase):
                     code = main(["sim", "--seconds", "0"])
                 self.assertEqual(code, 0)
                 self.assertIn("Generic Sim Bot", out.getvalue())
+
+
+class TestNetworkInterface(unittest.TestCase):
+    def test_dds_host_is_filled_and_a_typed_host_is_kept(self):
+        self.assertEqual(apply_network_interface("dds://", "enp3s0"), "dds://enp3s0")
+        self.assertEqual(
+            apply_network_interface("dds://?domain=1", "enp3s0"),
+            "dds://enp3s0?domain=1",
+        )
+        self.assertEqual(
+            apply_network_interface("unitree-dds://", "enp3s0"),
+            "unitree-dds://enp3s0",
+        )
+        self.assertEqual(apply_network_interface("dds://eth1", "enp3s0"), "dds://eth1")
+        self.assertEqual(
+            apply_network_interface("dds://eth1", "enp3s0", replace=True),
+            "dds://enp3s0",
+        )
+        self.assertEqual(apply_network_interface("sim://", "eth0"), "sim://")
+        self.assertEqual(
+            apply_network_interface("serial:///dev/ttyUSB0", "eth0"),
+            "serial:///dev/ttyUSB0",
+        )
+        self.assertIsNone(apply_network_interface(None, "eth0"))
+        with self.assertRaises(ConfigError):
+            apply_network_interface("dds://", "eth 0")
+
+    def test_interface_cannot_drop_hardware_arming(self):
+        hardware = "dds://eth0?domain=1"
+        for iface in ("lo", "lo0", "localhost", "127.0.0.1", "127.0.0.2", "::1"):
+            with self.subTest(iface=iface):
+                self.assertEqual(
+                    apply_network_interface(hardware, iface, replace=True),
+                    hardware,
+                )
+        self.assertEqual(
+            apply_network_interface(hardware, "enp3s0", replace=True),
+            "dds://enp3s0?domain=1",
+        )
+
+    def test_profile_transport_host_is_replaced_and_a_caller_uri_is_not(self):
+        profile = RobotProfile(
+            "unitree-go2",
+            transport="dds://eth0",
+            network_interface="enp3s0",
+        )
+        self.assertEqual(
+            resolve_profile_transport(None, profile, use_profile_transport=True),
+            "dds://enp3s0",
+        )
+        self.assertEqual(
+            resolve_profile_transport("dds://", profile, use_profile_transport=True),
+            "dds://enp3s0",
+        )
+        self.assertEqual(
+            resolve_profile_transport(
+                "dds://eth1", profile, use_profile_transport=True
+            ),
+            "dds://eth1",
+        )
+        self.assertEqual(
+            resolve_profile_transport("sim://", profile, use_profile_transport=True),
+            "sim://",
+        )
+        bare = RobotProfile("sim", network_interface="eth0")
+        self.assertIsNone(
+            resolve_profile_transport(None, bare, use_profile_transport=True)
+        )
+
+
+class TestProfileReach(unittest.TestCase):
+    def _profile_home(self, root: Path) -> None:
+        _write(
+            root / ".ohho" / "robots" / "unitree-go2.toml",
+            "\n".join(
+                [
+                    'transport = "dds://"',
+                    'network_interface = "enp3s0"',
+                    "",
+                    "[safety]",
+                    "max_vx = 0.2",
+                    "",
+                ]
+            ),
+        )
+
+    def test_connect_session_sim_serve_and_demo_use_the_interface(self):
+        from ohho.demo_drive import DriveResult
+        from ohho.demo_drive import main as demo_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self._profile_home(home)
+            env = {"OHHO_HOME": tmp}
+            fake = mock.Mock()
+            fake.gated = False
+            fake.status.return_value = mock.Mock(
+                state=mock.Mock(value="connected"), label="dds"
+            )
+            fake.telemetry.return_value = None
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop("OHHO_ROBOT", None)
+                with (
+                    mock.patch("ohho.cli.time.sleep"),
+                    mock.patch("ohho.cli.Robot.connect", return_value=fake) as conn,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(main(["connect", "unitree-go2"]), 0)
+                conn.assert_called_once()
+                self.assertEqual(conn.call_args.kwargs["transport"], "dds://enp3s0")
+                self.assertAlmostEqual(
+                    conn.call_args.kwargs["safety_overrides"]["max_vx"], 0.2
+                )
+
+                with (
+                    mock.patch("ohho.cli.time.sleep"),
+                    mock.patch("ohho.cli.Robot.connect", return_value=fake) as conn,
+                    redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(
+                        main(
+                            [
+                                "connect",
+                                "unitree-go2",
+                                "--transport",
+                                "dds://eth1",
+                            ]
+                        ),
+                        0,
+                    )
+                self.assertEqual(conn.call_args.kwargs["transport"], "dds://eth1")
+
+            session = RobotSession("unitree-go2", home=home, cwd=home, environ={})
+            self.assertEqual(session.transport, "dds://enp3s0")
+            pinned = RobotSession(
+                "unitree-go2",
+                transport="dds://eth1",
+                home=home,
+                cwd=home,
+                environ={},
+            )
+            self.assertEqual(pinned.transport, "dds://eth1")
+
+            server = SimServe(
+                backend="robot",
+                robot="unitree-go2",
+                transport="dds://",
+                home=home,
+                cwd=home,
+                environ={},
+            )
+            self.assertEqual(server._transport_uri, "dds://enp3s0")
+            from_profile = SimServe(
+                backend="robot",
+                robot="unitree-go2",
+                home=home,
+                cwd=home,
+                environ={},
+            )
+            self.assertEqual(from_profile._transport_uri, "dds://enp3s0")
+
+            from ohho.sim_serve import serve_sim
+
+            seen: dict[str, str] = {}
+
+            def grab(self, stop_event=None):
+                seen["uri"] = self._transport_uri
+
+            with mock.patch.object(SimServe, "run", grab):
+                serve_sim(
+                    backend="robot",
+                    robot="unitree-go2",
+                    home=home,
+                    cwd=home,
+                    environ={},
+                )
+            self.assertEqual(seen["uri"], "dds://enp3s0")
+            with self.assertRaises(ValueError):
+                serve_sim(
+                    backend="robot",
+                    robot="sim",
+                    home=home,
+                    cwd=home,
+                    environ={},
+                )
+
+            result = DriveResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop("OHHO_ROBOT", None)
+                with (
+                    mock.patch(
+                        "ohho.demo_drive.Robot.connect", return_value=fake
+                    ) as conn,
+                    mock.patch("ohho.demo_drive.run_drive", return_value=result),
+                    redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(
+                        demo_main(
+                            [
+                                "--robot",
+                                "unitree-go2",
+                                "--transport",
+                                "dds://",
+                                "--seconds",
+                                "0",
+                            ]
+                        ),
+                        0,
+                    )
+                self.assertEqual(conn.call_args.kwargs["transport"], "dds://enp3s0")
+
+    def test_sim_loop_uses_the_spec_backend_without_a_profile_backend(self):
+        spec = replace(get_spec("sim"), sim_backend="kinematic")
+        stepped = mock.Mock()
+        stepped.step = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch("ohho.sim_loop.get_spec", return_value=spec),
+                mock.patch(
+                    "ohho.sim_loop.resolve_transport", return_value=stepped
+                ) as resolve,
+            ):
+                robot_id, out_spec, transport = _open_sim_robot(
+                    None,
+                    home=tmp,
+                    cwd=tmp,
+                    environ={"OHHO_ROBOT": "sim"},
+                )
+        self.assertEqual(robot_id, "sim")
+        self.assertEqual(out_spec.sim_backend, "kinematic")
+        self.assertIs(transport, stepped)
+        resolve.assert_called_once_with("sim://", spec)
+
+        plain = get_spec("omnibot")
+        with mock.patch("ohho.sim_loop.resolve_transport") as resolve:
+            _robot_id, _spec, transport = _open_sim_robot("omnibot")
+        resolve.assert_not_called()
+        self.assertIsInstance(transport, SimTransport)
+        self.assertEqual(transport.spec.id, plain.id)
+
+        with (
+            mock.patch("ohho.sim_loop.get_spec", return_value=spec),
+            mock.patch(
+                "ohho.sim_loop.resolve_transport", return_value=mock.Mock(spec=[])
+            ),
+        ):
+            with self.assertRaises(ConfigError) as raised:
+                _open_sim_robot("sim")
+        self.assertIn("kinematic", str(raised.exception))
+        self.assertIn("step", str(raised.exception))
 
 
 if __name__ == "__main__":

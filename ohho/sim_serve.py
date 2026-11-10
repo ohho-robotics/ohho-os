@@ -49,7 +49,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from .config import RobotProfile, load_robot_profile, resolve_robot_id
+from .config import (
+    RobotProfile,
+    load_robot_profile,
+    resolve_profile_transport,
+    resolve_robot_id,
+)
 from .protocol import PROTOCOL_VERSION
 from .schema import Telemetry
 
@@ -458,8 +463,6 @@ class SimServe:
         environ: Mapping[str, str] | None = None,
         config_path: Path | str | None = None,
     ) -> None:
-        if backend == "robot" and not transport:
-            raise ValueError("backend 'robot' requires a transport URI (--transport)")
         if backend_entry(backend) != "available":
             raise SimServeUnavailable(f"backend '{backend}' is not-implemented")
 
@@ -478,7 +481,17 @@ class SimServe:
             )
         self.backend = backend
         self.robot_id = self.resolved.robot_id
-        self._transport_uri = transport
+        if backend == "robot":
+            resolved_transport = resolve_profile_transport(
+                transport, self.profile, use_profile_transport=True
+            )
+            if not resolved_transport:
+                raise ValueError(
+                    "backend 'robot' requires a transport URI (--transport)"
+                )
+            self._transport_uri = resolved_transport
+        else:
+            self._transport_uri = transport
         self.host = host
         self.port = port
         self.rosbridge_url = rosbridge
@@ -564,10 +577,13 @@ class SimServe:
         ssl_ctx = None
         if self.ssl_cert and self.ssl_key:
             import ssl
+
             ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ssl_ctx.load_cert_chain(certfile=self.ssl_cert, keyfile=self.ssl_key)
 
-        self._server = await websockets.serve(self._handle_client, self.host, self.port, ssl=ssl_ctx)
+        self._server = await websockets.serve(
+            self._handle_client, self.host, self.port, ssl=ssl_ctx
+        )
         if self._server.sockets:
             self.port = self._server.sockets[0].getsockname()[1]
 
@@ -933,8 +949,6 @@ def serve_sim(
         ssl_cert: optional SSL certificate PEM file.
         ssl_key: optional SSL private key PEM file.
     """
-    if backend == "robot" and not transport:
-        raise ValueError("backend 'robot' requires a transport URI (--transport)")
     if backend_entry(backend) != "available":
         raise SimServeUnavailable(f"backend '{backend}' is not-implemented")
     server = SimServe(

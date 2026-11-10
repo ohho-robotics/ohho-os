@@ -11,8 +11,12 @@ The robot id is chosen in one place, in this order:
 
 Per-robot settings live in ``~/.ohho/robots/<id>.toml`` or a repo-local
 ``ohho.toml`` (working directory). They may set the default transport URI,
-sim backend, asset path and network interface. Safety keys may only tighten
-the robot's current caps. A profile that raises a cap is refused at load.
+sim backend, asset path and network interface. ``network_interface`` is
+written into a ``dds://`` URI, including a plugin scheme whose name ends in
+``-dds``, when that connection is opened. An omitted transport stays in
+simulation. Safety keys may only
+tighten the robot's current caps. A profile that raises a cap is refused
+at load.
 
 ``OHHO_HOME``, when set, is the directory that contains ``.ohho`` (tests pass
 a temporary directory here). Nothing in this module reads a caller's real
@@ -37,7 +41,13 @@ from typing import Any
 
 from .registry import RobotSpec, UnknownRobot, get_spec
 from .robot_spec import RobotAssets
-from .safety import SafetyConfig, SafetyProfile, normalize_action, profile_for
+from .safety import (
+    SafetyConfig,
+    SafetyProfile,
+    _is_loopback,
+    normalize_action,
+    profile_for,
+)
 
 ROBOT_ENV = "OHHO_ROBOT"
 HOME_ENV = "OHHO_HOME"
@@ -58,6 +68,10 @@ _PROFILE_KEYS = frozenset(
     }
 )
 _STRING_FIELDS = ("transport", "sim_backend", "asset_path", "network_interface")
+# A DDS address is ``<interface>?domain=<n>``. Plugin schemes use the same
+# shape and a name that ends in ``-dds``. Other URIs ignore
+# ``network_interface`` so a sim or serial connection is not rewritten.
+_IFACE_NAME = re.compile(r"[A-Za-z0-9._:-]+\Z")
 # Higher numbers are looser caps. A profile may only set a smaller value.
 _MAX_CAPS = frozenset(
     {
@@ -310,6 +324,108 @@ def spec_with_overrides(
     if assets is spec.assets and backend == spec.sim_backend:
         return spec
     return replace(spec, assets=assets, sim_backend=backend)
+
+
+def apply_network_interface(
+    uri: str | None,
+    network_interface: str | None,
+    *,
+    replace: bool = False,
+) -> str | None:
+    """Write ``network_interface`` into a DDS transport URI.
+
+    ``dds://`` and a plugin scheme whose name ends in ``-dds`` take an
+    interface. Every other URI, including ``None`` and ``sim://``, is
+    returned unchanged, so an omitted transport still means simulation.
+
+    An empty host (``dds://`` or ``dds://?domain=1``) is filled in. When
+    ``replace`` is true an existing host is replaced as well. That is for a
+    URI that came from the profile or from a default, not one the caller
+    typed. A caller-supplied host is kept when ``replace`` is false.
+
+    The rewrite is skipped when it would turn a hardware URI into a
+    loopback interface on a non-zero domain. That pair does not require
+    hardware arming, so a profile cannot use this field to drop it.
+    """
+    if not isinstance(uri, str) or not uri.strip():
+        return uri
+    iface = network_interface.strip() if isinstance(network_interface, str) else ""
+    if not iface:
+        return uri
+    scheme, sep, address = uri.partition("://")
+    if not sep or not _dds_scheme(scheme):
+        return uri
+    host, query_sep, query = address.partition("?")
+    explicit = host.strip()
+    if explicit == iface or (explicit and not replace):
+        return uri
+    if _IFACE_NAME.fullmatch(iface) is None:
+        raise ConfigError(f"network_interface {iface!r} is not a DDS interface name")
+    original_query = query if query_sep else None
+    if _rewrite_drops_arming(explicit, iface, original_query):
+        return uri
+    if query_sep:
+        return f"{scheme}://{iface}?{query}"
+    return f"{scheme}://{iface}"
+
+
+def resolve_profile_transport(
+    uri: str | None,
+    profile: RobotProfile,
+    *,
+    use_profile_transport: bool,
+) -> str | None:
+    """Pick the transport URI and apply :attr:`RobotProfile.network_interface`.
+
+    A missing URI uses ``profile.transport`` when ``use_profile_transport``
+    is set, and that profile URI is where the interface may replace the host.
+    A URI the caller already passed keeps its host. An empty DDS host is
+    still filled in.
+    """
+    chosen = uri if isinstance(uri, str) and uri.strip() else None
+    from_profile = False
+    if chosen is None and use_profile_transport and profile.transport:
+        chosen = profile.transport
+        from_profile = True
+    return apply_network_interface(
+        chosen, profile.network_interface, replace=from_profile
+    )
+
+
+def _dds_scheme(scheme: str) -> bool:
+    """True for ``dds`` and a plugin scheme whose name ends in ``-dds``."""
+    name = scheme.lower()
+    return name == "dds" or name.endswith("-dds")
+
+
+def _query_domain(query: str | None) -> int | None:
+    if not query:
+        return None
+    for item in filter(None, query.split("&")):
+        key, eq, value = item.partition("=")
+        if key == "domain" and eq:
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+def _rewrite_drops_arming(
+    original_iface: str, new_iface: str, query: str | None
+) -> bool:
+    """True when the new host would skip hardware arming and the old one would not.
+
+    A non-zero DDS domain on a loopback interface does not require the
+    hardware arming phrase. An explicit interface with no domain is domain 0,
+    which still does.
+    """
+    domain = _query_domain(query)
+    if domain is None or domain == 0 or not _is_loopback(new_iface):
+        return False
+    if not original_iface or _is_loopback(original_iface):
+        return False
+    return True
 
 
 def merge_safety_overrides(

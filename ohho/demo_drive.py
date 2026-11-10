@@ -12,7 +12,12 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from .config import default_home, load_robot_profile, resolve_robot_id
+from .config import (
+    default_home,
+    load_robot_profile,
+    resolve_profile_transport,
+    resolve_robot_id,
+)
 from .registry import UnknownRobot
 from .robot import Robot
 
@@ -189,15 +194,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
     resolved = resolve_robot_id(args.robot, home=default_home())
     profile = load_robot_profile(resolved.robot_id, home=default_home())
-    runtime = args.runtime or default_runtime_for_transport(args.transport)
+    transport = (
+        resolve_profile_transport(args.transport, profile, use_profile_transport=False)
+        or args.transport
+    )
+    runtime = args.runtime or default_runtime_for_transport(transport)
     print(
-        f"demo_drive: robot={resolved.robot_id} transport={args.transport} runtime={runtime} "
+        f"demo_drive: robot={resolved.robot_id} transport={transport} runtime={runtime} "
         f"vx={args.vx} for {args.seconds}s"
     )
     try:
         bot = Robot.connect(
             resolved.robot_id,
-            transport=args.transport,
+            transport=transport,
             runtime=runtime,
             sim_backend=profile.sim_backend,
             asset_path=profile.asset_path,

@@ -23,6 +23,7 @@ from .config import (
     default_home,
     format_resolved,
     load_robot_profile,
+    resolve_profile_transport,
     resolve_robot_id,
 )
 from .hardware import resolve_device
@@ -123,12 +124,17 @@ def _bind_robot(args) -> None:
 
 
 def _connect_kwargs(args, transport: Optional[str], *, use_profile_transport: bool):
-    """Transport plus profile fields. Empty profiles add no keyword arguments."""
+    """Transport plus profile fields. Empty profiles add no keyword arguments.
+
+    ``network_interface`` is written into a DDS URI here. ``sim://`` and an
+    omitted transport are left alone.
+    """
     profile = getattr(args, "robot_profile", None)
     extra: dict = {}
     if isinstance(profile, RobotProfile):
-        if use_profile_transport and transport is None and profile.transport:
-            transport = profile.transport
+        transport = resolve_profile_transport(
+            transport, profile, use_profile_transport=use_profile_transport
+        )
         if profile.sim_backend:
             extra["sim_backend"] = profile.sim_backend
         if profile.asset_path:
@@ -968,6 +974,25 @@ def _cmd_selftest(args) -> int:
 
     allow_spin = getattr(args, "allow_spin", False)
     allow_stand = getattr(args, "allow_stand", False)
+    profile = getattr(args, "robot_profile", None)
+    transport_uri = str(getattr(args, "transport", "") or "").strip()
+    explicit_transport = bool(transport_uri)
+    sim_backend = None
+    asset_path = None
+    safety_overrides = None
+    network_interface = None
+    if isinstance(profile, RobotProfile):
+        ports_set = bool(
+            str(getattr(args, "base_port", "") or "").strip()
+            or str(getattr(args, "arm_port", "") or "").strip()
+        )
+        if not explicit_transport and not ports_set and profile.transport:
+            transport_uri = profile.transport
+        sim_backend = profile.sim_backend
+        asset_path = profile.asset_path
+        network_interface = profile.network_interface
+        if profile.safety_overrides:
+            safety_overrides = dict(profile.safety_overrides)
     spec = get_spec(args.robot)
     if not args.sim and spec.category != "legged" and not allow_spin:
         if sys.stdin.isatty():
@@ -995,7 +1020,12 @@ def _cmd_selftest(args) -> int:
             base_port=getattr(args, "base_port", ""),
             arm_port=getattr(args, "arm_port", ""),
             camera_idx=getattr(args, "camera_idx", 0),
-            transport_uri=getattr(args, "transport", "") or "",
+            transport_uri=transport_uri,
+            sim_backend=sim_backend,
+            asset_path=asset_path,
+            safety_overrides=safety_overrides,
+            network_interface=network_interface,
+            replace_network_interface=not explicit_transport,
         )
     except Exception as e:
         print(f"error running selftest: {e}", file=sys.stderr)
@@ -1197,9 +1227,7 @@ def _cmd_bench(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = _ArgumentParser(
-        prog="ohho", description="OhhO OS — the open robot engine."
-    )
+    p = _ArgumentParser(prog="ohho", description="OhhO OS — the open robot engine.")
     p.add_argument(
         "-V", "--version", action="store_true", help="print version and exit"
     )

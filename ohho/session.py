@@ -11,7 +11,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .config import RobotProfile, load_robot_profile, resolve_robot_id
+from .config import (
+    RobotProfile,
+    load_robot_profile,
+    resolve_profile_transport,
+    resolve_robot_id,
+)
 from .robot import Robot
 
 
@@ -49,7 +54,9 @@ class RobotSession:
             self.profile = load_robot_profile(
                 self.resolved.robot_id, home=home, cwd=cwd
             )
-        self.transport = transport if transport is not None else self.profile.transport
+        self.transport = resolve_profile_transport(
+            transport, self.profile, use_profile_transport=True
+        )
         self.runtime = runtime
         self.safety_config = safety_config
         self.estop_damp = estop_damp
@@ -63,6 +70,8 @@ class RobotSession:
 
         Does not arm the safety gate. A simulated transport is used when the
         profile does not name one and the caller did not pass ``transport``.
+        ``network_interface`` is already written into ``self.transport`` when
+        that URI is DDS.
         """
         extra: dict[str, Any] = {}
         if self.profile.sim_backend:

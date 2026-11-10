@@ -41,11 +41,12 @@ def _open_sim_robot(
     environ: Optional[dict] = None,
     config_path: Optional[str] = None,
 ) -> Tuple[str, Any, Any]:
-    """Resolve ``robot_id`` and open the stepped simulator for that profile.
+    """Resolve ``robot_id`` and open the stepped simulator for that spec.
 
-    An explicit id with no injected config path skips profile files, so
-    existing callers keep today's simulator. Omit the id, or pass ``home`` /
-    ``cwd`` / ``config_path``, and the shared resolver plus robot profile apply.
+    An explicit id with no injected config path skips profile files. The
+    transport is the spec's sim backend when one is set, including a backend
+    the profile copied onto the spec. Otherwise it is today's
+    :class:`~ohho.adapters.sim.SimTransport`.
     """
     explicit = isinstance(robot_id, str) and bool(robot_id.strip())
     resolved = resolve_robot_id(
@@ -62,11 +63,12 @@ def _open_sim_robot(
     else:
         profile = RobotProfile(resolved.robot_id)
     spec = apply_profile_to_spec(get_spec(resolved.robot_id), profile)
-    if profile.sim_backend:
+    backend = spec.sim_backend.strip()
+    if backend:
         transport = resolve_transport("sim://", spec)
         if not hasattr(transport, "step"):
             raise ConfigError(
-                f"sim backend {profile.sim_backend!r} has no step(); "
+                f"sim backend {backend!r} has no step(); "
                 "sim-loop needs a stepped simulator"
             )
     else:
