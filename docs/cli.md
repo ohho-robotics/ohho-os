@@ -99,11 +99,18 @@ by `ohho dataset stats` are the block stored on the version.
 | `ohho dataset build --source PATH [--source PATH] [--store DIR]` | Materialise a version from local episodes |
 | `ohho dataset pin VERSION [--store DIR]` | Freeze that version |
 | `ohho dataset stats VERSION [--store DIR]` | Print stored episode, frame, and range stats |
+| `ohho dataset import-hf REPO [--revision REV] [--store DIR]` | Import a Hub LeRobot dataset and pin the resolved commit and licence |
 
 `--json` prints the same result as JSON. Paths and the cloud-table mapping are
 in [`dataset-versions.md`](dataset-versions.md). Training code still takes a
 dataset path; `ohho.datasets.resolve_dataset_version` turns a version id into
 that path.
+
+`import-hf` needs the optional `huggingface_hub` package (`pip install
+'ohho-os[datasets]'`). It stores the commit the Hub resolved and the
+dataset-card licence. A non-commercial licence is flagged and printed as
+`warning: licence … is non-commercial`. Episode, run, and model edges are in
+[`dataset-lineage.md`](dataset-lineage.md).
 
 ## Smoke tests
 
