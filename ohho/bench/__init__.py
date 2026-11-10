@@ -1,8 +1,18 @@
-"""Benchmark results shared by the Serve bench harness (ohho.bench/v1)."""
+"""Benchmark results and the Serve bench harness (ohho.bench/v1).
+
+The JSON Schema, validator, and converter live in :mod:`ohho.bench.schema`.
+The harness times a five-stage runner and writes a document that validates
+against that schema. Import the harness from here so another package can
+call :func:`execute` without going through the CLI.
+"""
 
 from __future__ import annotations
 
-from .schema import (
+from ohho.bench.errors import BenchHarnessError
+from ohho.bench.harness import BenchConfig, execute, finalize_result, run_benchmark
+from ohho.bench.report import render_markdown, render_prometheus
+from ohho.bench.runner import STAGE_NAMES, StageRunner
+from ohho.bench.schema import (
     SCHEMA_ID,
     BenchConversionError,
     BenchValidationError,
@@ -15,11 +25,20 @@ from .schema import (
 
 __all__ = [
     "SCHEMA_ID",
+    "STAGE_NAMES",
+    "BenchConfig",
     "BenchConversionError",
+    "BenchHarnessError",
     "BenchValidationError",
+    "StageRunner",
     "ValidationIssue",
     "convert",
+    "execute",
+    "finalize_result",
     "load_schema",
+    "render_markdown",
+    "render_prometheus",
+    "run_benchmark",
     "validate",
     "validate_path",
 ]
