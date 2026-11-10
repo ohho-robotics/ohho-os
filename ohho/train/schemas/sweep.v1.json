@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.sweep.v1.json",
+  "title": "ohho.sweep/v1",
+  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random with at least one dimension requires budget.max_trials; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points. estimated GPU-hours are an estimate computed from per-trial values in this spec.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema"],
+  "properties": {
+    "schema": {"const": "ohho.sweep/v1"},
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Seed for strategy random. Grid order does not use the seed."
+    },
+    "strategy": {
+      "enum": ["grid", "random"],
+      "default": "grid"
+    },
+    "parallelism": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "How many trials a later runner may execute at once. Plan does not launch them."
+    },
+    "recipe": {
+      "type": "object",
+      "description": "Opaque base recipe mapping. ohho.sweep/v1 copies it and applies dotted overrides. It does not interpret recipe fields."
+    },
+    "dimensions": {
+      "type": "array",
+      "default": [],
+      "items": {"$ref": "#/$defs/dimension"}
+    },
+    "constraints": {
+      "type": "array",
+      "default": [],
+      "items": {"$ref": "#/$defs/constraint"}
+    },
+    "objectives": {
+      "type": "array",
+      "default": [],
+      "items": {"$ref": "#/$defs/objective"}
+    },
+    "early_stopping": {"$ref": "#/$defs/earlyStopping"},
+    "budget": {"$ref": "#/$defs/budget"},
+    "estimate": {"$ref": "#/$defs/estimate"}
+  },
+  "$defs": {
+    "dottedPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "scalar": {
+      "anyOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "null"}
+      ]
+    },
+    "condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["all"],
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/$defs/condition"}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["any"],
+          "properties": {
+            "any": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/$defs/condition"}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["not"],
+          "properties": {
+            "not": {"$ref": "#/$defs/condition"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": {"$ref": "#/$defs/dottedPath"},
+            "eq": {},
+            "ne": {},
+            "in": {"type": "array", "minItems": 1},
+            "not_in": {"type": "array", "minItems": 1},
+            "lt": {"type": "number"},
+            "lte": {"type": "number"},
+            "gt": {"type": "number"},
+            "gte": {"type": "number"},
+            "exists": {"type": "boolean"}
+          },
+          "anyOf": [
+            {"required": ["eq"]},
+            {"required": ["ne"]},
+            {"required": ["in"]},
+            {"required": ["not_in"]},
+            {"required": ["lt"]},
+            {"required": ["lte"]},
+            {"required": ["gt"]},
+            {"required": ["gte"]},
+            {"required": ["exists"]}
+          ]
+        }
+      ]
+    },
+    "dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name"},
+        "path": {"$ref": "#/$defs/dottedPath"},
+        "type": {"enum": ["categorical", "int", "float", "log_uniform"]},
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/scalar"}
+        },
+        "low": {"type": "number"},
+        "high": {"type": "number"},
+        "step": {"type": "number", "exclusiveMinimum": 0},
+        "n": {"type": "integer", "minimum": 1},
+        "when": {"$ref": "#/$defs/condition"}
+      },
+      "allOf": [
+        {
+          "not": {
+            "allOf": [
+              {"required": ["values"]},
+              {
+                "anyOf": [
+                  {"required": ["low"]},
+                  {"required": ["high"]},
+                  {"required": ["step"]},
+                  {"required": ["n"]}
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {"type": {"const": "categorical"}}
+          },
+          "then": {"required": ["values"]}
+        },
+        {
+          "if": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": {"enum": ["int", "float", "log_uniform"]}
+            }
+          },
+          "then": {
+            "anyOf": [
+              {"required": ["values"]},
+              {"required": ["low", "high"]}
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {"type": {"const": "log_uniform"}}
+          },
+          "then": {
+            "anyOf": [
+              {"required": ["values"]},
+              {
+                "required": ["low", "high"],
+                "properties": {
+                  "low": {"exclusiveMinimum": 0},
+                  "high": {"exclusiveMinimum": 0}
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "constraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["prune_when"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "prune_when": {"$ref": "#/$defs/condition"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keep_when"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "keep_when": {"$ref": "#/$defs/condition"}
+          }
+        }
+      ]
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "direction"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["minimize", "maximize"]},
+        "primary": {"type": "boolean", "default": false}
+      }
+    },
+    "earlyStopping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric"],
+      "properties": {
+        "metric": {"type": "string", "minLength": 1},
+        "patience": {"type": "integer", "minimum": 1, "default": 1},
+        "min_delta": {"type": "number", "minimum": 0, "default": 0},
+        "mode": {"enum": ["min", "max"], "default": "min"}
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_trials": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Keep this many trials after constraints. Required for strategy random when dimensions is non-empty."
+        },
+        "max_gpu_hours": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Stop before the next trial would push the estimated total above this value."
+        }
+      }
+    },
+    "estimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-trial GPU-hour estimate. The first matching by_value rule wins. Otherwise gpu_hours_per_trial is used. The total reported by the plan is an estimate computed from these values.",
+      "properties": {
+        "gpu_hours_per_trial": {"type": "number", "minimum": 0, "default": 0},
+        "by_value": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["when", "gpu_hours"],
+            "properties": {
+              "when": {"$ref": "#/$defs/condition"},
+              "gpu_hours": {"type": "number", "minimum": 0}
+            }
+          }
+        }
+      }
+    }
+  }
+}
