@@ -54,7 +54,11 @@ from ohho.train.run_cli import (
     UNAVAILABLE_MESSAGE,
     execute,
 )
-from ohho.train.yaml_subset import YamlError, loads
+from ohho.train.yaml_subset import UnsupportedYaml, YamlError, loads
+
+
+def _has_torch() -> bool:
+    return importlib.util.find_spec("torch") is not None
 
 
 def _run(path: str | Path, overrides: list[str] | None = None):
@@ -107,6 +111,54 @@ class TestYamlSubset(unittest.TestCase):
             loads("a: 1\na: 2\n")
         with self.assertRaises(YamlError):
             loads("\ta: 1\n")
+
+    def test_unquoted_hash_in_tokens(self) -> None:
+        doc = "\n".join(
+            [
+                "repo: https://example.com/model#rev",
+                "dataset: datasets/run#2",
+                "with_comment: https://example.com/model#rev # pinned commit",
+            ]
+        )
+        loaded = loads(doc)
+        self.assertEqual(loaded["repo"], "https://example.com/model#rev")
+        self.assertEqual(loaded["dataset"], "datasets/run#2")
+        self.assertEqual(loaded["with_comment"], "https://example.com/model#rev")
+
+    def test_pyyaml_fallback_leading_document_separator_and_dash_only_items(
+        self,
+    ) -> None:
+        doc_sep = "\n".join(
+            [
+                "---",
+                "schema: ohho.recipe/v1",
+                "family: act",
+            ]
+        )
+        loaded_sep = loads(doc_sep)
+        self.assertEqual(loaded_sep["schema"], "ohho.recipe/v1")
+        self.assertEqual(loaded_sep["family"], "act")
+
+        doc_dash = "\n".join(
+            [
+                "items:",
+                "  -",
+                "    name: first",
+                "  -",
+                "    name: second",
+            ]
+        )
+        loaded_dash = loads(doc_dash)
+        self.assertEqual(
+            loaded_dash["items"],
+            [{"name": "first"}, {"name": "second"}],
+        )
+
+    def test_pyyaml_fallback_missing_pyyaml(self) -> None:
+        with patch.dict("sys.modules", {"yaml": None}):
+            with self.assertRaises(UnsupportedYaml) as caught:
+                loads("multi: |\n  act\n")
+            self.assertIn("ohho-os[yaml]", str(caught.exception))
 
 
 class TestRecipeSchema(unittest.TestCase):
@@ -503,10 +555,7 @@ class TestActRun(unittest.TestCase):
             self.assertIn("boom", manifest["error"])
             self.assertIsNotNone(manifest["finished_at"])
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("torch") is not None,
-        "needs torch (pip install 'ohho-os[train]')",
-    )
+    @unittest.skipUnless(_has_torch(), "needs torch (pip install 'ohho-os[train]')")
     def test_tiny_act_recipe_on_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"

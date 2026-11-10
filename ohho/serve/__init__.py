@@ -81,6 +81,10 @@ def build_app(
         )
 
     app = FastAPI(title="OhhO Serve", version="0.1.0")
+    if model_path:
+        from ..model_safety import prepare_model_load
+
+        prepare_model_load(model_path)
     dev = resolve_device(device)
     _model: Any = None
     _model_path = model_path
@@ -130,7 +134,13 @@ def build_app(
         path = model_path or _model_path
         if not path and not mock:
             raise HTTPException(400, "model_path required")
+        from ..model_safety import UnsafeModelFile, prepare_model_load
+
         if path:
+            try:
+                prepare_model_load(path)
+            except UnsafeModelFile as exc:
+                raise HTTPException(400, str(exc)) from exc
             _model_path = path
         if robot_id:
             _robot_id = robot_id
@@ -147,19 +157,22 @@ def build_app(
                 cls_name = default_base_model_name()
 
         use_mock = mock_model or mock
-        if use_mock:
-            _model = _make_mock_model(dev, cls_name, _robot_id)
-            _model.load_model(path or "mock")
-        else:
-            cls = _resolve_model_class(cls_name)
-            try:
-                _model = cls(device=dev)
-            except TypeError:
-                _model = cls()
-            try:
-                _model.load_model(path, device=dev)
-            except TypeError:
-                _model.load_model(path)
+        try:
+            if use_mock:
+                _model = _make_mock_model(dev, cls_name, _robot_id)
+                _model.load_model(path or "mock")
+            else:
+                cls = _resolve_model_class(cls_name)
+                try:
+                    _model = cls(device=dev)
+                except TypeError:
+                    _model = cls()
+                try:
+                    _model.load_model(path, device=dev)
+                except TypeError:
+                    _model.load_model(path)
+        except UnsafeModelFile as exc:
+            raise HTTPException(400, str(exc)) from exc
         app.state.model = _model
         from ..plugins import is_contributed_model
 
