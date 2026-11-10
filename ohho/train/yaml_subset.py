@@ -86,6 +86,14 @@ def _loads_subset(text: str) -> Any:
     lines = _prepare(text)
     if not lines:
         raise YamlError("recipe YAML is empty")
+    while lines and lines[0][1] == 0 and lines[0][2] == "---":
+        lines = lines[1:]
+    if not lines:
+        raise YamlError("recipe YAML is empty")
+    if lines and lines[-1][1] == 0 and lines[-1][2] == "...":
+        lines = lines[:-1]
+    if not lines:
+        raise YamlError("recipe YAML is empty")
     if lines[0][1] != 0:
         raise YamlError(f"line {lines[0][0]}: expected top-level content at column 0")
     value, index = _parse_node(lines, 0)
@@ -125,9 +133,11 @@ def _strip_comment(line: str) -> str:
 
 def _parse_node(lines: list[tuple[int, int, str]], index: int) -> tuple[Any, int]:
     _lineno, _indent, text = lines[index]
-    if text.startswith("- "):
+    if text.startswith("- ") or text == "-":
         return _parse_list(lines, index, lines[index][1])
-    return _parse_map(lines, index, lines[index][1])
+    if _split_kv(text) is not None:
+        return _parse_map(lines, index, lines[index][1])
+    return _parse_scalar(text, _lineno), index + 1
 
 
 def _parse_map(
@@ -140,7 +150,7 @@ def _parse_map(
             break
         if line_indent > indent:
             raise YamlError(f"line {lineno}: unexpected indent")
-        if text.startswith("- "):
+        if text.startswith("- ") or text == "-":
             raise YamlError(f"line {lineno}: expected a key")
         split = _split_kv(text)
         if split is None:
@@ -178,9 +188,9 @@ def _parse_list(
             break
         if line_indent > indent:
             raise YamlError(f"line {lineno}: unexpected indent")
-        if not text.startswith("- "):
+        if not (text == "-" or text.startswith("- ")):
             break
-        rest = text[2:].strip()
+        rest = "" if text == "-" else text[2:].strip()
         index += 1
         if rest == "":
             child, index = _nested_or_null(lines, index, indent)
@@ -199,7 +209,7 @@ def _parse_list(
         if (
             index < len(lines)
             and lines[index][1] > indent
-            and not lines[index][2].startswith("- ")
+            and not (lines[index][2] == "-" or lines[index][2].startswith("- "))
         ):
             extra, index = _parse_map(lines, index, lines[index][1])
             overlap = set(extra) & set(item)
