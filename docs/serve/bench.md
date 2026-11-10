@@ -39,6 +39,46 @@ with unit `Hz`.
 
 Random inputs have no labels. `accuracy.primary` is `not_measured`.
 
+## Power, memory, and thermal
+
+During the measured iterations (after warmup) a sampler thread reads optional
+sensors at 10 Hz. The first sample is taken when the window opens and another
+when it closes. Each source is detected at runtime and skipped when it is
+not there.
+
+| Source | What it can report |
+| --- | --- |
+| NVML | Accelerator power, device memory, temperature, clocks, throttle bits |
+| tegrastats, or jtop when that binary is absent | Board input power, host RAM, temperature, clocks, throttling |
+| RAPL package energy | CPU package power, from two counter readings |
+| vcgencmd | Temperature, clocks, and the current throttled bits. Not watts |
+
+Headline power prefers board input, then accelerator power, then package
+power. Those domains are not added together. tegrastats power is the
+instantaneous `VDD_IN` rail, or `POM_5V_IN` when that is the input rail.
+Other rails are left out of the headline. vcgencmd voltage is not turned
+into watts.
+
+`telemetry.sensors` always carries:
+
+| Field | Meaning |
+| --- | --- |
+| `power_w_mean`, `power_w_peak` | Headline power in watts, or null |
+| `energy_per_inference_mj` | Mean power times mean latency in milliseconds |
+| `device_memory_mb_peak` | Peak accelerator memory, or null |
+| `host_memory_mb_peak` | Peak host memory from a sensor, otherwise process peak RSS |
+| `temperature_c_max` | Hottest reading, or null |
+| `throttling_events` | Rising edges. Each has `source`, `t_s`, and `detail` |
+| `throttling_flagged` | True when any event was recorded |
+| `clocks_mhz` | Max observed clock per source and name, or null |
+| `reason` | Why a headline field is null. Null when every field was measured |
+| `sources` | One row per source: `id`, `available`, `reason`, `power_domain` |
+
+A missing sensor is null with a reason. The run still validates and exits 0
+when no gate fails. `telemetry.power_w_mean` and
+`telemetry.accelerator_memory_mb_max` are set only for real numbers, because
+ohho.bench/v1 defines those gauges as non-null.
+
 `telemetry.memory_mb_max` is the process peak RSS when the OS reports it, and
 `environment` records the target profile, git SHA, the execution provider that
 ran, and CUDA / TensorRT / ONNX Runtime / driver versions when those are
@@ -66,6 +106,19 @@ requested and this process has no CUDA device, the run falls back to
 `tests/test_bench_harness.py` checks the CPU sum on a pure-Python runner.
 The CUDA event path in that file uses a fake event clock. A development run
 without a CUDA device does not execute events on a GPU.
+
+## Sustained
+
+`--sustained 30` measures for 30 seconds instead of `--iters`. Warmup still
+runs first and is discarded. The result's `sustained` object lists p95 for
+each time window (one second when the run is at least two seconds, otherwise
+two equal windows), `p95_drift_ms` (last window minus first), and
+`throttling_flagged`. Each requested batch size gets its own window. The
+top-level `sustained` object is the primary batch.
+
+```bash
+ohho bench --artifact model.onnx --target x86-cpu --sustained 30 --json out.json
+```
 
 ## Baseline and gates
 
