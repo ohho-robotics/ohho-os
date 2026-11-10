@@ -90,7 +90,7 @@ unitree = "ohho.robots.unitree:plugin"
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "datasets/*.json", "bench/schemas/*.json", "bench/examples/*.json"]
+ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "datasets/*.json", "bench/schemas/*.json", "bench/examples/*.json", "eval/schemas/*.json", "eval/suites.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
