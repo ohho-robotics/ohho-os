@@ -25,6 +25,11 @@ __all__ = [
     "Telemetry",
     "EnvironmentVersions",
     "Environment",
+    "ComparisonMetric",
+    "Comparison",
+    "GateCheck",
+    "Gates",
+    "BatchResult",
     "LlmBench",
     "BenchResult",
 ]
@@ -145,6 +150,8 @@ class LatencyReport(_LatencyReportRequired, total=False):
     """
 
     samples: int
+    cold_start_ms: float
+    achievable_hz: float
 
 
 class _ThroughputRequired(TypedDict):
@@ -193,6 +200,7 @@ class Telemetry(_TelemetryRequired, total=False):
     accelerator_memory_mb_max: float
     accelerator_util_mean: float
     power_w_mean: float
+    memory_source: str
 
 
 class EnvironmentVersions(TypedDict):
@@ -205,13 +213,90 @@ class EnvironmentVersions(TypedDict):
     ohho: str
 
 
-class Environment(TypedDict):
+class _EnvironmentRequired(TypedDict):
+    versions: EnvironmentVersions
+
+
+class Environment(_EnvironmentRequired, total=False):
     """Software environment the run executed in.
 
     Additional properties are allowed.
     """
 
-    versions: EnvironmentVersions
+    target_profile: str
+    git_sha: str
+    timing_source: str
+    timing_note: str
+    execution_provider: str
+    driver: str
+
+
+class _ComparisonMetricRequired(TypedDict):
+    name: str
+    baseline: float
+    current: float
+    delta: float
+    regression: bool
+
+
+class ComparisonMetric(_ComparisonMetricRequired, total=False):
+    """One baseline delta. Latency metrics treat an increase as a regression.
+
+    Additional properties are allowed.
+    """
+
+    unit: str
+    pct_change: float
+    higher_is_worse: bool
+
+
+class Comparison(TypedDict):
+    """Per-metric delta against a baseline ohho.bench/v1 result.
+
+    Additional properties are allowed.
+    """
+
+    baseline_ref: str
+    metrics: list[ComparisonMetric]
+
+
+class _GateCheckRequired(TypedDict):
+    name: str
+    expr: str
+    passed: bool
+
+
+class GateCheck(_GateCheckRequired, total=False):
+    """One SLO or regression gate.
+
+    Additional properties are allowed.
+    """
+
+    metric: str
+    value: float
+    limit: float
+    detail: str
+
+
+class Gates(TypedDict):
+    """SLO and regression gates for the primary batch.
+
+    Additional properties are allowed.
+    """
+
+    passed: bool
+    checks: list[GateCheck]
+
+
+class BatchResult(TypedDict):
+    """Latency and throughput for one batch size.
+
+    Additional properties are allowed.
+    """
+
+    batch_size: int
+    latency: LatencyReport
+    throughput: Throughput
 
 
 class _LlmBenchRequired(TypedDict):
@@ -260,4 +345,7 @@ class BenchResult(_BenchResultRequired, total=False):
     Additional properties are allowed.
     """
 
+    comparison: Comparison
+    gates: Gates
+    batches: list[BatchResult]
     llm: LlmBench

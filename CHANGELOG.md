@@ -17,6 +17,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **`ohho optimize`** — ONNX opset 17 export (dynamic batch, submodule
+  selection, ACT-style and MLP policies, TorchScript), TensorRT FP16/INT8/FP8
+  builds with an entropy calibrator attached before the build, ONNX Runtime
+  sessions checked against a target profile, and AWQ/GPTQ/bitsandbytes/FP8
+  weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
+  quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
+  Docs: [`docs/optimize.md`](docs/optimize.md).
 - **LLM serving backends** (OHH-475) — `ServingBackend` adapters for vLLM,
   SGLang, TensorRT-LLM (`trtllm-serve` or `tritonserver`), and llama.cpp.
   Each builds a launch command and parses a version. The engines stay

@@ -74,6 +74,29 @@ at most 8 MiB. Otherwise it is the sha256 of the model identifier, and
 `serving-setup` means the artifact digest hashes the backend, version,
 precision, and model id rather than a package file.
 
+The harness (see [`bench.md`](bench.md)) adds more optional v1 fields. None of
+them are required, and none change the type of a field v1 already defined:
+
+| Path | Meaning |
+|---|---|
+| `latency.cold_start_ms` | First iteration before warmup, in milliseconds. |
+| `latency.achievable_hz` | Iterations per second from the mean latency. |
+| `environment.target_profile` | Hardware profile id (`x86-cpu`, `jetson-orin-nano`, ...). |
+| `environment.git_sha` | Git commit, or `unknown`. |
+| `environment.timing_source` | `perf_counter`, `cuda_event`, or `virtual` for a scripted clock. |
+| `environment.execution_provider` | ONNX Runtime provider that actually ran. |
+| `environment.driver` | GPU driver version when a driver is visible. |
+| `comparison` | Per-metric delta against a baseline result. |
+| `gates` | SLO and regression checks. `passed` is false when any check failed. |
+| `batches` | One latency report per requested batch size. |
+
+`telemetry.gpu_util_percent` and `telemetry.gpu_power_w` are additional
+properties and are JSON `null` when a GPU sample is not available. The typed
+gauges `accelerator_util_mean` and `power_w_mean` stay non-null numbers, so
+they are omitted in that case. Making those gauges nullable would be an
+`ohho.bench/v2` change. `telemetry.memory_mb_max` is the peak process
+memory when it can be read.
+
 Checked-in results:
 
 - `ohho/bench/examples/vision.json` — vision policy
