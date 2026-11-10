@@ -65,6 +65,52 @@
             {"type": "null"},
             {"type": "object", "additionalProperties": {"type": "number"}}
           ]
+        },
+        "status": {
+          "enum": ["pending", "running", "completed", "pruned", "failed"],
+          "description": "pending has no intermediate report. running has a report and has not stopped. completed was told final objectives. pruned was stopped by early stopping. failed is a trainer failure and is not pruned."
+        },
+        "checkpoint": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ],
+          "description": "Last checkpoint path reported by the trial runner. Kept when the trial is pruned or failed."
+        },
+        "metrics": {
+          "type": "array",
+          "description": "Intermediate reports for early_stopping.metric, in increasing step order. Kept when the trial is pruned or failed.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step", "value"],
+            "properties": {
+              "step": {"type": "integer", "minimum": 1},
+              "value": {"type": "number"}
+            }
+          }
+        },
+        "decision": {
+          "description": "Frozen continue decision for the latest step. stop is recorded by status pruned.",
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["step", "action"],
+              "properties": {
+                "step": {"type": "integer", "minimum": 1},
+                "action": {"enum": ["continue", "stop"]}
+              }
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ],
+          "description": "Failure reason when status is failed. Null when the trial is pruned."
         }
       }
     }

@@ -590,7 +590,7 @@ def _spec_document(spec: SweepSpec) -> dict[str, Any]:
         "sampler": dict(spec.sampler),
     }
     if spec.early_stopping is not None:
-        document["early_stopping"] = dict(spec.early_stopping)
+        document["early_stopping"] = copy.deepcopy(spec.early_stopping)
     return document
 
 

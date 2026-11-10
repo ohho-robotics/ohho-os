@@ -97,6 +97,10 @@ class CudaEventClock:
             cuda = _load_torch_cuda()
         self._cuda = cuda
 
+    def now(self) -> float:
+        """Wall time for a sustained window. Stage spans stay on CUDA events."""
+        return time.perf_counter()
+
     def measure(self, runner: Any, batch: int) -> dict[str, float]:
         prepared, preprocess = _cpu_span(lambda: runner.preprocess(batch))
         device_in, h2d = self._gpu_span(lambda: runner.h2d(prepared))
