@@ -33,6 +33,7 @@ from ohho.targets.detect import (
     _default_apple,
     _default_jetson,
     _default_model,
+    _default_nvidia_device_nodes,
     _default_nvidia_smi,
     _default_pi,
     _default_torch,
@@ -549,6 +550,42 @@ class DetectTargetTest(unittest.TestCase):
         self.assertEqual(pi5.cuda.status, "missing")
         self.assertEqual(pi5.tensorrt.status, "missing")
 
+        cm5 = detect_target(
+            MachineProbe(
+                system="Linux",
+                machine="aarch64",
+                arch="aarch64",
+                device_tree_model="Raspberry Pi Compute Module 5",
+                raspberry_pi=True,
+            )
+        )
+        self.assertEqual(cm5.profile_id, "rpi5-cpu")
+        self.assertEqual(cm5.cuda.status, "missing")
+        self.assertEqual(cm5.tensorrt.status, "missing")
+
+        cm5_rev = detect_target(
+            MachineProbe(
+                system="Linux",
+                machine="aarch64",
+                arch="aarch64",
+                device_tree_model="Raspberry Pi Compute Module 5 Rev 1.0",
+                raspberry_pi=True,
+            )
+        )
+        self.assertEqual(cm5_rev.profile_id, "rpi5-cpu")
+
+        cm4 = detect_target(
+            MachineProbe(
+                system="Linux",
+                machine="aarch64",
+                arch="aarch64",
+                device_tree_model="Raspberry Pi Compute Module 4 Rev 1.0",
+                raspberry_pi=True,
+            )
+        )
+        self.assertIsNone(cm4.profile_id)
+        self.assertTrue(any("not a Pi 5" in note for note in cm4.notes))
+
         pi4 = detect_target(
             MachineProbe(
                 system="Linux",
@@ -651,6 +688,7 @@ class DetectTargetTest(unittest.TestCase):
             apple_silicon=lambda: False,
             torch_probe=lambda: ("cpu", "torch is not installed"),
             nvidia_smi=lambda: ("", 0, "nvidia-smi was not found"),
+            nvidia_device_nodes=lambda: False,
             ort_providers=lambda: None,
             tensorrt_version=lambda: "",
             trtexec=lambda: False,
@@ -749,6 +787,74 @@ class DetectTargetTest(unittest.TestCase):
             self.assertEqual(found.tensorrt.status, "missing")
             self.assertIn("CUDA is missing", found.cuda.detail)
             self.assertIn("TensorRT is missing", found.tensorrt.detail)
+
+    def test_ort_cuda_provider_without_gpu_does_not_fake_cuda(self) -> None:
+        probe = MachineProbe(
+            system="Linux",
+            machine="x86_64",
+            arch="x86_64",
+            torch_device="cpu",
+            torch_detail="torch is not installed",
+            nvidia_gpu_name="",
+            nvidia_smi_detail="nvidia-smi was not found",
+            nvidia_device_nodes=False,
+            ort_providers=(CUDA_PROVIDER, CPU_PROVIDER),
+        )
+        found = detect_target(probe)
+        self.assertEqual(found.profile_id, "x86-cpu")
+        self.assertEqual(found.cuda.status, "missing")
+        self.assertIn("CUDA is missing", found.cuda.detail)
+        self.assertIn("no CUDA device was detected", found.cuda.detail)
+        self.assertFalse(any("Using x86-cuda" in note for note in found.notes))
+
+    def test_dev_nvidia_node_counts_as_cuda_evidence(self) -> None:
+        probe = MachineProbe(
+            system="Linux",
+            machine="x86_64",
+            arch="x86_64",
+            torch_device="cpu",
+            torch_detail="torch is not installed",
+            nvidia_gpu_name="",
+            nvidia_smi_detail="nvidia-smi was not found",
+            nvidia_device_nodes=True,
+            ort_providers=(CUDA_PROVIDER, CPU_PROVIDER),
+        )
+        found = detect_target(probe)
+        self.assertEqual(found.profile_id, "x86-cuda")
+        self.assertEqual(found.cuda.status, "present")
+        self.assertIn("/dev/nvidia* was found", found.cuda.detail)
+        self.assertIn("ONNX Runtime lists CUDAExecutionProvider", found.cuda.detail)
+        self.assertTrue(any("GPU name was not read" in note for note in found.notes))
+
+    def test_default_nvidia_device_nodes(self) -> None:
+        with patch("pathlib.Path.is_dir", return_value=False):
+            self.assertFalse(_default_nvidia_device_nodes())
+
+        with (
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            self.assertTrue(_default_nvidia_device_nodes())
+
+        with (
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.glob", return_value=iter([Path("/dev/nvidia0")])),
+        ):
+            self.assertTrue(_default_nvidia_device_nodes())
+
+        with (
+            patch("pathlib.Path.is_dir", return_value=True),
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.glob", return_value=iter([])),
+        ):
+            self.assertFalse(_default_nvidia_device_nodes())
+
+        def _raise_oserror(*args: object, **kwargs: object) -> bool:
+            raise OSError("permission denied")
+
+        with patch("pathlib.Path.is_dir", side_effect=_raise_oserror):
+            self.assertFalse(_default_nvidia_device_nodes())
 
 
 class TargetCliTest(unittest.TestCase):
