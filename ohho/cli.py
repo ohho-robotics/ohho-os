@@ -1147,6 +1147,22 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_train(args) -> int:
+    from .train.run_cli import execute
+
+    return execute(args.recipe, getattr(args, "set", None))
+
+
+def _cmd_sweep(args) -> int:
+    from .train.sweep import SweepError, run_plan
+
+    try:
+        return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+    except (SweepError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     """Accept a second optional positional that follows options.
 
@@ -1842,6 +1858,37 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
 
+    train = sub.add_parser(
+        "train",
+        help="train from an ohho.recipe/v1 file",
+    )
+    train.add_argument("recipe", help="path to a recipe file (.yaml or .json)")
+    train.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="k=v",
+        help="override a dotted field before validation (repeatable)",
+    )
+    train.set_defaults(func=_cmd_train)
+
+    sweep = sub.add_parser(
+        "sweep",
+        help="expand a training sweep into trial recipes",
+    )
+    sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
+    plan = sweep_sub.add_parser(
+        "plan",
+        help="print trials (the startup batch for tpe, bayesian, and multi)",
+    )
+    plan.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="print the plan as JSON",
+    )
+    plan.set_defaults(func=_cmd_sweep)
+
     job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
     job_sub = job.add_subparsers(dest="job_command", required=True)
     for name, help_text in (
@@ -1860,7 +1907,6 @@ def build_parser() -> argparse.ArgumentParser:
             help="print a JSON result on stdout",
         )
         jp.set_defaults(func=_cmd_job)
-
     ev = sub.add_parser(
         "eval",
         help="score a checkpoint on a Proof sim suite (ohho.eval/v1)",
@@ -1894,7 +1940,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="write the ohho.eval/v1 JSON report to this path",
     )
     ev.set_defaults(func=_cmd_eval)
-
     add_dataset_parser(sub)
 
     from .bench.command import register_bench

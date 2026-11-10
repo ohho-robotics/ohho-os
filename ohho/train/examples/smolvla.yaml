@@ -1,0 +1,20 @@
+schema: ohho.recipe/v1
+name: smolvla
+family: smolvla
+base_weights:
+  uri: local:smolvla-base
+dataset:
+  version_id: dataset_version_example
+hyperparameters:
+  num_epochs: 20
+  batch_size: 4
+  lr: 0.0001
+precision: bf16
+device: auto
+compression_hooks:
+  - name: quantize
+    params:
+      mode: weights
+eval_hooks: []
+output:
+  dir: checkpoints/smolvla

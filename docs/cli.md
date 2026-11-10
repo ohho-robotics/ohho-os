@@ -66,6 +66,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
+| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 
@@ -76,6 +77,12 @@ README states hardware, runtime, and expected output. CPU examples run in CI
 and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
 export are not in this tree; those examples are placeholders and do not print
 benchmark numbers.
+
+## Training recipes
+
+| Command | Description |
+|---------|-------------|
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
 
 ## Simulation services
 

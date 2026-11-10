@@ -1,0 +1,27 @@
+{
+  "schema": "ohho.sweep/v1",
+  "dimensions": [
+    {
+      "name": "precision",
+      "type": "categorical",
+      "values": ["fp16", "int8"]
+    },
+    {
+      "name": "model",
+      "type": "categorical",
+      "values": ["small", "large"]
+    }
+  ],
+  "constraints": [
+    {
+      "name": "int8-small-only",
+      "prune_when": {
+        "all": [
+          {"path": "precision", "eq": "int8"},
+          {"path": "model", "eq": "large"}
+        ]
+      }
+    }
+  ],
+  "estimate": {"gpu_hours_per_trial": 0.5}
+}
