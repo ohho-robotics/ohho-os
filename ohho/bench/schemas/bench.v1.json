@@ -25,7 +25,14 @@
     "throughput": {"$ref": "#/$defs/throughput"},
     "accuracy": {"$ref": "#/$defs/accuracy"},
     "telemetry": {"$ref": "#/$defs/telemetry"},
-    "environment": {"$ref": "#/$defs/environment"}
+    "environment": {"$ref": "#/$defs/environment"},
+    "comparison": {"$ref": "#/$defs/comparison"},
+    "gates": {"$ref": "#/$defs/gates"},
+    "batches": {
+      "type": "array",
+      "description": "Every measured batch. Top-level latency and throughput repeat the primary batch.",
+      "items": {"$ref": "#/$defs/batch_result"}
+    }
   },
   "$defs": {
     "host": {
@@ -156,7 +163,19 @@
             }
           }
         }
-      ]
+      ],
+      "properties": {
+        "cold_start_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "First iteration before warmup, in milliseconds."
+        },
+        "achievable_hz": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Iterations per second implied by the mean latency. Zero when the mean is zero."
+        }
+      }
     },
     "throughput": {
       "title": "Throughput",
@@ -204,7 +223,12 @@
         "memory_mb_max": {"type": "number", "minimum": 0},
         "accelerator_memory_mb_max": {"type": "number", "minimum": 0},
         "accelerator_util_mean": {"type": "number", "minimum": 0},
-        "power_w_mean": {"type": "number", "minimum": 0}
+        "power_w_mean": {"type": "number", "minimum": 0},
+        "memory_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How memory_mb_max was measured, when it is present."
+        }
       }
     },
     "environment_versions": {
@@ -233,7 +257,102 @@
       "additionalProperties": true,
       "required": ["versions"],
       "properties": {
-        "versions": {"$ref": "#/$defs/environment_versions"}
+        "versions": {"$ref": "#/$defs/environment_versions"},
+        "target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Hardware target profile id, such as x86-cpu."
+        },
+        "git_sha": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Git commit of the tree that ran the bench, or unknown."
+        },
+        "timing_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Clock used for stage timing: perf_counter, cuda_event, or virtual."
+        },
+        "timing_note": {"type": "string", "minLength": 1},
+        "execution_provider": {"type": "string", "minLength": 1},
+        "driver": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GPU driver version when a driver is visible."
+        }
+      }
+    },
+    "comparison_metric": {
+      "title": "ComparisonMetric",
+      "description": "One baseline delta. Latency metrics treat an increase as a regression.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "baseline", "current", "delta", "regression"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "unit": {"type": "string", "minLength": 1},
+        "baseline": {"type": "number"},
+        "current": {"type": "number"},
+        "delta": {"type": "number"},
+        "pct_change": {"type": "number"},
+        "regression": {"type": "boolean"},
+        "higher_is_worse": {"type": "boolean"}
+      }
+    },
+    "comparison": {
+      "title": "Comparison",
+      "description": "Per-metric delta against a baseline ohho.bench/v1 result.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["baseline_ref", "metrics"],
+      "properties": {
+        "baseline_ref": {"type": "string", "minLength": 1},
+        "metrics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/comparison_metric"}
+        }
+      }
+    },
+    "gate_check": {
+      "title": "GateCheck",
+      "description": "One SLO or regression gate.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "expr", "passed"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "expr": {"type": "string", "minLength": 1},
+        "passed": {"type": "boolean"},
+        "metric": {"type": "string", "minLength": 1},
+        "value": {"type": "number"},
+        "limit": {"type": "number"},
+        "detail": {"type": "string", "minLength": 1}
+      }
+    },
+    "gates": {
+      "title": "Gates",
+      "description": "SLO and regression gates for the primary batch.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["passed", "checks"],
+      "properties": {
+        "passed": {"type": "boolean"},
+        "checks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_check"}
+        }
+      }
+    },
+    "batch_result": {
+      "title": "BatchResult",
+      "description": "Latency and throughput for one batch size.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["batch_size", "latency", "throughput"],
+      "properties": {
+        "batch_size": {"type": "integer", "minimum": 1},
+        "latency": {"$ref": "#/$defs/latency_report"},
+        "throughput": {"$ref": "#/$defs/throughput"}
       }
     }
   }

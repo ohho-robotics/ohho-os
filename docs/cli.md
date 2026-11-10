@@ -63,6 +63,8 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
+| `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
