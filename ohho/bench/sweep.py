@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ohho.bench.cost import CostOverrides, attach_cost, require_price
 from ohho.bench.environment import git_sha
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.schema import SCHEMA_ID, validate
@@ -153,6 +154,7 @@ class SweepConfig:
     launcher: str = ""
     backend_version: str = ""
     chart: str = ""
+    hardware_target: str = ""
 
     def __post_init__(self) -> None:
         try:
@@ -190,6 +192,11 @@ class SweepConfig:
         if not version:
             version = "stand-in" if backend == "stand-in" else "unknown"
         chart = self.chart.strip() if isinstance(self.chart, str) else ""
+        hardware = (
+            self.hardware_target.strip()
+            if isinstance(self.hardware_target, str)
+            else ""
+        )
         object.__setattr__(self, "backend", backend)
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "endpoint", endpoint)
@@ -202,6 +209,7 @@ class SweepConfig:
         object.__setattr__(self, "workloads", workloads)
         object.__setattr__(self, "backend_version", version)
         object.__setattr__(self, "chart", chart)
+        object.__setattr__(self, "hardware_target", hardware)
         object.__setattr__(
             self,
             "speculative_model",
@@ -230,8 +238,15 @@ def execute_sweep(
     config: SweepConfig,
     *,
     measurer: Measurer | None = None,
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
-    """Run the sweep and return a validated ``ohho.bench/v1`` document."""
+    """Run the sweep and return a validated ``ohho.bench/v1`` document.
+
+    Cost is filled from the measured token throughput. Passing ``cost``
+    changes the price inputs and does not add cells.
+    """
+    if config.hardware_target:
+        require_price(config.hardware_target, cost)
     cells, skipped = expand_grid(config)
     if not cells:
         raise BenchHarnessError("the sweep has no cells to measure")
@@ -265,6 +280,7 @@ def execute_sweep(
         recommendations,
         started=started,
     )
+    attach_cost(document, cost, profile_id=config.hardware_target)
     validate(document)
     return document
 
@@ -865,6 +881,11 @@ def _document(
             "timing_source": timing,
             "timing_note": note,
             "git_sha": git_sha(),
+            **(
+                {"target_profile": config.hardware_target}
+                if config.hardware_target
+                else {}
+            ),
         },
         "llm": llm,
     }

@@ -23,6 +23,7 @@ from typing import Any
 
 from ohho.bench.agreement import top1_action_agreement
 from ohho.bench.clock import VirtualClock
+from ohho.bench.cost import CostOverrides, attach_cost, require_price
 from ohho.bench.environment import (
     MemoryTrace,
     collect_environment,
@@ -248,6 +249,7 @@ def execute_generate(
     *,
     slos: Sequence[str] = (),
     generator: Any = None,
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
     """Run ``config`` and return a validated ``ohho.bench/v1`` document.
 
@@ -260,6 +262,7 @@ def execute_generate(
         profile = get_profile(config.target)
     except TargetProfileError as exc:
         raise BenchHarnessError(str(exc)) from exc
+    require_price(profile.id, cost)
     if config.backend not in supported_backends(profile):
         allowed = ", ".join(supported_backends(profile))
         raise BenchHarnessError(
@@ -281,6 +284,7 @@ def execute_generate(
         memory = trace.snapshot()
         trace.close()
     document = _document(config, profile, points, memory.as_telemetry())
+    attach_cost(document, cost, profile_id=profile.id)
     if slos:
         document["gates"] = evaluate_gates(document, tuple(slos), ())
     _require_valid(document)

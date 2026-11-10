@@ -214,3 +214,72 @@ concurrency and the workloads against it. Launch settings on that process
 are skipped, because the sweep does not relaunch it.
 
 Adapter flags for a later launch are in [`llm-backends.md`](llm-backends.md).
+
+## Cost estimate
+
+Every inference run, generate run (`llm`, `vlm`, and `vla`), `ohho bench llm`
+measurement, and `ohho bench llm --sweep` writes a `cost` object on the
+`ohho.bench/v1` result. The same object is repeated on each batch and on
+each LLM cell, using that row's measured throughput. `cost.estimate` is
+always true and `cost.label` is `estimate`. `cost.inputs` is the price,
+the watts, and the throughput that produced the figure. These numbers are
+not an invoice, a cloud bill, or a hardware quote.
+
+The shipped table is `ohho/targets/cost_prices.json`, one row per target
+profile id. It is labelled `estimate`. A row with `pricing`
+`cloud_gpu_hour` contributes `gpu_hour_usd` per hour. Electricity is not
+added on top of that rate. Any other row is `edge_amortised`:
+`hardware_usd / amortisation_hours`, plus measured watts times
+`electricity_usd_per_kwh`. The built-in amortisation is 26280 hours.
+The built-in electricity rate is 0.15 USD/kWh. The built-in control rate
+is 50 Hz. When the result has no `telemetry.power_w_mean` or
+`telemetry.gpu_power_w`, the row's `typical_watts` is used and
+`watts_source` is `profile_default`.
+
+```text
+usd_per_hour (edge) = hardware_usd / amortisation_hours
+                    + (watts / 1000) * electricity_usd_per_kwh
+usd_per_1m_output_tokens = usd_per_hour * 1000000 / (tokens_per_s * 3600)
+usd_per_1k_actions = usd_per_hour * 1000 / (actions_per_s * 3600)
+usd_per_robot_hour = usd_per_hour * control_rate_hz / actions_per_s
+actions_per_watt = actions_per_s / watts
+robots_per_device = actions_per_s / control_rate_hz
+```
+
+`usd_per_1k_actions` is the cost of 1000 actions at `control_rate_hz` when
+the device is shared across `robots_per_device` streams. The control rate
+cancels in that USD figure and remains on `meets_control_rate` (true when
+measured actions/s are at least the control rate) and on
+`usd_per_robot_hour`. Token throughput comes from `tokens/s`. Action
+throughput comes from `Hz`, `steps/s`, or `frames/s`. A `vla` generate run
+counts one completed request as one action and still prices output tokens.
+
+A result with no target profile uses the `x86-cpu` price row and says so
+in `cost.inputs.note`.
+
+Changing a price does not rerun the benchmark. `ohho bench cost` reads a
+saved result, replaces `cost`, and leaves latency and throughput as
+measured.
+
+```bash
+ohho bench cost result.json --gpu-hour-usd 2.5 --output repriced.json
+ohho bench cost result.json --target cloud-l4 --prices my-prices.json
+ohho bench cost result.json --hardware-usd 400 --amortise-hours 20000 \
+  --electricity-usd-per-kwh 0.12 --watts 15 --control-rate-hz 20
+ohho bench prices
+ohho bench --mode generate --target x86-cpu --gpu-hour-usd 2.5 --json out.json
+```
+
+`--gpu-hour-usd` and `--hardware-usd` are mutually exclusive. `--prices`
+is a JSON document with `"schema": "ohho.bench.cost_prices/v1"` and
+`"estimate": true`. Profile objects in that file replace the named fields
+and keep the rest of the built-in row. Pass `--gpu-hour-usd` or
+`--hardware-usd` for a profile id that is not in the table.
+
+`rank_by_cost` orders results by `usd_per_1k_actions`,
+`usd_per_1m_output_tokens`, or `usd_per_robot_hour`. `max_p95_ms` keeps
+rows whose `latency.p95` is at or under that ceiling. Each row is marked
+`estimate` and includes `inputs`. The console comparison view that sorts
+targets by cost at a latency SLO is a separate console change. It can call
+`rank_by_cost` and must show the estimate label and the inputs.
+

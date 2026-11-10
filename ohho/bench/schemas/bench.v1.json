@@ -33,7 +33,8 @@
       "description": "Every measured batch. Top-level latency and throughput repeat the primary batch.",
       "items": {"$ref": "#/$defs/batch_result"}
     },
-    "llm": {"$ref": "#/$defs/llm"}
+    "llm": {"$ref": "#/$defs/llm"},
+    "cost": {"$ref": "#/$defs/cost"}
   },
   "$defs": {
     "host": {
@@ -353,7 +354,8 @@
       "properties": {
         "batch_size": {"type": "integer", "minimum": 1},
         "latency": {"$ref": "#/$defs/latency_report"},
-        "throughput": {"$ref": "#/$defs/throughput"}
+        "throughput": {"$ref": "#/$defs/throughput"},
+        "cost": {"$ref": "#/$defs/cost"}
       }
     },
     "llm": {
@@ -502,7 +504,8 @@
         "max_batch_tokens": {"type": "integer", "minimum": 1},
         "chunked_prefill": {"type": "boolean"},
         "speculative_decoding": {"type": "boolean"},
-        "pareto": {"type": "boolean"}
+        "pareto": {"type": "boolean"},
+        "cost": {"$ref": "#/$defs/cost"}
       }
     },
     "llm_precision": {
@@ -530,7 +533,8 @@
         "agreement": {"$ref": "#/$defs/metric"},
         "concurrency": {"type": "integer", "minimum": 1},
         "prompt_tokens": {"type": "integer", "minimum": 0},
-        "image_tokens": {"type": "integer", "minimum": 0}
+        "image_tokens": {"type": "integer", "minimum": 0},
+        "cost": {"$ref": "#/$defs/cost"}
       }
     },
     "llm_sweep": {
@@ -588,7 +592,8 @@
         "max_batch_tokens": {"type": "integer", "minimum": 1},
         "prefix_cache": {"type": "boolean"},
         "chunked_prefill": {"type": "boolean"},
-        "speculative_decoding": {"type": "boolean"}
+        "speculative_decoding": {"type": "boolean"},
+        "cost": {"$ref": "#/$defs/cost"}
       }
     },
     "llm_recommendation": {
@@ -608,7 +613,148 @@
         "chunked_prefill": {"type": "boolean"},
         "speculative_decoding": {"type": "boolean"},
         "ttft_p95_ms": {"type": "number", "minimum": 0},
-        "tokens_per_s": {"type": "number", "minimum": 0}
+        "tokens_per_s": {"type": "number", "minimum": 0},
+        "cost": {"$ref": "#/$defs/cost"}
+      }
+    },
+    "cost_inputs": {
+      "title": "CostInputs",
+      "description": "Price inputs used for one estimate. Edit them and recompute without rerunning the benchmark. Every cost is an estimate, not an invoice.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "target_profile",
+        "profile_source",
+        "pricing",
+        "price_source",
+        "control_rate_hz",
+        "watts_source",
+        "electricity_applied",
+        "electricity_usd_per_kwh",
+        "throughput_value",
+        "throughput_unit",
+        "note"
+      ],
+      "properties": {
+        "target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target profile id whose price row was applied."
+        },
+        "profile_source": {
+          "type": "string",
+          "enum": ["run", "flag", "default"],
+          "description": "run uses the profile on the result. flag is an override. default is the CPU profile when the result names none."
+        },
+        "measured_target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Profile recorded on the result when the run stored one."
+        },
+        "pricing": {
+          "type": "string",
+          "enum": ["cloud_gpu_hour", "edge_amortised"],
+          "description": "cloud_gpu_hour is USD per GPU-hour. edge_amortised is purchase price over amortisation hours plus watts times the electricity rate."
+        },
+        "price_source": {
+          "type": "string",
+          "enum": ["built-in", "file", "flag"],
+          "description": "built-in is the shipped table. file is --prices. flag is a CLI override."
+        },
+        "pricing_detail": {"type": "string", "minLength": 1},
+        "control_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Robot action rate used for meets_control_rate and robots_per_device."
+        },
+        "watts": {"type": "number", "minimum": 0},
+        "watts_source": {
+          "type": "string",
+          "enum": ["measured", "profile_default", "user", "unmeasured"],
+          "description": "measured reads telemetry power. profile_default is the table's typical watts. user is --watts. unmeasured adds no electricity."
+        },
+        "gpu_hour_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per GPU-hour when pricing is cloud_gpu_hour."
+        },
+        "hardware_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Purchase price amortised for an edge profile."
+        },
+        "amortisation_hours": {"type": "number", "exclusiveMinimum": 0},
+        "hardware_usd_per_hour": {"type": "number", "minimum": 0},
+        "electricity_usd_per_kwh": {"type": "number", "minimum": 0},
+        "electricity_usd_per_hour": {"type": "number", "minimum": 0},
+        "electricity_applied": {
+          "type": "boolean",
+          "description": "True when watts times the electricity rate were added. Cloud GPU-hour prices do not add electricity on top."
+        },
+        "tokens_per_s": {"type": "number", "minimum": 0},
+        "actions_per_s": {"type": "number", "minimum": 0},
+        "throughput_value": {"type": "number", "minimum": 0},
+        "throughput_unit": {"type": "string", "minLength": 1},
+        "note": {"type": "string", "minLength": 1}
+      }
+    },
+    "cost": {
+      "title": "BenchCost",
+      "description": "Estimated USD from measured throughput and a user-editable price. estimate is always true. label is estimate. These figures are not an invoice, a cloud bill, or a hardware quote.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schema", "estimate", "label", "inputs", "usd_per_hour"],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "ohho.bench.cost/v1",
+          "description": "Cost block id. A breaking change of this block uses a new id. The parent result stays ohho.bench/v1."
+        },
+        "estimate": {
+          "type": "boolean",
+          "const": true,
+          "description": "Always true. Costs are estimates."
+        },
+        "label": {
+          "type": "string",
+          "const": "estimate",
+          "description": "Always estimate, so a reader can mark the figures without inferring it."
+        },
+        "inputs": {"$ref": "#/$defs/cost_inputs"},
+        "usd_per_hour": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Device price per hour from the inputs."
+        },
+        "usd_per_1m_output_tokens": {
+          "type": "number",
+          "minimum": 0,
+          "description": "usd_per_hour * 1000000 / (tokens_per_s * 3600), from measured output-token throughput."
+        },
+        "usd_per_1k_actions": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per 1000 actions at control_rate_hz. The device is shared across robots_per_device streams, so this equals usd_per_hour * 1000 / (actions_per_s * 3600) from measured action throughput."
+        },
+        "usd_per_robot_hour": {
+          "type": "number",
+          "minimum": 0,
+          "description": "usd_per_hour * control_rate_hz / actions_per_s. Hourly cost of one robot at the control rate."
+        },
+        "actions_per_watt": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Measured actions per second divided by watts."
+        },
+        "meets_control_rate": {
+          "type": "boolean",
+          "description": "True when measured actions per second are at least control_rate_hz."
+        },
+        "robots_per_device": {
+          "type": "number",
+          "minimum": 0,
+          "description": "actions_per_s / control_rate_hz. How many control-rate streams one device can feed."
+        }
       }
     },
     "llm_skip": {

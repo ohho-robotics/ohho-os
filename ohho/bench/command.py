@@ -17,6 +17,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ohho.bench.cost import (
+    CostOverrides,
+    format_estimate,
+    price_catalog,
+    recompute_cost,
+)
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.generate import GenerateConfig, execute_generate
 from ohho.bench.harness import BenchConfig, execute
@@ -28,7 +34,7 @@ from ohho.bench.report import (
     render_markdown,
     write_text,
 )
-from ohho.bench.schema import BenchValidationError, validate_path
+from ohho.bench.schema import BenchValidationError, validate, validate_path
 
 
 def register_bench(subparsers: Any) -> None:
@@ -56,6 +62,8 @@ def register_bench(subparsers: Any) -> None:
             "--model org/model --output result.json\n"
             "  ohho bench llm --sweep --backend stand-in --target-p95-ttft 40ms "
             "--output result.json --chart pareto.svg\n"
+            "  ohho bench cost result.json --gpu-hour-usd 2.5 --output repriced.json\n"
+            "  ohho bench prices\n"
         ),
     )
     bench.add_argument("--artifact", help="path to an ONNX artifact")
@@ -185,6 +193,7 @@ def register_bench(subparsers: Any) -> None:
         default=None,
         help="generate requests per cell; raised to the concurrency when lower",
     )
+    _add_cost_flags(bench, "")
     commands = bench.add_subparsers(dest="bench_command", required=False)
     validate = commands.add_parser(
         "validate",
@@ -192,6 +201,7 @@ def register_bench(subparsers: Any) -> None:
     )
     validate.add_argument("file", help="path to a JSON result")
     validate.set_defaults(func=run_validate)
+    _register_cost_commands(commands)
     _register_llm_commands(commands)
     bench.set_defaults(func=run_bench_command, bench_command=None)
 
@@ -231,8 +241,10 @@ def run_bench_command(
             slos=_expand_slos(tuple(args.slo or ())),
             max_regressions=tuple(args.max_regression or ()),
             parity_path=getattr(args, "parity", None),
+            cost=_cost_overrides(args),
         )
         _emit(document, args)
+        _print_estimate(document)
     except BenchHarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -274,8 +286,13 @@ def _run_generate(args: argparse.Namespace) -> int:
                 "take --parity"
             )
         config = _generate_config(args)
-        document = execute_generate(config, slos=_expand_slos(tuple(args.slo or ())))
+        document = execute_generate(
+            config,
+            slos=_expand_slos(tuple(args.slo or ())),
+            cost=_cost_overrides(args),
+        )
         _emit(document, args)
+        _print_estimate(document)
     except BenchHarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -572,6 +589,13 @@ def _register_llm_commands(commands: Any) -> None:
         choices=("trtllm-serve", "triton"),
         help="tensorrt-llm launcher. The triton launcher has no batch sweep flag",
     )
+    llm.add_argument(
+        "--target",
+        dest="llm_target",
+        default=None,
+        help="hardware target profile id used for the cost estimate",
+    )
+    _add_cost_flags(llm, "llm_")
     llm.set_defaults(func=run_bench_llm)
 
 
@@ -684,19 +708,24 @@ def run_bench_llm(args: argparse.Namespace) -> int:
         timeout_s=args.timeout,
     )
     try:
+        overrides = _cost_overrides(args, "llm_")
+        target = _hardware_target(args)
         result = run_load(spec)
         document = to_bench_result(
             result,
             backend=args.backend_name,
             backend_version=args.backend_version or "unknown",
             precision=args.precision or "auto",
+            target_profile=target,
+            cost=overrides,
         )
-    except (LoadGenError, BenchValidationError) as exc:
+    except (LoadGenError, BenchValidationError, BenchHarnessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return getattr(exc, "exit_code", 1)
     path = Path(args.output)
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {path}")
+    _print_estimate(document)
     return 0
 
 
@@ -704,7 +733,7 @@ def _run_llm_sweep(args: argparse.Namespace) -> int:
     """``ohho bench llm --sweep``."""
     try:
         config = _sweep_config(args)
-        document = execute_sweep(config)
+        document = execute_sweep(config, cost=_cost_overrides(args, "llm_"))
         payload = dump_result(document)
         chart = render_pareto_svg(document) if config.chart else ""
         write_text(args.output, payload)
@@ -713,6 +742,7 @@ def _run_llm_sweep(args: argparse.Namespace) -> int:
             write_text(config.chart, chart)
             print(f"wrote {config.chart}")
         _print_sweep(document)
+        _print_estimate(document)
     except BenchHarnessError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -745,6 +775,7 @@ def _sweep_config(args: argparse.Namespace) -> SweepConfig:
         launcher=args.launcher or "",
         backend_version=args.backend_version or "",
         chart=args.chart or "",
+        hardware_target=_hardware_target(args),
     )
 
 
@@ -797,6 +828,233 @@ def _ttft_target(text: str | None) -> float | None:
     if value < 0:
         raise BenchHarnessError("--target-p95-ttft must be non-negative")
     return value
+
+
+def _register_cost_commands(commands: Any) -> None:
+    """``ohho bench cost`` reprices a result. ``ohho bench prices`` prints the table."""
+    cost = commands.add_parser(
+        "cost",
+        help="recompute cost estimates from a saved bench result",
+        description=(
+            "Read an ohho.bench/v1 result and recompute cost estimates from its "
+            "measured throughput. This does not rerun the benchmark. Costs are "
+            "estimates: the JSON sets estimate to true and records the inputs used."
+        ),
+    )
+    cost.add_argument("file", help="path to an ohho.bench/v1 JSON result")
+    cost.add_argument(
+        "--output",
+        default=None,
+        help="write the repriced result here. Default is stdout.",
+    )
+    cost.add_argument(
+        "--target",
+        dest="cost_target",
+        default=None,
+        help="price row to apply. Default is the profile stored on the result.",
+    )
+    _add_cost_flags(cost, "cost_")
+    cost.set_defaults(func=run_bench_cost)
+    prices = commands.add_parser(
+        "prices",
+        help="print the user-editable price table (estimates)",
+        description=(
+            "Print the price table used for cost estimates. "
+            "Every figure is an estimate, not an invoice. "
+            "Edit ohho/targets/cost_prices.json or pass --prices."
+        ),
+    )
+    _add_cost_flags(prices, "prices_")
+    prices.add_argument(
+        "--json",
+        action="store_true",
+        dest="prices_json",
+        help="print the price table as JSON",
+    )
+    prices.set_defaults(func=run_bench_prices)
+
+
+def run_bench_cost(args: argparse.Namespace) -> int:
+    """``ohho bench cost FILE`` rewrites cost fields and keeps measured throughput."""
+    try:
+        document = _load_result(args.file)
+        profile = getattr(args, "cost_target", None) or getattr(args, "target", None)
+        updated = recompute_cost(
+            document, _cost_overrides(args, "cost_", profile=profile)
+        )
+        validate(updated)
+    except BenchValidationError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except BenchHarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    payload = dump_result(updated)
+    output = getattr(args, "output", None)
+    if output:
+        try:
+            write_text(output, payload)
+        except BenchHarnessError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return exc.exit_code
+        print(f"wrote {output}")
+    else:
+        sys.stdout.write(payload)
+    _print_estimate(updated)
+    return 0
+
+
+def run_bench_prices(args: argparse.Namespace) -> int:
+    """``ohho bench prices`` prints the estimate price table."""
+    try:
+        document = price_catalog(_cost_overrides(args, "prices_"))
+    except BenchHarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    if getattr(args, "prices_json", False):
+        sys.stdout.write(dump_result(document))
+        return 0
+    print(
+        "estimate: user-editable prices. Not an invoice, a cloud bill, or a hardware quote."
+    )
+    print(document["note"])
+    print(
+        "electricity_usd_per_kwh="
+        f"{document['electricity_usd_per_kwh']} "
+        f"amortisation_hours={document['amortisation_hours']} "
+        f"control_rate_hz={document['control_rate_hz']}"
+    )
+    print("| profile | pricing | gpu_hour_usd | hardware_usd | typical_watts |")
+    print("| --- | --- | ---: | ---: | ---: |")
+    for profile_id, row in document["profiles"].items():
+        print(
+            f"| {profile_id} | {row['pricing']} | "
+            f"{row.get('gpu_hour_usd', '')} | {row.get('hardware_usd', '')} | "
+            f"{row.get('typical_watts', '')} |"
+        )
+    return 0
+
+
+def _load_result(path: str) -> dict[str, Any]:
+    file = Path(path)
+    try:
+        text = file.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise BenchHarnessError(f"result not found: {path}") from exc
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise BenchHarnessError(f"cannot read result: {detail}") from exc
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BenchHarnessError(
+            f"result is not JSON: {exc.msg} (line {exc.lineno})"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise BenchHarnessError("result must be a JSON object")
+    try:
+        validate(parsed)
+    except BenchValidationError as exc:
+        raise BenchHarnessError(
+            f"result is not ohho.bench/v1:\n{exc}", exit_code=1
+        ) from exc
+    return parsed
+
+
+def _add_cost_flags(parser: Any, prefix: str) -> None:
+    """Price overrides. ``prefix`` keeps subparser dests from clobbering the parent."""
+
+    def dest(name: str) -> str:
+        return f"{prefix}{name}" if prefix else name
+
+    parser.add_argument(
+        "--prices",
+        dest=dest("prices"),
+        default=None,
+        help="JSON price table. Merged over the built-in estimates. Does not rerun a benchmark.",
+    )
+    parser.add_argument(
+        "--gpu-hour-usd",
+        dest=dest("gpu_hour_usd"),
+        type=float,
+        default=None,
+        help="USD per GPU-hour estimate. Replaces the profile rate.",
+    )
+    parser.add_argument(
+        "--hardware-usd",
+        dest=dest("hardware_usd"),
+        type=float,
+        default=None,
+        help="edge purchase-price estimate, amortised over --amortise-hours",
+    )
+    parser.add_argument(
+        "--amortise-hours",
+        dest=dest("amortise_hours"),
+        type=float,
+        default=None,
+        help="hours used to amortise --hardware-usd (default 26280)",
+    )
+    parser.add_argument(
+        "--electricity-usd-per-kwh",
+        dest=dest("electricity_usd_per_kwh"),
+        type=float,
+        default=None,
+        help="electricity price estimate in USD per kWh for edge profiles",
+    )
+    parser.add_argument(
+        "--watts",
+        dest=dest("watts"),
+        type=float,
+        default=None,
+        help="device watts. Overrides measured power and the profile default.",
+    )
+    parser.add_argument(
+        "--control-rate-hz",
+        dest=dest("control_rate_hz"),
+        type=float,
+        default=None,
+        help=(
+            "control rate in Hz. Sets meets_control_rate, robots per device, "
+            "and USD per robot-hour (default 50). USD per 1k actions uses "
+            "measured actions per second."
+        ),
+    )
+
+
+def _cost_overrides(
+    args: argparse.Namespace,
+    prefix: str = "",
+    *,
+    profile: str | None = None,
+) -> CostOverrides:
+    def pick(name: str) -> Any:
+        if prefix:
+            chosen = getattr(args, f"{prefix}{name}", None)
+            if chosen is not None:
+                return chosen
+        return getattr(args, name, None)
+
+    return CostOverrides(
+        prices_path=pick("prices"),
+        profile=profile,
+        gpu_hour_usd=pick("gpu_hour_usd"),
+        hardware_usd=pick("hardware_usd"),
+        amortisation_hours=pick("amortise_hours"),
+        electricity_usd_per_kwh=pick("electricity_usd_per_kwh"),
+        watts=pick("watts"),
+        control_rate_hz=pick("control_rate_hz"),
+    )
+
+
+def _hardware_target(args: argparse.Namespace) -> str:
+    chosen = getattr(args, "llm_target", None) or getattr(args, "target", None) or ""
+    return str(chosen).strip()
+
+
+def _print_estimate(document: dict[str, Any]) -> None:
+    cost = document.get("cost")
+    if isinstance(cost, dict):
+        print(format_estimate(cost), file=sys.stderr)
 
 
 def _print_sweep(document: dict[str, Any]) -> None:

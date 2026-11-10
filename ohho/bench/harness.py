@@ -24,6 +24,7 @@ from typing import Any
 
 from ohho.bench.clock import clock_for_providers
 from ohho.bench.compare import compare_results
+from ohho.bench.cost import CostOverrides, attach_cost, require_price
 from ohho.bench.environment import (
     MemoryTrace,
     collect_environment,
@@ -105,6 +106,7 @@ def run_benchmark(
     *,
     runner: Any = None,
     clock: Any = None,
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
     """Time ``config`` and return a schema-valid ohho.bench/v1 document.
 
@@ -117,6 +119,7 @@ def run_benchmark(
         profile = get_profile(config.target)
     except TargetProfileError as exc:
         raise BenchHarnessError(str(exc)) from exc
+    require_price(profile.id, cost)
     path = resolve_artifact(config.artifact)
     if runner is None:
         if path.suffix.lower() != ".onnx":
@@ -188,6 +191,7 @@ def run_benchmark(
         "environment": environment,
         "batches": reports,
     }
+    attach_cost(document, cost, profile_id=profile.id)
     _require_valid(document)
     return document
 
@@ -230,13 +234,15 @@ def execute(
     slos: Sequence[str] = (),
     max_regressions: Sequence[str] = (),
     parity_path: str | None = None,
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
-    """Measure, then apply baseline, gates, and parity.
+    """Measure, then apply baseline, gates, parity, and the cost estimate.
 
-    Gate expressions are checked before the runner is called.
+    Gate expressions are checked before the runner is called. Cost uses the
+    measured throughput and does not add iterations.
     """
     check_gate_expressions(slos, max_regressions, has_baseline=bool(baseline_path))
-    document = run_benchmark(config, runner=runner, clock=clock)
+    document = run_benchmark(config, runner=runner, clock=clock, cost=cost)
     return finalize_result(
         document,
         baseline_path=baseline_path,

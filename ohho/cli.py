@@ -1598,7 +1598,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             and getattr(args, "mode", None) != "generate"
         ):
             parser.error(
-                "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
+                "bench needs `validate FILE`, `cost FILE`, `prices`, "
+                "`--artifact PATH --target PROFILE`, "
                 "or `--mode generate --target PROFILE`"
             )
         return args.func(args)

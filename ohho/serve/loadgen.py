@@ -24,9 +24,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..bench.schema import SCHEMA_ID, validate
+if TYPE_CHECKING:
+    from ..bench.cost import CostOverrides
 
 LLM_BLOCK_ID = "ohho.bench.llm/v1"
 _MAX_HASH_BYTES = 8 * 1024 * 1024
@@ -149,12 +150,18 @@ def to_bench_result(
     precision: str,
     manifest_ref: str | None = None,
     accelerator: str = "none",
+    target_profile: str = "",
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
     """Build a validated ``ohho.bench/v1`` document with an LLM block.
 
     ``accelerator`` defaults to ``none``. This function does not probe GPUs
-    and does not invent device measurements.
+    and does not invent device measurements. Cost is an estimate from the
+    measured token throughput and ``target_profile``'s price row.
     """
+    from ..bench.cost import attach_cost
+    from ..bench.schema import SCHEMA_ID, validate
+
     if not backend.strip():
         raise LoadGenError("backend is required")
     ok = [sample for sample in result.samples if sample.ok]
@@ -227,7 +234,14 @@ def to_bench_result(
             "samples": attempted,
         },
         "telemetry": {"duration_s": wall, "samples": attempted},
-        "environment": {"versions": versions},
+        "environment": {
+            "versions": versions,
+            **(
+                {"target_profile": target_profile.strip()}
+                if isinstance(target_profile, str) and target_profile.strip()
+                else {}
+            ),
+        },
         "llm": {
             "schema": LLM_BLOCK_ID,
             "backend": backend,
@@ -247,6 +261,11 @@ def to_bench_result(
             "endpoint_url": result.endpoint_url,
         },
     }
+    attach_cost(
+        document,
+        cost,
+        profile_id=target_profile.strip() if isinstance(target_profile, str) else "",
+    )
     validate(document)
     return document
 
