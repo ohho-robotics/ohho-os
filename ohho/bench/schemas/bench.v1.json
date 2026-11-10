@@ -33,6 +33,7 @@
       "description": "Every measured batch. Top-level latency and throughput repeat the primary batch.",
       "items": {"$ref": "#/$defs/batch_result"}
     },
+    "llm": {"$ref": "#/$defs/llm"},
     "pipeline": {
       "$ref": "#/$defs/pipeline",
       "description": "Camera-to-action pipeline block (ohho.bench.pipeline/v1). Absent on an artifact-only run."
@@ -362,6 +363,160 @@
         "batch_size": {"type": "integer", "minimum": 1},
         "latency": {"$ref": "#/$defs/latency_report"},
         "throughput": {"$ref": "#/$defs/throughput"}
+      }
+    },
+    "llm": {
+      "title": "LlmBench",
+      "description": "LLM serving measurements (ohho.bench.llm/v1). Optional on the parent ohho.bench/v1 result. Required fields are the primary point: time to first token, inter-token latency, token throughput, and request throughput at one concurrency. Optional tpot, points, and precisions record a generate-mode sweep.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema",
+        "backend",
+        "concurrency",
+        "ttft",
+        "inter_token",
+        "tokens_per_s",
+        "requests_per_s"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "ohho.bench.llm/v1",
+          "description": "LLM block id. A breaking change of this block uses a new id. The parent result stays ohho.bench/v1."
+        },
+        "backend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Serving backend id, such as vllm, sglang, tensorrt-llm, or llama-cpp."
+        },
+        "backend_version": {"type": "string", "minLength": 1},
+        "precision": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "model_sha_of": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What run.model_sha hashes: file when the weights were read, otherwise identifier."
+        },
+        "prompt": {"type": "string", "minLength": 1},
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of requests in flight."
+        },
+        "ttft": {"$ref": "#/$defs/latency_stats"},
+        "inter_token": {"$ref": "#/$defs/latency_stats"},
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Output token chunks divided by wall-clock seconds."
+        },
+        "requests_per_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Completed requests divided by wall-clock seconds."
+        },
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "requests": {"type": "integer", "minimum": 0},
+        "requests_ok": {"type": "integer", "minimum": 0},
+        "workload": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Autoregressive workload: llm, vlm, or vla."
+        },
+        "tpot": {"$ref": "#/$defs/latency_stats"},
+        "e2e": {"$ref": "#/$defs/latency_stats"},
+        "tokens_per_request_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Mean output tokens per second of one request."
+        },
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "image_tokens": {"type": "integer", "minimum": 0},
+        "peak_vram_mb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Peak weight or device memory for the primary precision, in MiB."
+        },
+        "vram_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How peak_vram_mb was obtained."
+        },
+        "agreement": {"$ref": "#/$defs/metric"},
+        "points": {
+          "type": "array",
+          "description": "One row per precision, prompt length, image size, and concurrency.",
+          "items": {"$ref": "#/$defs/llm_point"}
+        },
+        "precisions": {
+          "type": "array",
+          "description": "Precision comparison at the primary prompt, image size, and concurrency.",
+          "items": {"$ref": "#/$defs/llm_precision"}
+        }
+      }
+    },
+    "llm_point": {
+      "title": "LlmPoint",
+      "description": "One generate-mode cell: latency, throughput, and optional memory and agreement.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "concurrency",
+        "prompt_tokens",
+        "image_tokens",
+        "precision",
+        "ttft",
+        "tpot",
+        "e2e",
+        "tokens_per_s",
+        "tokens_per_request_s"
+      ],
+      "properties": {
+        "concurrency": {"type": "integer", "minimum": 1},
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "image_tokens": {"type": "integer", "minimum": 0},
+        "image_size": {"type": "integer", "minimum": 0},
+        "precision": {"type": "string", "minLength": 1},
+        "ttft": {"$ref": "#/$defs/latency_stats"},
+        "tpot": {"$ref": "#/$defs/latency_stats"},
+        "e2e": {"$ref": "#/$defs/latency_stats"},
+        "tokens_per_s": {"type": "number", "minimum": 0},
+        "tokens_per_request_s": {"type": "number", "minimum": 0},
+        "requests_per_s": {"type": "number", "minimum": 0},
+        "requests": {"type": "integer", "minimum": 0},
+        "output_tokens": {"type": "integer", "minimum": 0},
+        "peak_vram_mb": {"type": "number", "minimum": 0},
+        "vram_source": {"type": "string", "minLength": 1},
+        "agreement": {"$ref": "#/$defs/metric"}
+      }
+    },
+    "llm_precision": {
+      "title": "LlmPrecision",
+      "description": "One precision compared at the primary prompt, image size, and concurrency.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "precision",
+        "ttft",
+        "tpot",
+        "e2e",
+        "tokens_per_s",
+        "tokens_per_request_s"
+      ],
+      "properties": {
+        "precision": {"type": "string", "minLength": 1},
+        "ttft": {"$ref": "#/$defs/latency_stats"},
+        "tpot": {"$ref": "#/$defs/latency_stats"},
+        "e2e": {"$ref": "#/$defs/latency_stats"},
+        "tokens_per_s": {"type": "number", "minimum": 0},
+        "tokens_per_request_s": {"type": "number", "minimum": 0},
+        "peak_vram_mb": {"type": "number", "minimum": 0},
+        "vram_source": {"type": "string", "minLength": 1},
+        "agreement": {"$ref": "#/$defs/metric"},
+        "concurrency": {"type": "integer", "minimum": 1},
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "image_tokens": {"type": "integer", "minimum": 0}
       }
     },
     "pipeline": {
