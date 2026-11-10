@@ -57,6 +57,10 @@ from ohho.train.run_cli import (
 from ohho.train.yaml_subset import YamlError, loads
 
 
+def _has_torch() -> bool:
+    return importlib.util.find_spec("torch") is not None
+
+
 def _run(path: str | Path, overrides: list[str] | None = None):
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -503,10 +507,7 @@ class TestActRun(unittest.TestCase):
             self.assertIn("boom", manifest["error"])
             self.assertIsNotNone(manifest["finished_at"])
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("torch") is not None,
-        "needs torch (pip install 'ohho-os[train]')",
-    )
+    @unittest.skipUnless(_has_torch(), "needs torch (pip install 'ohho-os[train]')")
     def test_tiny_act_recipe_on_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"

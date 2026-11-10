@@ -80,6 +80,7 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 | `ohho sim-serve --backend isaac\|mujoco` | Exit non-zero with `not built` |
 | `ohho sim-loop [--mock]` | Record → validate → train → serve → eval on CPU (see README) |
 | `ohho sim-demo --sim --fast` | Scripted Go2 sim demo and eval log (simulation only; see [`sim-demo.md`](sim-demo.md)) |
+| `ohho eval <checkpoint> --suite gazebo-nav-regression` | Seeded sim episodes and an `ohho.eval/v1` report (see [`eval.md`](eval.md)) |
 | `ohho selftest --sim` | Bench diagnostics against simulated hardware (CI-safe) |
 
 ## Smoke tests
