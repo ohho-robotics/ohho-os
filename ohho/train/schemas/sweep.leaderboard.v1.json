@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.sweep.leaderboard.v1.json",
+  "title": "ohho.sweep.leaderboard/v1",
+  "description": "Pareto set for an OhhO training sweep. A completed trial is on the Pareto set when no other completed trial dominates it. Trial A dominates trial B when A is no worse on every objective and strictly better on at least one. maximize prefers a larger number. minimize prefers a smaller number. Equal values do not dominate. pareto is that set in ascending trial index. trials lists every completed trial and marks the dominated ones. overrides are dotted path values. sets uses the ohho train --set form.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "strategy", "seed", "objectives", "trials", "pareto"],
+  "properties": {
+    "schema": {"const": "ohho.sweep.leaderboard/v1"},
+    "strategy": {"enum": ["grid", "random", "tpe", "bayesian", "multi"]},
+    "seed": {"type": "integer", "minimum": 0},
+    "objectives": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/objective"}
+    },
+    "trials": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/trial"}
+    },
+    "pareto": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/pareto"}
+    }
+  },
+  "$defs": {
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "direction", "primary"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["minimize", "maximize"]},
+        "primary": {"type": "boolean"}
+      }
+    },
+    "values": {
+      "type": "object",
+      "additionalProperties": {"type": "number"}
+    },
+    "trial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trial", "values", "overrides", "sets", "dominated"],
+      "properties": {
+        "trial": {"type": "integer", "minimum": 0},
+        "values": {"$ref": "#/$defs/values"},
+        "overrides": {"type": "object"},
+        "sets": {"type": "array", "items": {"type": "string"}},
+        "dominated": {"type": "boolean"}
+      }
+    },
+    "pareto": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trial", "values", "overrides", "sets"],
+      "properties": {
+        "trial": {"type": "integer", "minimum": 0},
+        "values": {"$ref": "#/$defs/values"},
+        "overrides": {"type": "object"},
+        "sets": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "schema": "ohho.bench/v1",
+  "run": {
+    "id": "llm-policy-001",
+    "model_sha": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "artifact_sha": "6666666666666666666666666666666666666666666666666666666666666666",
+    "target": "llm",
+    "manifest_ref": "manifests/llm-policy.json@5555555555555555",
+    "host": {
+      "name": "ci-runner-c",
+      "platform": "linux",
+      "arch": "x86_64",
+      "cpu": "generic-8c",
+      "accelerator": "none"
+    },
+    "started_at": "2026-01-15T12:00:00Z",
+    "finished_at": "2026-01-15T12:04:12Z"
+  },
+  "latency": {
+    "mean": 22.0,
+    "median": 18.0,
+    "p50": 18.0,
+    "p90": 40.0,
+    "p95": 55.0,
+    "p99": 90.0,
+    "min": 6.0,
+    "max": 120.0,
+    "std": 14.0,
+    "unit": "ms",
+    "samples": 800,
+    "stages": [
+      {
+        "name": "prefill",
+        "mean": 14.0,
+        "median": 12.0,
+        "p50": 12.0,
+        "p90": 24.0,
+        "p95": 32.0,
+        "p99": 48.0,
+        "min": 4.0,
+        "max": 60.0,
+        "std": 8.0,
+        "unit": "ms",
+        "samples": 800
+      },
+      {
+        "name": "decode",
+        "mean": 8.0,
+        "median": 6.0,
+        "p50": 6.0,
+        "p90": 16.0,
+        "p95": 22.0,
+        "p99": 40.0,
+        "min": 2.0,
+        "max": 70.0,
+        "std": 7.0,
+        "unit": "ms",
+        "samples": 800
+      }
+    ]
+  },
+  "throughput": {
+    "value": 45.0,
+    "unit": "tokens/s",
+    "samples": 800,
+    "batch_size": 1,
+    "duration_s": 17.8
+  },
+  "accuracy": {
+    "primary": {
+      "name": "exact_match",
+      "value": 0.71,
+      "unit": "fraction"
+    },
+    "metrics": [
+      {
+        "name": "token_f1",
+        "value": 0.84,
+        "unit": "fraction"
+      }
+    ],
+    "samples": 800
+  },
+  "telemetry": {
+    "duration_s": 180.0,
+    "samples": 800,
+    "cpu_percent_mean": 37.0,
+    "memory_mb_max": 2200.0,
+    "power_w_mean": 28.0
+  },
+  "environment": {
+    "versions": {
+      "python": "3.12.3",
+      "ohho": "1.2.0"
+    }
+  }
+}

@@ -38,6 +38,7 @@ serial = ["pyserial>=3.5"]                   # serial base adapter
 arm = ["lerobot>=0.1"]                       # Feetech arm adapter (SO-101)
 agent = ["numpy>=1.24", "anthropic>=0.40"]   # real agent brain (agent_engine + Claude)
 data = ["pyarrow>=14.0"]                     # LeRobot Parquet dataset writer
+datasets = ["huggingface_hub>=0.23"]         # Hugging Face Hub dataset import
 # cyclonedds is a build and runtime dependency of the DDS SDK (not on PyPI).
 unitree = ["cyclonedds>=0.10"]               # DDS transport extra
 dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
@@ -45,6 +46,7 @@ serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
 optimize = ["torch>=2.1", "numpy>=1.24", "onnx>=1.15", "onnxruntime>=1.16"]  # ONNX export and ORT sessions
+bench = ["numpy>=1.24", "onnxruntime>=1.16"]  # `ohho bench` ONNX artifacts; schema checks stay dependency-free
 humanoid-sim = [
   "mujoco>=3.1",
   "numpy>=1.24",
@@ -61,6 +63,7 @@ all = [
   "numpy>=1.24",
   "anthropic>=0.40",
   "pyarrow>=14.0",
+  "huggingface_hub>=0.23",
   "torch>=2.1",
   "mujoco>=3.1",
   "onnx>=1.15",
@@ -87,11 +90,38 @@ builtin = "ohho.robots.builtin:plugin"
 omnibot = "ohho.robots.omnibot:plugin"
 unitree = "ohho.robots.unitree:plugin"
 
+[project.entry-points."ohho.recipes"]
+act = "ohho.train.builtin_recipes:ACT"
+diffusion = "ohho.train.builtin_recipes:DIFFUSION"
+smolvla = "ohho.train.builtin_recipes:SMOLVLA"
+openvla = "ohho.train.builtin_recipes:OPENVLA"
+ppo = "ohho.train.builtin_recipes:PPO"
+
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "targets/profiles/*.json", "targets/*.json", "optimize/*.json", "parity/*.json"]
+ohho = [
+  "robots/*.json",
+  "testing/conformance/*.txt",
+  "agent_rules/*.md",
+  "datasets/*.json",
+  "targets/profiles/*.json",
+  "targets/*.json",
+  "optimize/*.json",
+  "parity/*.json",
+  "train/schema/*.json",
+  "train/examples/*.yaml",
+  "train/schemas/*.json",
+  "train/schemas/examples/*.json",
+  "train/schemas/examples/*.yaml",
+  "serve/job/schema.json",
+  "serve/job/examples/*.yaml",
+  "bench/schemas/*.json",
+  "bench/examples/*.json",
+  "eval/schemas/*.json",
+  "eval/suites.json",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
