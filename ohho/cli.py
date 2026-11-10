@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -1117,6 +1118,39 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+def _cmd_eval(args) -> int:
+    from .eval import EvalError, EvalValidationError, run_eval
+
+    try:
+        report = run_eval(
+            args.checkpoint,
+            args.suite,
+            episodes=args.episodes,
+            seed=args.seed,
+            scenarios=args.scenarios or None,
+            videos=args.videos or None,
+            out=args.out or None,
+        )
+    except (EvalError, EvalValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    interval = report["success_ci95"]
+    modes = report["failure_modes"]
+    failure_text = ""
+    if modes:
+        counted = ", ".join(f"{name}:{count}" for name, count in modes.items())
+        failure_text = f"  failures={counted}"
+    print(
+        f"ohho.eval/v1 suite={report['suite']} "
+        f"success_rate={report['success_rate']:.3f} "
+        f"ci95=[{interval['low']:.3f}, {interval['high']:.3f}] "
+        f"episodes={interval['trials']}{failure_text}"
+    )
+    if args.out:
+        print(f"wrote {args.out}")
+    return 0
+
+
 def _cmd_bench(args) -> int:
     from .bench.schema import BenchValidationError, validate_path
 
@@ -1129,10 +1163,38 @@ def _cmd_bench(args) -> int:
     return 0
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """Parser that keeps options between optional positionals on Python 3.10 and 3.11.
+
+    CPython 3.12's ``_match_arguments_partial`` leaves a ``nargs='?'`` positional
+    unmatched when the next token is an option. 3.10 and 3.11 consume that
+    positional as empty, so ``ohho agent ROBOT --transport sim:// GOAL`` and
+    ``ohho skills run ROBOT --transport sim:// SKILL`` report the last token as
+    unrecognized. Subparsers use this class because ``add_subparsers`` sets
+    ``parser_class`` to ``type(self)``.
+    """
+
+    def _match_arguments_partial(self, actions, arg_strings_pattern):
+        if sys.version_info >= (3, 12):
+            return super()._match_arguments_partial(actions, arg_strings_pattern)
+        for i in range(len(actions), 0, -1):
+            actions_slice = actions[:i]
+            pattern = "".join(
+                self._get_nargs_pattern(action) for action in actions_slice
+            )
+            match = re.match(pattern, arg_strings_pattern)
+            if match is not None:
+                result = [len(group) for group in match.groups()]
+                end = match.end()
+                if end < len(arg_strings_pattern) and arg_strings_pattern[end] == "O":
+                    while result and not result[-1]:
+                        del result[-1]
+                return result
+        return []
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="ohho", description="OhhO OS — the open robot engine."
-    )
+    p = _ArgumentParser(prog="ohho", description="OhhO OS — the open robot engine.")
     p.add_argument(
         "-V", "--version", action="store_true", help="print version and exit"
     )
@@ -1747,6 +1809,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("--json", action="store_true", help="print JSON on stdout")
     show.set_defaults(func=_cmd_rules)
+
+    ev = sub.add_parser(
+        "eval",
+        help="score a checkpoint on a Proof sim suite (ohho.eval/v1)",
+    )
+    ev.add_argument("checkpoint", help="checkpoint file or directory")
+    ev.add_argument(
+        "--suite",
+        required=True,
+        help="suite name (gazebo-nav-regression), or any name with --scenarios",
+    )
+    ev.add_argument(
+        "--episodes",
+        type=int,
+        default=5,
+        help="seeded episodes per scenario (default: 5)",
+    )
+    ev.add_argument("--seed", type=int, default=0, help="base seed (default: 0)")
+    ev.add_argument(
+        "--scenarios",
+        default="",
+        help="Proof scenario YAML to load instead of the suite checkout",
+    )
+    ev.add_argument(
+        "--videos",
+        default="",
+        help="directory for optional pose traces (omit to leave videos empty)",
+    )
+    ev.add_argument(
+        "--out",
+        default="",
+        help="write the ohho.eval/v1 JSON report to this path",
+    )
+    ev.set_defaults(func=_cmd_eval)
 
     bench = sub.add_parser(
         "bench",

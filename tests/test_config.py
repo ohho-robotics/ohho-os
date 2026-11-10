@@ -424,11 +424,44 @@ class TestEntryPoints(unittest.TestCase):
         _normalize_robot_args(goal_only)
         self.assertIsNone(goal_only.robot)
         self.assertEqual(goal_only.goal, "explore the room")
+        flagged = build_parser().parse_args(
+            [
+                "agent",
+                "omnibot",
+                "--transport",
+                "sim://",
+                "--runtime",
+                "native",
+                "stop and report status",
+            ]
+        )
+        _normalize_robot_args(flagged)
+        self.assertEqual(flagged.robot, "omnibot")
+        self.assertEqual(flagged.goal, "stop and report status")
+        self.assertEqual(flagged.transport, "sim://")
+        self.assertEqual(flagged.runtime, "native")
 
         skill = build_parser().parse_args(["market", "run", "stop"])
         _normalize_robot_args(skill)
         self.assertIsNone(skill.robot)
         self.assertEqual(skill.skill_name, "stop")
+        skill_run = build_parser().parse_args(
+            [
+                "skills",
+                "run",
+                "omnibot",
+                "--transport",
+                "sim://",
+                "--runtime",
+                "native",
+                "status",
+            ]
+        )
+        _normalize_robot_args(skill_run)
+        self.assertEqual(skill_run.robot, "omnibot")
+        self.assertEqual(skill_run.skill_name, "status")
+        self.assertEqual(skill_run.transport, "sim://")
+        self.assertEqual(skill_run.runtime, "native")
         where = build_parser().parse_args(["memory", "where", "cup"])
         _normalize_robot_args(where)
         self.assertIsNone(where.robot)
