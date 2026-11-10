@@ -60,6 +60,7 @@
 | **Hardware adapters** | ✅ M1 software complete — `serial://` (Yahboom base) + `feetech://` (SO-101 arm) + `composite` (base+arm merge for mobile-manipulators) + `dds://` (Unitree Go2 with real state polling) all built and mock-tested. **On-robot bring-up still pending** (hardware-gated). DJI/others not built. |
 | Agent loop | ✅ **real brain** — `HarnessBrain` wires `agent_engine.AgentHarness` (perceive→reason→act→reflect). `ToolRegistry` built from robot capabilities. `ClaudeToolCallingReasoner` over `ReasoningRouter` (cloud Claude when `ANTHROPIC_API_KEY` + `[agent]` extra, echo fallback otherwise). `ScriptedBrain` remains the no-dep fallback. |
 | Training / data / serve | ✅ **M3 complete** — `ohho.data.Recorder` (capture state+action from Robot → LeRobot v2.0), `ohho.train.finetune()` (delegates to lerobot_engine, mock mode for sim), `ohho.serve` (FastAPI server, `ohho serve` CLI). Record→train→serve loop works on sim. |
+| Safe model load + worker sandbox | ✅ **OHH-485** — `ohho.model_safety` scans pickle opcodes and loads safetensors, ONNX, or `torch.load(weights_only=True)`. Managed workers (`OHHO_MANAGED_WORKER=1`) refuse other `.pt`/`.bin` pickle loads. `ohho.worker_sandbox` is a code-only container spec (read-only root, no host mounts, non-root, CPU/memory/GPU limits, wiped scratch, console API and registry egress, job token only). Human security sign-off is still required before external cloud users. Docs: `docs/security/model-files-and-worker-sandbox.md`. |
 | **Navigation (native, no-ROS)** | ✅ **v1.1.0** — `ohho.nav`: grid mapping, costmap, A*, frontiers, `Navigator` (collision-aware). CLI `ohho nav goto/explore/map` |
 | **Memory + perception** | ✅ **v1.1.0 + OHH-125** — `ohho.memory` (object permanence, temporal queries, JSON persistence) + `ohho.perception` (`SimPerceptor`, `CameraPerceptor`, Claude-vision `VlmPerceptor` with 1 Hz rate-limiting and cost/latency hooks). Go2 front-camera frames over DDS (`get_camera_frame()`), odom + bearing projection from image x with fixed-range assumption. CLI `ohho look`, `ohho memory`, and `ohho look unitree-go2 --transport dds://lo?domain=1`. |
 | **Simulation WebSocket (`sim-serve`)** | ✅ **OHH-91 / OHH-89** — `ohho.sim_serve` JSON session shared with the Connect console: velocity/joints/deadman/estop in, odom/joint state/camera or `no_camera`/backend id out. Missing deadman or a dropped socket zeroes velocity within 300 ms (watchdog is not tied to the telemetry rate). `ros2` bridges `/cmd_vel`, `/odom`, joint state, front camera, `/emergency_stop` via rosbridge (tests use a fake bridge, no Gazebo). `isaac`/`mujoco` return `not-implemented` and the CLI prints `not built`. CLI `ohho sim-serve`. Default port **8790** (8765 is OmniBot's Foxglove bridge). |
@@ -197,6 +198,8 @@ sdk/
 │   ├── serve/            # ohho.serve — FastAPI inference server, `ohho serve` CLI
 │   │   ├── __init__.py   # serve(), build_app(), ServeUnavailable, _MockModel
 │   │   └── act.py        # ACTModel inference adapter
+│   ├── model_safety.py   # OHH-485 safe weight load: safetensors, ONNX, pickle scan, weights_only
+│   ├── worker_sandbox.py # OHH-485 code-only worker sandbox spec, scratch wipe, egress check
 │   ├── sim_serve.py      # ohho.sim_serve — WebSocket teleop and telemetry server (`sim` and `ros2`)
 │   ├── sim_loop.py       # ohho.sim_loop — record -> validate -> tiny ACT train -> serve -> eval pipeline
 │   ├── sim_demo.py       # ohho.sim_demo — OHH-134 6-shot Go2 sim demo harness + eval log
@@ -234,6 +237,8 @@ sdk/
 │   ├── architecture/
 │   │   └── robot-plugins.md  # ADR: six plugin rules + RobotSpec v2 (OHH-309, proposed)
 │   ├── safety.md         # SafetyGate rules, profiles, config file, audit format
+│   ├── security/
+│   │   └── model-files-and-worker-sandbox.md  # OHH-485 load rules, sandbox spec, review checklist
 │   ├── selftest.md       # Bench v0 self-test documentation, safety rules, JSON schema
 │   ├── hil-preflight.md  # bench checklist before hardware HIL (OHH-35)
 │   ├── hil-bag.md        # 2-minute MCAP recording on the Pi 5 Jazzy image
