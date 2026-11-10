@@ -14,13 +14,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 import time
 from typing import Any
 
+from ohho.bench.environment import GpuProbe
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.generate import GenerateConfig, execute_generate
 from ohho.bench.harness import BenchConfig, execute
 from ohho.bench.pipeline import PipelineConfig, execute_pipeline
+from ohho.bench.sensors.base import SensorSource
 from ohho.bench.report import (
     dump_result,
     log_wandb,
@@ -48,6 +51,8 @@ def register_bench(subparsers: Any) -> None:
             "--warmup 10 --iters 50 --batch 1,4,8 --inputs random --json out.json\n"
             "  ohho bench --artifact model.onnx --target x86-cpu --baseline prev.json "
             "--slo p95<=200ms --max-regression p95=10%% --markdown summary.md\n"
+            "  ohho bench --artifact model.onnx --target x86-cpu --sustained 30 "
+            "--json out.json\n"
             "  ohho bench --pipeline --hz 30 --json out.json\n"
             "  ohho bench --pipeline --fixture stream.json --sink inprocess\n"
             "  ohho bench validate out.json\n"
@@ -201,6 +206,15 @@ def register_bench(subparsers: Any) -> None:
         help="replay a recording labelled hardware; never opens a robot",
     )
     bench.add_argument(
+        "--sustained",
+        type=float,
+        default=None,
+        help=(
+            "measure for this many seconds instead of --iters, and report "
+            "p95 latency drift per time window"
+        ),
+    )
+    bench.add_argument(
         "--mode",
         choices=("inference", "generate"),
         default="inference",
@@ -273,11 +287,128 @@ def run_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_version(args: argparse.Namespace) -> int:
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config: dict[str, object] = {}
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    try:
+        print(open_backend(args.backend).version(config))
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _bench_launch_config(args: argparse.Namespace) -> dict[str, object]:
+    config: dict[str, object] = {
+        "host": args.host,
+        "startup_timeout_s": args.startup_timeout,
+    }
+    if args.port is not None:
+        config["port"] = args.port
+    if args.executable:
+        config["executable"] = args.executable
+    if args.launcher:
+        config["launcher"] = args.launcher
+    if args.model_repository:
+        config["model_repository"] = args.model_repository
+    if args.n_gpu_layers is not None:
+        config["n_gpu_layers"] = args.n_gpu_layers
+    if args.ctx_size is not None:
+        config["ctx_size"] = args.ctx_size
+    if args.tp_size is not None:
+        config["tp_size"] = args.tp_size
+    if args.extra_arg:
+        config["extra_args"] = list(args.extra_arg)
+    return config
+
+
+def run_launch(args: argparse.Namespace) -> int:
+    import json
+    import time
+
+    from ohho.serve.backends import ServingBackendError, open_backend
+
+    config = _bench_launch_config(args)
+    try:
+        backend = open_backend(args.backend)
+        if args.dry_run:
+            config["dry_run"] = True
+            plan = backend.plan(args.model, args.precision, config)
+            json.dump(
+                {
+                    "backend": backend.name,
+                    "commands": [list(command) for command in plan.commands],
+                    "endpoint_url": plan.endpoint_url,
+                    "health_url": plan.health_url,
+                    "version_argv": list(plan.version_argv),
+                    "precision": plan.precision,
+                },
+                sys.stdout,
+                indent=2,
+            )
+            sys.stdout.write("\n")
+            return 0
+        backend.launch(args.model, args.precision, config)
+    except ServingBackendError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(backend.endpoint_url())
+    try:
+        while backend.running:
+            time.sleep(0.5)
+        print("error: serving process exited", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        backend.teardown()
+
+
+def run_llm(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from ohho.bench.schema import BenchValidationError
+    from ohho.serve.loadgen import LoadGenError, LoadSpec, run_load, to_bench_result
+
+    spec = LoadSpec(
+        endpoint_url=args.endpoint,
+        model=args.model,
+        prompt=args.prompt,
+        max_tokens=args.max_tokens,
+        concurrency=args.concurrency,
+        requests=args.requests,
+        timeout_s=args.timeout,
+    )
+    try:
+        result = run_load(spec)
+        document = to_bench_result(
+            result,
+            backend=args.backend_name,
+            backend_version=args.backend_version,
+            precision=args.precision,
+        )
+    except (LoadGenError, BenchValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    path = Path(args.output)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {path}")
+    return 0
+
+
 def run_bench_command(
     args: argparse.Namespace,
     *,
     runner: Any = None,
     clock: Any = None,
+    sources: Sequence[SensorSource] | None = None,
+    gpu: GpuProbe | None = None,
 ) -> int:
     """Run the harness from parsed CLI arguments.
 
@@ -304,6 +435,8 @@ def run_bench_command(
                 config,
                 runner=runner,
                 clock=clock,
+                sources=sources,
+                gpu=gpu,
                 baseline_path=getattr(args, "baseline", None),
                 slos=_expand_slos(tuple(args.slo or ())),
                 max_regressions=tuple(args.max_regression or ()),
@@ -461,6 +594,7 @@ def _config(args: argparse.Namespace) -> BenchConfig:
         batches=_batches(args.batch),
         inputs=args.inputs,
         workload=workload,
+        sustained=getattr(args, "sustained", None),
     )
 
 

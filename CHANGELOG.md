@@ -17,6 +17,16 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **`ohho parity`** — numerical gate between a reference model and an optimized
+  artifact (`ohho.parity/v1`). Reports mean absolute difference, max absolute
+  difference, RMSE, and cosine similarity per output; action heads also report
+  per-joint and action-chunk error; classifiers and LLMs also report top-1
+  agreement and logit KL. The default fail is mean absolute difference above
+  0.05, configurable per model family and target. Inputs are seeded random, a
+  LeRobot dataset, or a sim-loop episode. `ohho optimize` runs the gate before
+  it writes `manifest.json` and exits 1 without publishing when the gate fails,
+  unless `--allow-parity-fail` is set (recorded in the manifest). Docs:
+  [`docs/serve/parity.md`](docs/serve/parity.md).
 - **Generate-mode bench** (OHH-436) — `ohho bench --mode generate` measures
   TTFT, TPOT (mean, median, p95), end-to-end latency, and tokens/s for an
   autoregressive workload (`llm`, `vlm`, `vla`). The default CPU stand-in

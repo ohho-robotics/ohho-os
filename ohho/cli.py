@@ -199,6 +199,14 @@ def _cmd_doctor(args) -> int:
             else "needs [optimize] extra  (torch, onnx, onnxruntime)"
         )
     )
+    print(
+        "  parity      : "
+        + (
+            "reference vs candidate  (ONNX compare needs onnxruntime; TensorRT is unchecked)"
+            if have("torch")
+            else "needs torch  (onnxruntime to compare an ONNX candidate)"
+        )
+    )
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
@@ -1156,6 +1164,7 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+
 def _cmd_train(args) -> int:
     from .train.run_cli import execute
 
@@ -1278,6 +1287,7 @@ def _cmd_eval(args) -> int:
     if args.out:
         print(f"wrote {args.out}")
     return 0
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1678,8 +1688,10 @@ def build_parser() -> argparse.ArgumentParser:
     register_targets(sub)
 
     from .optimize.command import register_optimize
+    from .parity.command import register_parity
 
     register_optimize(sub)
+    register_parity(sub)
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
@@ -2017,7 +2029,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ev.set_defaults(func=_cmd_eval)
     add_dataset_parser(sub)
-
     from .bench.command import register_bench
 
     register_bench(sub)

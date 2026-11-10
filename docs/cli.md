@@ -63,7 +63,8 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
-| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)) |
+| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
+| `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
@@ -82,12 +83,6 @@ and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
 export are not in this tree; those examples are placeholders and do not print
 benchmark numbers.
 
-## Training recipes
-
-| Command | Description |
-|---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
-
 ## Benchmark (`ohho bench`)
 
 | Command | Description |
@@ -100,6 +95,12 @@ benchmark numbers.
 
 Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
 external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
+
+## Training recipes
+
+| Command | Description |
+|---------|-------------|
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
 
 ## Simulation services
 
