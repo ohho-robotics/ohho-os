@@ -1,0 +1,16 @@
+{
+  "schema": "ohho.sweep/v1",
+  "strategy": "multi",
+  "seed": 1,
+  "budget": {"max_trials": 20},
+  "sampler": {"startup_trials": 6, "gamma": 0.25, "candidates": 32},
+  "objectives": [
+    {"name": "success_rate", "direction": "maximize"},
+    {"name": "latency_p95_ms", "direction": "minimize"},
+    {"name": "memory_mb", "direction": "minimize"}
+  ],
+  "dimensions": [
+    {"name": "lr", "type": "log_uniform", "low": 1e-5, "high": 1e-2},
+    {"name": "batch_size", "type": "int", "low": 4, "high": 32, "step": 4}
+  ]
+}

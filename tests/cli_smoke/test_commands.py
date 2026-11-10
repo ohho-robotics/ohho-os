@@ -241,6 +241,18 @@ scenarios:
         code, _out, err = _run_cli(["sim-demo", "--sim", "--fast"])
         self.assertEqual(code, 0, err)
 
+    def test_sweep_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sweep.json"
+            path.write_text(
+                json.dumps({"schema": "ohho.sweep/v1", "dimensions": []}),
+                encoding="utf-8",
+            )
+            code, out, err = _run_cli(["sweep", "plan", str(path)])
+            self.assertEqual(code, 0, err)
+            self.assertIn("trials: 1", out)
+            self.assertIn("estimate", out)
+
     def test_selftest_sim(self):
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "report.json"
@@ -438,6 +450,22 @@ class TestCliSmokeSimLoop(unittest.TestCase):
             )
             self.assertEqual(code, 0, err + out)
             self.assertTrue((Path(tmp) / "dataset").exists())
+
+
+class TestCliSmokeTrain(unittest.TestCase):
+    """``ohho train`` on a family with no trainer in this build."""
+
+    def test_train_reports_unavailable_family(self):
+        from ohho.train.recipe_schema import example_path
+
+        code, out, err = _run_cli(["train", str(example_path("diffusion"))])
+        self.assertEqual(code, 3, err + out)
+        self.assertIn("family not available in this build", out)
+        self.assertIn("family not available in this build", err)
+        event = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(event["event"], "error")
+        self.assertEqual(event["exit_code"], 3)
+        self.assertNotIn('"event": "train_start"', out)
 
 
 if __name__ == "__main__":
