@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/ohho.sweep.v1.json",
   "title": "ohho.sweep/v1",
-  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random, tpe, bayesian, or multi with at least one dimension requires budget.max_trials; strategy tpe and strategy bayesian (the built-in Tree-structured Parzen Estimator) require an objective and, when more than one objective is set, a primary; strategy multi (multi-objective TPE) requires at least two objectives; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points. estimated GPU-hours are an estimate computed from per-trial values in this spec.",
+  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random, tpe, bayesian, or multi with at least one dimension requires budget.max_trials; strategy tpe and strategy bayesian (the built-in Tree-structured Parzen Estimator) require an objective and, when more than one objective is set, a primary; strategy multi (multi-objective TPE) requires at least two objectives; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points. estimated GPU-hours are an estimate computed from per-trial values in this spec. early_stopping.rule is patience (default), asha, or median. rule asha requires a non-empty rungs array. rungs are strictly increasing and each rung is greater than or equal to grace_period. asha keeps the best floor(n/reduction_factor) trials at a rung once n is at least reduction_factor. median stops a trial that is strictly worse than the median at that step once reduction_factor trials have reported it, and not before grace_period.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema"],
@@ -267,12 +267,67 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["metric"],
+      "description": "Stopping rule for intermediate metrics. The trial runner reports the metric at a step. The sweep controller calls decide, which returns continue or stop. patience stops one trial after this many reports without an improvement of min_delta. asha is successive halving at rungs. median stops a trial that is strictly worse than the median of trials that have reported that step. This object does not change which trials the sampler proposes. Stopped trials are marked pruned, which is distinct from failed.",
       "properties": {
-        "metric": {"type": "string", "minLength": 1},
-        "patience": {"type": "integer", "minimum": 1, "default": 1},
-        "min_delta": {"type": "number", "minimum": 0, "default": 0},
-        "mode": {"enum": ["min", "max"], "default": "min"}
-      }
+        "metric": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the scalar the trial runner reports at each step."
+        },
+        "rule": {
+          "enum": ["patience", "asha", "median"],
+          "default": "patience",
+          "description": "patience uses patience and min_delta on one trial. asha keeps the top floor(n/reduction_factor) at each rung once n >= reduction_factor. median compares the trial with the median at that step once reduction_factor trials have reported it."
+        },
+        "rungs": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1},
+          "uniqueItems": true,
+          "description": "Strictly increasing steps where a decision is made. Required and non-empty for rule asha. For patience and median, an empty or omitted list means every reported step can decide. Each rung must be >= grace_period."
+        },
+        "reduction_factor": {
+          "type": "integer",
+          "minimum": 2,
+          "default": 4,
+          "description": "ASHA reduction factor (eta). Median stopping uses it as the minimum number of reports at a step before a trial can be stopped. patience ignores it."
+        },
+        "grace_period": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Do not stop a trial before this step. Rungs must be greater than or equal to this value."
+        },
+        "patience": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "For rule patience, stop after this many decision-step reports with no improvement of at least min_delta."
+        },
+        "min_delta": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "For rule patience, an improvement must be strictly better than the best value by this amount. mode min wants a smaller number. mode max wants a larger number."
+        },
+        "mode": {
+          "enum": ["min", "max"],
+          "default": "min",
+          "description": "min treats a smaller metric as better. max treats a larger metric as better."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "required": ["rule"],
+            "properties": {"rule": {"const": "asha"}}
+          },
+          "then": {
+            "required": ["rungs"],
+            "properties": {"rungs": {"minItems": 1}}
+          }
+        }
+      ]
     },
     "budget": {
       "type": "object",
