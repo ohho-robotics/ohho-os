@@ -107,11 +107,14 @@ class TestServeExamples(unittest.TestCase):
         support = self.support
         self.assertFalse(support.feature_ready("cli:optimize"))
         self.assertFalse(support.feature_ready("ohho.optimize"))
-        self.assertFalse(support.feature_ready("bench:llm"))
-        self.assertFalse(support.feature_ready("bench:launch"))
+        self.assertTrue(support.feature_ready("bench:llm"))
+        self.assertTrue(support.feature_ready("bench:launch"))
         self.assertFalse(support.feature_ready("export:metrics"))
         self.assertTrue(support.feature_ready("cli:bench"))
-        self.assertEqual(support.bench_commands(), {"validate"})
+        self.assertEqual(
+            support.bench_commands(),
+            {"validate", "llm", "launch", "version"},
+        )
         buffer = StringIO()
         with redirect_stdout(buffer):
             code = support.emit_placeholder(

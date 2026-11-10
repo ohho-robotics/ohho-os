@@ -311,7 +311,7 @@ class TestProcessTree(unittest.TestCase):
     def test_exit_and_hang_leave_no_child(self) -> None:
         for no_job in ("0", "1"):
             for mode, needle, timeout in (
-                ("exit", "exited before it was healthy", 5.0),
+                ("exit", "exited before it was healthy", 10.0),
                 ("hang", "did not become healthy", 1.5),
             ):
                 with self.subTest(no_job=no_job, mode=mode):

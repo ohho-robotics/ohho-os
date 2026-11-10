@@ -27,7 +27,7 @@ def main() -> int:
         example_id="vlm-vllm",
         hardware="GPU host for vLLM",
         pending="ohho bench llm on vLLM (OHH-436)",
-        checks=("bench:llm", "bench:launch"),
+        checks=("vllm",),
     )
 
 
