@@ -32,7 +32,7 @@ def main() -> int:
         pending=(
             "ohho optimize (OHH-429) FP16 TensorRT, parity, and the bench harness"
         ),
-        checks=("tensorrt", "bench:launch"),
+        checks=("tensorrt",),
     )
 
 

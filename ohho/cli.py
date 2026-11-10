@@ -2048,11 +2048,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.command == "bench"
             and not getattr(args, "bench_command", None)
             and not getattr(args, "artifact", None)
+            and getattr(args, "mode", None) != "generate"
             and not getattr(args, "pipeline", False)
         ):
             parser.error(
                 "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
-                "or `--pipeline`"
+                "`--mode generate --target PROFILE`, or `--pipeline`"
             )
         if not (
             (args.command == "mcp" and getattr(args, "mcp_command", None) == "connect")

@@ -31,12 +31,17 @@ _REG_RE = re.compile(
 
 @dataclass(frozen=True)
 class Slo:
-    """One parsed latency ceiling."""
+    """One parsed latency ceiling.
+
+    ``source`` is ``latency`` for an end-to-end field, or ``ttft`` / ``tpot``
+    for the generate-mode distributions on ``llm``.
+    """
 
     expr: str
     field: str
     op: str
     limit_ms: float
+    source: str = "latency"
 
 
 @dataclass(frozen=True)
@@ -54,19 +59,31 @@ def parse_slo(expr: str) -> Slo:
     if match is None:
         raise BenchHarnessError(f"invalid --slo {expr!r}; expected p95<=200ms")
     canonical = canonical_metric(match.group("metric"))
-    if not canonical.startswith("latency.") or canonical == "latency.achievable_hz":
-        raise BenchHarnessError(
-            f"invalid --slo {expr!r}; the metric must be a latency such as p95"
-        )
+    source = _slo_source(canonical, expr)
     unit = (match.group("unit") or "ms").lower()
     number = float(match.group("number"))
     limit_ms = number * 1000.0 if unit == "s" else number
+    field = "p95" if source in {"ttft", "tpot"} else canonical.split(".", 1)[1]
     return Slo(
         expr=expr.strip(),
-        field=canonical.split(".", 1)[1],
+        field=field,
         op=match.group("op"),
         limit_ms=limit_ms,
+        source=source,
     )
+
+
+def _slo_source(canonical: str, expr: str) -> str:
+    if canonical == "llm.ttft.p95":
+        return "ttft"
+    if canonical == "llm.tpot.p95":
+        return "tpot"
+    if not canonical.startswith("latency.") or canonical == "latency.achievable_hz":
+        raise BenchHarnessError(
+            f"invalid --slo {expr!r}; the metric must be a latency such as p95, "
+            "ttft_p95, or tpot_p95"
+        )
+    return "latency"
 
 
 def parse_regression(expr: str) -> RegressionLimit:
@@ -115,26 +132,49 @@ def evaluate_gates(
 
 
 def _slo_check(document: dict, slo: Slo) -> dict[str, object]:
-    latency = document.get("latency")
-    if not isinstance(latency, dict) or slo.field not in latency:
-        raise BenchHarnessError(f"result has no latency.{slo.field} for {slo.expr}")
-    value_ms = _as_ms(float(latency[slo.field]), latency, slo.field)
+    block, metric = _slo_block(document, slo)
+    value_ms = _as_ms(float(block[slo.field]), block, slo.field)
     if slo.op == "<=":
         passed = value_ms <= slo.limit_ms
         relation = "<="
     else:
         passed = value_ms < slo.limit_ms
         relation = "<"
-    detail = f"p95-class {slo.field} {value_ms:.6g} ms {relation} {slo.limit_ms:.6g} ms"
+    if slo.source == "latency":
+        detail = (
+            f"p95-class {slo.field} {value_ms:.6g} ms {relation} {slo.limit_ms:.6g} ms"
+        )
+    else:
+        detail = (
+            f"llm.{slo.source}.{slo.field} {value_ms:.6g} ms "
+            f"{relation} {slo.limit_ms:.6g} ms"
+        )
     return {
         "name": "slo",
         "expr": slo.expr,
         "passed": passed,
-        "metric": f"latency.{slo.field}",
+        "metric": metric,
         "value": value_ms,
         "limit": slo.limit_ms,
         "detail": detail,
     }
+
+
+def _slo_block(document: dict, slo: Slo) -> tuple[dict, str]:
+    if slo.source == "latency":
+        latency = document.get("latency")
+        if not isinstance(latency, dict) or slo.field not in latency:
+            raise BenchHarnessError(f"result has no latency.{slo.field} for {slo.expr}")
+        return latency, f"latency.{slo.field}"
+    llm = document.get("llm")
+    if not isinstance(llm, dict):
+        raise BenchHarnessError(f"result has no llm block for {slo.expr}")
+    block = llm.get(slo.source)
+    if not isinstance(block, dict) or slo.field not in block:
+        raise BenchHarnessError(
+            f"result has no llm.{slo.source}.{slo.field} for {slo.expr}"
+        )
+    return block, f"llm.{slo.source}.{slo.field}"
 
 
 def _as_ms(value: float, latency: dict, field: str) -> float:
