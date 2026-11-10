@@ -452,5 +452,21 @@ class TestCliSmokeSimLoop(unittest.TestCase):
             self.assertTrue((Path(tmp) / "dataset").exists())
 
 
+class TestCliSmokeTrain(unittest.TestCase):
+    """``ohho train`` on a family with no trainer in this build."""
+
+    def test_train_reports_unavailable_family(self):
+        from ohho.train.recipe_schema import example_path
+
+        code, out, err = _run_cli(["train", str(example_path("diffusion"))])
+        self.assertEqual(code, 3, err + out)
+        self.assertIn("family not available in this build", out)
+        self.assertIn("family not available in this build", err)
+        event = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(event["event"], "error")
+        self.assertEqual(event["exit_code"], 3)
+        self.assertNotIn('"event": "train_start"', out)
+
+
 if __name__ == "__main__":
     unittest.main()
