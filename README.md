@@ -18,7 +18,7 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
@@ -304,6 +304,12 @@ first token, inter-token latency, tokens/s, request throughput) and writes
 `ohho.bench/v1` with an optional `ohho.bench.llm/v1` block. vLLM, SGLang,
 TensorRT-LLM, and llama.cpp are external programs, not package dependencies.
 See [`docs/serve/llm-backends.md`](docs/serve/llm-backends.md).
+
+Runnable Serve examples, with the hardware, runtime, and expected output for
+each one, are in [`examples/serve`](examples/serve/README.md). CPU examples
+run in CI and on release tags. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
+W&B/Prometheus export stay placeholders until those commands are on main.
+They do not publish benchmark numbers.
 
 ## TypeScript
 
