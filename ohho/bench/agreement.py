@@ -7,6 +7,7 @@ matching positions. Extra tokens on the longer sequence count as misses.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 
 _PARITY_NAMES = (
@@ -40,10 +41,12 @@ def local_top1_agreement(
 
 
 def _parity_function() -> object | None:
-    try:
-        import ohho.parity as parity
-    except ImportError:
-        return None
+    parity = sys.modules.get("ohho.parity")
+    if parity is None:
+        try:
+            import ohho.parity as parity
+        except ImportError:
+            return None
     for name in _PARITY_NAMES:
         fn = getattr(parity, name, None)
         if callable(fn):
