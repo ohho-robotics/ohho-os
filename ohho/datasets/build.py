@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+from .augment import prepare_augmentation
 from .model import (
     Augmentation,
     CanonicalEpisode,
@@ -27,17 +28,13 @@ from .model import (
     canonical_content_bytes,
     content_hash_of,
     is_version_id,
-    json_number,
     render_number,
     stats_from_episodes,
     storage_prefix_for,
     version_id_for,
 )
+from .split import SplitEpisode, assign_splits, held_out_scenes_present, prepare_split
 from .store import create_version, load_version
-
-_SPLIT_NAMES = ("all", "train", "val", "test")
-_PARTS = ("train", "val", "test")
-_WEIGHT_SCALE = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -58,6 +55,9 @@ class _Loaded:
     fps: str
     robot_type: str
     frames: tuple[_RawFrame, ...]
+    session: str | None = None
+    day: str | None = None
+    scene: str | None = None
 
 
 def prepare_spec(spec: DatasetSpec) -> DatasetSpec:
@@ -88,17 +88,8 @@ def prepare_spec(spec: DatasetSpec) -> DatasetSpec:
         and filters.min_frames > filters.max_frames
     ):
         raise DatasetBuildError("min_frames cannot exceed max_frames")
-    if spec.split.name not in _SPLIT_NAMES:
-        raise DatasetBuildError("split name must be all, train, val, or test")
-    split = Split(
-        name=spec.split.name,
-        train=_weight(spec.split.train, "train"),
-        val=_weight(spec.split.val, "val"),
-        test=_weight(spec.split.test, "test"),
-    )
-    if split.name != "all" and split.train + split.val + split.test <= 0:
-        raise DatasetBuildError("split fractions must sum to a positive number")
-    augmentation = _prepare_augmentation(spec.augmentation)
+    split = prepare_split(spec.split)
+    augmentation = prepare_augmentation(spec.augmentation)
     return DatasetSpec(
         source_query=SourceQuery(roots),
         dataset_name=name,
@@ -128,7 +119,7 @@ def build_version(
     selected = _select(prepared)
     robot_type = _robot_type(selected)
     canonical = _augment(selected, prepared.augmentation, prepared.seed)
-    content_hash = content_hash_of(canonical)
+    content_hash = content_hash_of(canonical, prepared.split, prepared.augmentation)
     version_id = version_id_for(prepared, content_hash)
     record = DatasetVersion(
         version_id=version_id,
@@ -152,7 +143,7 @@ def build_version(
 
     return create_version(
         record,
-        canonical_content_bytes(canonical),
+        canonical_content_bytes(canonical, prepared.split, prepared.augmentation),
         populate,
         store=store,
     )
@@ -221,55 +212,49 @@ def _optional_count(value: int | None, name: str) -> int | None:
     return value
 
 
-def _weight(value: float, name: str) -> float:
-    number = json_number(value)
-    if number < 0:
-        raise DatasetBuildError(f"{name} fraction cannot be negative")
-    return number
-
-
-def _prepare_augmentation(augmentation: Augmentation) -> Augmentation:
-    copies = augmentation.copies
-    if not isinstance(copies, int) or isinstance(copies, bool) or copies < 1:
-        raise DatasetBuildError("augmentation copies must be an integer >= 1")
-    noise = {
-        "action_noise": json_number(augmentation.action_noise),
-        "state_noise": json_number(augmentation.state_noise),
-    }
-    for name, number in noise.items():
-        if number < 0:
-            raise DatasetBuildError(f"{name} cannot be negative")
-    return Augmentation(
-        action_scale=json_number(augmentation.action_scale),
-        state_scale=json_number(augmentation.state_scale),
-        action_offset=json_number(augmentation.action_offset),
-        state_offset=json_number(augmentation.state_offset),
-        action_noise=noise["action_noise"],
-        state_noise=noise["state_noise"],
-        copies=copies,
-    )
-
-
 def _select(spec: DatasetSpec) -> list[_Loaded]:
     loaded = [
         item for item in _load(spec.source_query.roots) if _keep(item, spec.filters)
     ]
     if not loaded:
         raise DatasetBuildError("no episodes matched the dataset spec")
+    episodes = tuple(_split_episode(item) for item in loaded)
+    held_out_scenes_present(episodes, spec.split)
     if spec.split.name == "all":
         return loaded
-    ordered = _deterministic_shuffle(loaded, spec.seed)
-    counts = _allocation(len(ordered), spec.split)
-    start = {
-        "train": 0,
-        "val": counts["train"],
-        "test": counts["train"] + counts["val"],
-    }
-    name = spec.split.name
-    chosen = ordered[start[name] : start[name] + counts[name]]
+    assignment = assign_splits(episodes, spec.split, spec.seed)
+    chosen = assignment.episodes(spec.split.name)
     if not chosen:
-        raise DatasetBuildError(f"split {name!r} selected no episodes")
-    return chosen
+        raise DatasetBuildError(f"split {spec.split.name!r} selected no episodes")
+    by_id = {_episode_id(item): item for item in loaded}
+    return [by_id[episode.episode_id] for episode in chosen]
+
+
+def _episode_id(item: _Loaded) -> str:
+    return f"{item.source}#{item.source_index}"
+
+
+def _split_episode(item: _Loaded) -> SplitEpisode:
+    episode_id = _episode_id(item)
+    return SplitEpisode(
+        episode_id=episode_id,
+        task=item.task,
+        session=item.session,
+        day=item.day,
+        scene=item.scene,
+        timestamp=item.frames[0].timestamp,
+        frame_ids=tuple(f"{episode_id}#{frame.frame_index}" for frame in item.frames),
+    )
+
+
+def _meta_label(meta: dict, key: str) -> str | None:
+    if key not in meta or meta[key] is None:
+        return None
+    value = meta[key]
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise DatasetBuildError(f"episode {key} must be a string")
+    text = str(value).strip()
+    return text or None
 
 
 def _load(roots: Sequence[str]) -> list[_Loaded]:
@@ -296,6 +281,9 @@ def _load(roots: Sequence[str]) -> list[_Loaded]:
                     fps=fps,
                     robot_type=robot_type,
                     frames=tuple(_raw_frame(frame) for frame in frames),
+                    session=_meta_label(meta, "session"),
+                    day=_meta_label(meta, "day"),
+                    scene=_meta_label(meta, "scene"),
                 )
             )
     loaded.sort(key=lambda item: (item.source, item.source_index, item.task))
@@ -357,52 +345,6 @@ def _keep(item: _Loaded, filters: Filters) -> bool:
     if filters.max_frames is not None and count > filters.max_frames:
         return False
     return True
-
-
-def _deterministic_shuffle(items: list[_Loaded], seed: int) -> list[_Loaded]:
-    """Fisher-Yates driven only by ``Random.random``, which is stable."""
-    out = list(items)
-    rng = random.Random(seed)
-    for index in range(len(out) - 1, 0, -1):
-        swap = int(rng.random() * (index + 1))
-        out[index], out[swap] = out[swap], out[index]
-    return out
-
-
-def _allocation(count: int, split: Split) -> dict[str, int]:
-    """Hamilton apportionment of ``count`` episodes across train/val/test."""
-    weights = {"train": split.train, "val": split.val, "test": split.test}
-    total = sum(weights.values())
-    if total <= 0:
-        raise DatasetBuildError("split fractions must sum to a positive number")
-    units = {name: int(round(weights[name] / total * _WEIGHT_SCALE)) for name in _PARTS}
-    drift = _WEIGHT_SCALE - sum(units.values())
-    order = sorted(_PARTS, key=lambda name: (weights[name] / total, name), reverse=True)
-    step = 1 if drift > 0 else -1
-    index = 0
-    while drift != 0 and index < _WEIGHT_SCALE:
-        name = order[index % len(order)]
-        if step < 0 and units[name] == 0:
-            index += 1
-            continue
-        units[name] += step
-        drift -= step
-        index += 1
-    if drift != 0:
-        raise DatasetBuildError("could not allocate the split")
-    quotas = {name: count * units[name] / _WEIGHT_SCALE for name in _PARTS}
-    counts = {name: int(quotas[name]) for name in _PARTS}
-    leftover = count - sum(counts.values())
-    if leftover < 0 or leftover > len(_PARTS):
-        raise DatasetBuildError("could not allocate the split")
-    ranked = sorted(
-        _PARTS,
-        key=lambda name: (quotas[name] - counts[name], name),
-        reverse=True,
-    )
-    for slot in range(leftover):
-        counts[ranked[slot]] += 1
-    return counts
 
 
 def _robot_type(items: Sequence[_Loaded]) -> str:
