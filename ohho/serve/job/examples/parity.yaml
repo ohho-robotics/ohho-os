@@ -1,0 +1,12 @@
+schema_version: ohho.job/v1
+model:
+  version: "sha256:0123456789abcdef"
+targets:
+  - profile-a
+steps:
+  - parity
+precision: fp32
+parity:
+  max_abs_error: 0
+  min_cosine: 1
+  samples: 1
