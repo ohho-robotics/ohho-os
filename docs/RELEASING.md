@@ -44,6 +44,8 @@ To verify trusted publishing without touching production PyPI:
    ```
 
 3. `.github/workflows/release.yml` on tag `v*`:
+   - Runs `python examples/serve/run_cpu.py` and fails the release when an
+     example exits non-zero (OHH-491). Publish waits on that job.
    - Validates trove classifiers
    - Fails if tag version ≠ `pyproject.toml` version
    - `python -m build` + `twine check`
