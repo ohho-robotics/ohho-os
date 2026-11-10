@@ -62,8 +62,10 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile show <name>` | Profile details |
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
+| `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
+| `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 
-With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
+With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`. `ohho job` reads the same spec the console and CI use; the message format is in [`serve/job-spec.md`](serve/job-spec.md).
 
 Serve examples are in [`examples/serve`](../examples/serve/README.md). Each
 README states hardware, runtime, and expected output. CPU examples run in CI
