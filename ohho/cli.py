@@ -976,6 +976,39 @@ def _cmd_train(args) -> int:
     return execute(args.recipe, getattr(args, "set", None))
 
 
+def _cmd_eval(args) -> int:
+    from .eval import EvalError, EvalValidationError, run_eval
+
+    try:
+        report = run_eval(
+            args.checkpoint,
+            args.suite,
+            episodes=args.episodes,
+            seed=args.seed,
+            scenarios=args.scenarios or None,
+            videos=args.videos or None,
+            out=args.out or None,
+        )
+    except (EvalError, EvalValidationError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    interval = report["success_ci95"]
+    modes = report["failure_modes"]
+    failure_text = ""
+    if modes:
+        counted = ", ".join(f"{name}:{count}" for name, count in modes.items())
+        failure_text = f"  failures={counted}"
+    print(
+        f"ohho.eval/v1 suite={report['suite']} "
+        f"success_rate={report['success_rate']:.3f} "
+        f"ci95=[{interval['low']:.3f}, {interval['high']:.3f}] "
+        f"episodes={interval['trials']}{failure_text}"
+    )
+    if args.out:
+        print(f"wrote {args.out}")
+    return 0
+
+
 def _cmd_bench(args) -> int:
     from .bench.schema import BenchValidationError, validate_path
 
@@ -1602,6 +1635,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="override a dotted field before validation (repeatable)",
     )
     train.set_defaults(func=_cmd_train)
+    ev = sub.add_parser(
+        "eval",
+        help="score a checkpoint on a Proof sim suite (ohho.eval/v1)",
+    )
+    ev.add_argument("checkpoint", help="checkpoint file or directory")
+    ev.add_argument(
+        "--suite",
+        required=True,
+        help="suite name (gazebo-nav-regression), or any name with --scenarios",
+    )
+    ev.add_argument(
+        "--episodes",
+        type=int,
+        default=5,
+        help="seeded episodes per scenario (default: 5)",
+    )
+    ev.add_argument("--seed", type=int, default=0, help="base seed (default: 0)")
+    ev.add_argument(
+        "--scenarios",
+        default="",
+        help="Proof scenario YAML to load instead of the suite checkout",
+    )
+    ev.add_argument(
+        "--videos",
+        default="",
+        help="directory for optional pose traces (omit to leave videos empty)",
+    )
+    ev.add_argument(
+        "--out",
+        default="",
+        help="write the ohho.eval/v1 JSON report to this path",
+    )
+    ev.set_defaults(func=_cmd_eval)
     bench = sub.add_parser(
         "bench",
         help="validate ohho.bench/v1 benchmark results",
