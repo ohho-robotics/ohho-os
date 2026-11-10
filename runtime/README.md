@@ -411,6 +411,28 @@ alone is larger than the size cap.
 `manifest.json` replaces credentials, tokens, and the arming phrase with
 `***`. The same redaction applies to log lines and the failure text.
 
+## Deadline and heartbeat
+
+`ohho_runtime.deadline` is the monotonic command, state, and heartbeat
+window. `Deadline.command` and `Heartbeat` use `SafetyProfile.cmd_timeout_s`.
+`Deadline.state` uses `SafetyProfile.state_timeout_s`. The clock defaults
+to `time.monotonic` and can be replaced in tests. A miss does not latch an
+e-stop and does not command the robot.
+
+The wire contract is `wire_contract(profile)`: topic `/ohho/heartbeat`,
+`std_msgs/Empty`, 10 Hz, safety-state topic `/ohho/safety/state`. Timeouts
+come from the profile passed in. The full table, the other implementations,
+and the deferred sim-serve literal are in
+[`docs/runtime/heartbeat.md`](../docs/runtime/heartbeat.md).
+
+`class_timeout_ceiling` is the class maximum (the default profile's two
+timeouts, for every robot class). `check_timeout_conformance` fails when a
+declared timeout is longer. `check_registered_timeouts` checks every
+registered robot.
+
+`ohho_runtime.heartbeat` is still the subprocess socket. Importing it does
+not import `ohho` and does not load this deadline.
+
 ## Tests
 
 From the repository root, after `pip install -e .` and
