@@ -2,7 +2,10 @@
 
 `ohho sweep plan` reads one search-space document and prints the concrete
 trials a later training run would launch. The same JSON Schema is package
-data, so a console can validate the file with the same contract.
+data, so a console can validate the file with the same contract. `strategy`
+is `grid`, `random`, `tpe`, `bayesian`, or `multi`. `tpe` and `bayesian`
+are the built-in Tree-structured Parzen Estimator. `multi` is the
+multi-objective form of that estimator and stores a Pareto set.
 
 ```bash
 ohho sweep plan sweep.yaml
@@ -48,10 +51,11 @@ through a value that is already a non-mapping is an error.
 | `constraints` | Drop invalid combinations after expansion. |
 | `objectives` | Metrics a later runner optimizes. At most one `primary`. |
 | `early_stopping` | `metric`, `patience` (default 1), `min_delta` (default 0), `mode` (`min` or `max`). |
-| `strategy` | `grid` (default) or `random`. |
-| `seed` | Integer ≥ 0. Grid order ignores it. `random` draws from this seed. |
+| `strategy` | `grid` (default), `random`, `tpe`, `bayesian`, or `multi`. |
+| `seed` | Integer ≥ 0. Grid order ignores it. `random`, `tpe`, `bayesian`, and `multi` draw from this seed. |
 | `parallelism` | Integer ≥ 1. Recorded on the plan. It does not change the trial list. |
-| `budget.max_trials` | Keep this many surviving trials. Required for `strategy: random` when `dimensions` is non-empty. `0` yields an empty plan. |
+| `budget.max_trials` | Keep this many surviving trials. Required for `random`, `tpe`, `bayesian`, and `multi` when `dimensions` is non-empty. `0` yields an empty plan. |
+| `sampler` | Knobs for `tpe`, `bayesian`, and `multi`. `grid` and `random` ignore them. |
 | `budget.max_gpu_hours` | Stop before the next trial would push the estimated total above this value. |
 | `estimate` | Per-trial GPU-hours used to compute the estimate. |
 
@@ -87,7 +91,9 @@ exceeds `ohho.train.sweep.MAX_TRIALS` (100000) is rejected.
 `random` draws `budget.max_trials` trials with `random.Random(seed)`. The
 same seed reproduces the same trials. A draw that fails a constraint is
 rejected and another is taken. If the constraints cannot be satisfied, the
-expander raises.
+expander raises. `tpe`, `bayesian`, and `multi` use this same generator
+for their startup batch (`sampler.startup_trials`, capped by
+`budget.max_trials`). Later trials are described under Strategies.
 
 ## Conditional parameters
 
@@ -166,8 +172,10 @@ kept. `budget.max_gpu_hours` stops at the first trial that would exceed
 the running total. `budget.max_trials` keeps a prefix of the surviving
 grid, then the hour cap is applied.
 
-`objectives` and `early_stopping` are copied onto the plan for the runner.
-They do not change which trials exist.
+`objectives` and `early_stopping` are copied onto the plan. For `grid` and
+`random` they do not change which trials exist. For `tpe`, `bayesian`, and
+`multi`, objective values reported to `SweepSampler.tell` choose later
+trials. `early_stopping` stays on the plan for the runner.
 
 ## 2 × 3 × 4 grid
 
@@ -184,6 +192,131 @@ ohho sweep plan ohho/train/schemas/examples/grid_2x3x4.yaml
 
 `--json` prints the same plan. `trials` is the count. `trial_recipes`
 holds each resolved recipe, its `sets`, and its estimated hours.
+
+## Strategies
+
+| Strategy | What `ohho sweep plan` prints | What proposes the next trial |
+| --- | --- | --- |
+| `grid` | The constrained cartesian product, then the budget caps | `SweepSampler` walks that same list |
+| `random` | `budget.max_trials` seeded draws, then the budget caps | `SweepSampler` continues that same generator |
+| `tpe` | The random startup batch | Built-in Tree-structured Parzen Estimator |
+| `bayesian` | The same estimator as `tpe` | The same estimator as `tpe` |
+| `multi` | The random startup batch | That estimator with a Pareto split |
+
+`tpe` and `bayesian` need one objective. When several objectives are set,
+one of them is `primary`. `multi` needs at least two objectives. A float or
+`log_uniform` dimension may omit `n` for every strategy except `grid`.
+
+`sampler` defaults are `startup_trials: 10`, `gamma: 0.25`,
+`candidates: 64`, and `prior_weight: 1`. The startup trials are random
+draws from `seed`. After that many objectives have been recorded (and at
+least two), the estimator builds a Gaussian Parzen density on the better
+`gamma` fraction of trials and another on the rest. It draws `candidates`
+from the better density and samples the next trial with probability
+proportional to the ratio of the two densities. The bandwidth shrinks as
+more trials are told. `multi` puts the current Pareto front in the better
+group when that front is smaller than the whole run.
+
+The estimator is standard-library code. It does not import Optuna, NumPy,
+or PyTorch.
+
+```python
+from ohho.train.sweep_sampler import SweepSampler
+
+sampler = SweepSampler.from_sweep("sweep.yaml")
+trial = sampler.ask()[0]
+sampler.tell(trial.index, {"val_loss": 0.4})
+```
+
+`ask(n)` proposes up to `n` trials from the model built so far. Those
+trials do not see one another's objectives until `tell`. `ask` raises
+`SweepError` with the text `sweep budget is exhausted` when the trial cap,
+the GPU-hour cap, or the grid has nothing left. One `ask` that returns a
+short tuple has used the last trials that fit.
+
+A conditional dimension is omitted when its `when` does not match, the same
+way the expander omits it. Constraints reject a draw and another draw is
+taken.
+
+`grid` and `random` samplers propose the same overrides, in the same order,
+as `expand` on that spec. `tpe`, `bayesian`, and `multi` plans from
+`expand` are only the startup prefix of that sampler.
+
+## Pareto leaderboard
+
+`SweepSampler.leaderboard()` returns an `ohho.sweep.leaderboard/v1`
+document. The same object is stored on sampler state under `leaderboard`.
+The schema file is `ohho/train/schemas/sweep.leaderboard.v1.json`.
+
+A completed trial is on the Pareto set when no other completed trial
+dominates it. Trial A dominates trial B when A is no worse on every
+objective and strictly better on at least one. `maximize` prefers a larger
+number. `minimize` prefers a smaller number. Equal values do not dominate.
+`pareto` lists that set in ascending trial index. `trials` lists every told
+trial and sets `dominated` when it is off the set. Proposals that have not
+been told are omitted.
+
+`success_rate`, `latency_p95_ms`, and `memory_mb` are ordinary objective
+names. Nothing in the schema is specific to those metrics.
+
+```json
+{
+  "schema": "ohho.sweep.leaderboard/v1",
+  "strategy": "multi",
+  "seed": 1,
+  "objectives": [
+    {"name": "success_rate", "direction": "maximize", "primary": false},
+    {"name": "latency_p95_ms", "direction": "minimize", "primary": false},
+    {"name": "memory_mb", "direction": "minimize", "primary": false}
+  ],
+  "trials": [
+    {
+      "trial": 0,
+      "values": {"success_rate": 0.9, "latency_p95_ms": 10, "memory_mb": 100},
+      "overrides": {"tag": "a"},
+      "sets": ["tag=\"a\""],
+      "dominated": false
+    }
+  ],
+  "pareto": [
+    {
+      "trial": 0,
+      "values": {"success_rate": 0.9, "latency_p95_ms": 10, "memory_mb": 100},
+      "overrides": {"tag": "a"},
+      "sets": ["tag=\"a\""]
+    }
+  ]
+}
+```
+
+`overrides` are the dotted path values for that trial. `sets` uses the
+`path=value` form. `trial` is the sampler's trial index.
+
+## Resume
+
+`SweepSampler.dump_state()` returns an `ohho.sweep.sampler/v1` document.
+The schema file is `ohho/train/schemas/sweep.sampler.v1.json`. It holds the
+normalized spec, the random generator state, the trial log, a GPU-hour stop
+flag, and the leaderboard derived from told trials. `values: null` means
+the trial was proposed and not told.
+
+```python
+import json
+from ohho.train.sweep_sampler import SweepSampler
+
+sampler = SweepSampler.from_sweep(spec)
+trial = sampler.ask()[0]
+sampler.tell(trial.index, {"val_loss": 0.4})
+state = json.loads(json.dumps(sampler.dump_state()))
+restored = SweepSampler.load_state(state)
+assert restored.ask()[0].overrides == sampler.ask()[0].overrides
+```
+
+Loading that state and asking again proposes the same next trials as the
+sampler that kept running, including later tells of the same objective
+values. `grid` order does not use the generator. `random` continues it.
+`tpe`, `bayesian`, and `multi` continue it and refit the densities from the
+told trials.
 
 ## YAML subset
 

@@ -6,6 +6,14 @@ recipe with dotted ``path=value`` overrides applied. That is the same form
 ``ohho train --set`` uses. The recipe mapping itself is a separate contract
 and is left unchecked here so this module does not depend on it.
 
+``strategy`` is ``grid``, ``random``, ``tpe``, ``bayesian``, or ``multi``.
+``tpe`` and ``bayesian`` are the built-in Tree-structured Parzen Estimator
+(a Bayesian sampler; Optuna is not imported). ``multi`` is multi-objective
+TPE. Those three are sequential: :func:`expand` returns the random startup
+batch, and ``ohho.train.sweep_sampler.SweepSampler`` proposes later trials
+from completed objectives. Sampler state and the Pareto leaderboard are
+documented in ``docs/train/sweeps.md``.
+
 ``estimated_gpu_hours`` is an estimate computed from per-trial values in the
 spec (the first matching ``estimate.by_value`` rule, otherwise
 ``estimate.gpu_hours_per_trial``). Planning does not train and does not
@@ -24,12 +32,18 @@ import random
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 SCHEMA_ID = "ohho.sweep/v1"
 SCHEMA_FILENAME = "sweep.v1.json"
+STRATEGIES = ("grid", "random", "tpe", "bayesian", "multi")
+ADAPTIVE_STRATEGIES = frozenset({"tpe", "bayesian", "multi"})
+ADAPTIVE_PLAN_NOTE = (
+    "strategy {strategy} is sequential; this plan is the startup batch. "
+    "Later trials come from SweepSampler after completed objectives are recorded."
+)
 ESTIMATE_NOTE = (
     "estimated_gpu_hours is an estimate computed from per-trial values in the spec"
 )
@@ -88,6 +102,7 @@ class SweepSpec:
     early_stopping: dict[str, Any] | None
     budget: dict[str, Any]
     estimate: dict[str, Any]
+    sampler: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -115,6 +130,7 @@ class SweepPlan:
     early_stopping: dict[str, Any] | None
     budget: dict[str, Any]
     estimate_note: str
+    note: str = ""
 
 
 def load_schema() -> dict[str, Any]:
@@ -188,6 +204,8 @@ def format_plan(plan: SweepPlan) -> str:
         f"estimated_gpu_hours: {_format_number(plan.estimated_gpu_hours)}",
         f"estimate: {plan.estimate_note}",
     ]
+    if plan.note:
+        lines.append(f"note: {plan.note}")
     if plan.objectives:
         lines.append("objectives:")
         for obj in plan.objectives:
@@ -232,7 +250,7 @@ def format_plan(plan: SweepPlan) -> str:
 def plan_as_dict(plan: SweepPlan) -> dict[str, Any]:
     """JSON-ready plan. ``trials`` is the count; recipes live in ``trial_recipes``."""
 
-    return {
+    payload = {
         "schema": plan.schema,
         "strategy": plan.strategy,
         "seed": plan.seed,
@@ -256,6 +274,9 @@ def plan_as_dict(plan: SweepPlan) -> dict[str, Any]:
             for trial in plan.trials
         ],
     }
+    if plan.note:
+        payload["note"] = plan.note
+    return payload
 
 
 def run_plan(path: str | Path, *, as_json: bool = False) -> int:
@@ -585,8 +606,21 @@ def _check_semantics(doc: Mapping[str, Any]) -> None:
     ]
     if len(primaries) > 1:
         raise SweepError("at most one objective may be primary")
-    if strategy == "random" and dims and "max_trials" not in (doc.get("budget") or {}):
-        raise SweepError("strategy random with dimensions requires budget.max_trials")
+    objectives = list(doc.get("objectives") or [])
+    needs_budget = strategy == "random" or strategy in ADAPTIVE_STRATEGIES
+    if needs_budget and dims and "max_trials" not in (doc.get("budget") or {}):
+        raise SweepError(
+            f"strategy {strategy} with dimensions requires budget.max_trials"
+        )
+    if strategy in ("tpe", "bayesian"):
+        if not objectives:
+            raise SweepError(f"strategy {strategy} requires an objective")
+        if len(objectives) > 1 and not primaries:
+            raise SweepError(
+                f"strategy {strategy} with more than one objective requires a primary"
+            )
+    if strategy == "multi" and len(objectives) < 2:
+        raise SweepError("strategy multi requires at least two objectives")
 
 
 def _check_dimension(dim: Mapping[str, Any], strategy: str, where: str) -> None:
@@ -709,6 +743,13 @@ def _build_spec(doc: Mapping[str, Any]) -> SweepSpec:
         "by_value": [dict(rule) for rule in estimate_raw.get("by_value") or []],
     }
     recipe = doc.get("recipe") or {}
+    sampler_raw = doc.get("sampler") or {}
+    sampler = {
+        "startup_trials": int(sampler_raw.get("startup_trials", 10)),
+        "gamma": float(sampler_raw.get("gamma", 0.25)),
+        "candidates": int(sampler_raw.get("candidates", 64)),
+        "prior_weight": float(sampler_raw.get("prior_weight", 1.0)),
+    }
     return SweepSpec(
         schema=SCHEMA_ID,
         seed=int(doc.get("seed", 0)),
@@ -723,6 +764,7 @@ def _build_spec(doc: Mapping[str, Any]) -> SweepSpec:
         early_stopping=early,
         budget=budget,
         estimate=estimate,
+        sampler=sampler,
     )
 
 
@@ -751,6 +793,12 @@ def _build_dimension(raw: Mapping[str, Any]) -> Dimension:
 
 
 def _expand_spec(spec: SweepSpec) -> SweepPlan:
+    if spec.strategy in ADAPTIVE_STRATEGIES:
+        from .sweep_sampler import startup_rows
+
+        rows = startup_rows(spec)
+        plan = _plan_from_rows(spec, rows)
+        return replace(plan, note=ADAPTIVE_PLAN_NOTE.format(strategy=spec.strategy))
     if spec.strategy == "random":
         rows = _expand_random(spec)
     elif spec.strategy == "grid":
@@ -1461,6 +1509,9 @@ def _skip_ws(text: str, index: int) -> int:
 
 __all__ = [
     "SCHEMA_ID",
+    "STRATEGIES",
+    "ADAPTIVE_STRATEGIES",
+    "ADAPTIVE_PLAN_NOTE",
     "ESTIMATE_NOTE",
     "MAX_TRIALS",
     "SweepError",

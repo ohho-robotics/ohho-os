@@ -1891,7 +1891,7 @@ def build_parser() -> argparse.ArgumentParser:
     sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
     plan = sweep_sub.add_parser(
         "plan",
-        help="print trial count, estimated GPU-hours, and resolved recipes",
+        help="print trials (the startup batch for tpe, bayesian, and multi)",
     )
     plan.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
     plan.add_argument(
