@@ -17,6 +17,23 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Generate-mode bench** (OHH-436) — `ohho bench --mode generate` measures
+  TTFT, TPOT (mean, median, p95), end-to-end latency, and tokens/s for an
+  autoregressive workload (`llm`, `vlm`, `vla`). The default CPU stand-in
+  sweeps concurrency and prompt or image size and compares FP16 / BF16 with
+  bitsandbytes 4-bit, AWQ, and GPTQ (latency, weight memory, top-1
+  action-token agreement). `--slo ttft_p95<=...` and `--slo tpot_p95<=...`
+  gate the primary cell. Optional `transformers` and the vLLM, SGLang, and
+  TensorRT-LLM adapters are used only when selected and the target supports
+  them.
+- **LLM serving backends** (OHH-475) — `ServingBackend` adapters for vLLM,
+  SGLang, TensorRT-LLM (`trtllm-serve` or `tritonserver`), and llama.cpp.
+  Each builds a launch command and parses a version. The engines stay
+  external programs and are not base dependencies. A failed launch reports
+  the exit or the health timeout and stops the process tree. `ohho bench llm`
+  measures time to first token, inter-token latency, tokens/s, and request
+  throughput against an OpenAI-compatible stream and writes `ohho.bench/v1`
+  with an optional `llm` block (`ohho.bench.llm/v1`).
 - **`ohho optimize`** — ONNX opset 17 export (dynamic batch, submodule
   selection, ACT-style and MLP policies, TorchScript), TensorRT FP16/INT8/FP8
   builds with an entropy calibrator attached before the build, ONNX Runtime

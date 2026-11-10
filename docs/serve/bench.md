@@ -163,6 +163,73 @@ A custom runner implements `preprocess`, `h2d`, `inference`, `d2h`, and
 `postprocess`. Pass it as `execute(config, runner=runner)`. That is the
 surface another package can call.
 
+## Generate mode
+
+`--mode generate` measures an autoregressive model: a language model, a
+vision-language model, or action tokens. It does not take `--artifact`.
+`--target` is still the hardware profile. `--workload` is `llm`, `vlm`, or
+`vla` (an omitted workload is `llm`).
+
+```bash
+ohho bench --mode generate --target x86-cpu --workload llm \
+  --concurrency 1,4,16 --prompt-tokens 16,64 \
+  --precision fp16,bf16,bnb-int4,awq,gptq \
+  --slo ttft_p95<=50ms,tpot_p95<=20ms --json out.json
+
+ohho bench --mode generate --target x86-cpu --workload vlm \
+  --image-sizes 224,448 --json out.json
+```
+
+Each cell records:
+
+| Field | Meaning |
+|---|---|
+| TTFT | Time to the first output token. mean, median, and p95. |
+| TPOT | Time per later output token. mean, median, and p95. |
+| end-to-end | First token plus the following tokens. This is the top-level latency. |
+| tokens/s per request | Output tokens divided by that request's end-to-end time. |
+| tokens/s | All output tokens divided by the wall time of the cell. |
+
+The default sweep is concurrency `1,4,16` and prompt lengths `16,64`.
+Concurrency is the batching axis: several requests share the generator.
+Static `--batch` stays on inference mode. A `vlm` or `vla` run also records
+an image size (`224` unless `--image-sizes` is set). `llm` rejects a
+non-zero image size. A cell runs at least as many requests as its
+concurrency, so the level is saturated. Higher concurrency raises TTFT and
+TPOT and still raises aggregate tokens/s on the stand-in.
+
+`--slo ttft_p95<=50ms` and `--slo tpot_p95<=20ms` read `llm.ttft.p95` and
+`llm.tpot.p95`. A comma in one `--slo` is two gates. A failed gate exits 1
+after the JSON is written. End-to-end gates such as `p95<=200ms` still apply
+to the primary latency.
+
+### Backends
+
+| `--backend` | When |
+|---|---|
+| `stand-in` (default) | Deterministic CPU generator. No extra packages. |
+| `transformers` | Hugging Face causal LM. Needs `torch` and `transformers`, which are not base dependencies. |
+| `vllm`, `sglang`, `tensorrt-llm` | External engines from the serving adapters. Only on a target whose accelerator is `dgpu` or `orin_gpu`. |
+
+The stand-in advances a virtual clock (`environment.timing_source` is
+`virtual`). FP16, BF16, and FP32 share greedy action tokens. `bnb-int4`,
+`awq`, and `gptq` disagree on every fourth token. Agreement is top-1
+action-token match against the FP16 sequence. `ohho.parity` supplies that
+score when it is installed; otherwise the fraction is computed locally.
+`peak_vram_mb` for the stand-in is the weight buffer it allocates
+(`vram_source` is `stand-in-weights`): FP16 and BF16 are larger than the
+4-bit buffers. That number is not a GPU probe.
+
+`llm.points` is every cell. `llm.precisions` is the comparison at concurrency
+1 (or the smallest concurrency), the shortest prompt, and the smallest image.
+The required `llm` fields stay the primary cell, so an older reader still
+sees TTFT, inter-token latency, and tokens/s. TPOT is also copied to
+`llm.inter_token`.
+
+On CPU CI the stand-in is the measured path. The transformers import and the
+external engines are not loaded unless that backend is selected. A 4-bit
+transformers load needs a CUDA device. GPU runs are outside CI.
+
 ## Pipeline (`--pipeline`)
 
 `ohho bench --pipeline` times a camera frame through seven stages and writes
