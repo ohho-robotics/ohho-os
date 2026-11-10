@@ -78,7 +78,7 @@
 | **MCP (`ohho mcp`)** | ✅ **OHH-47** folded into the OHH-173 stdio server (`mcp_server.py` + `mcp_tools.py`): sim tools (`connect`, `drive`, `telemetry`, `nav_goto`, `look`) on `sim://`, plus `emergency_stop`. **OHH-278**: hardware URIs need a human `--allow-hardware`; the process never arms or releases an e-stop; results carry `backend` and velocity clamps. **OHH-275** `ohho mcp connect --client` merges that local server into Claude Code, Codex, Cursor, VS Code, Gemini CLI, Windsurf, and OpenCode (`.bak`, atomic write). `--hosted` stays refused until hosted MCP auth (OHH-274). Docs `docs/mcp.md` |
 | **Agent rules (`ohho rules`)** | ✅ **OHH-271 phase 6** — one source `ohho/agent_rules/ohho-rules.md`; `ohho rules install --client` merges a marked block into the seven MCP clients (user scope, or `--project DIR`). `ohho doctor --agent` calls `installed_clients()`. Docs `docs/rules.md` |
 | **CLI account (`login`)** | ✅ **OHH-273** — `ohho login` / `whoami` / `logout` (RFC 8628 device flow). Token in `~/.ohho/credentials.json` mode 0600 (Windows: current-user DACL). `OHHO_TOKEN` overrides the file and is never written. No CLI revoke endpoint yet (OHH-272). Docs `docs/cli.md` |
-| CLI (`ohho`) | ✅ `doctor` (`--agent`, `--robot`), `config show`, `verify --sim`, `list` (`--plugins`, `--json --ci-sim`) `version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo eval market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`), `dataset` (`build`, `pin`, `stats`) |
+| CLI (`ohho`) | ✅ `doctor` (`--agent`, `--robot`), `config show`, `verify --sim`, `list` (`--plugins`, `--json --ci-sim`) `version login whoami logout connect sim drive agent serve sim-serve sim-loop sim-demo eval sweep market profile nav look memory selftest hil mcp` (`mcp serve`, `mcp connect`), `rules` (`install`, `remove`, `list`, `show`), `dataset` (`build`, `pin`, `stats`) |
 | Tests | Python 3.12, Windows, base install: `python -m unittest discover -s tests`. `tests/test_serve_examples.py` covers the OHH-491 serve examples. `tests/test_auth.py` covers the OHH-273 device flow. `tests/test_release_1_2_0.py` checks the 1.2.0 version, changelog, and wheel. `tests/test_sim_demo.py` covers the OHH-134 harness. `tests/test_safety_policy.py` covers the OHH-313 class policies. `tests/test_config.py` covers the OHH-314 robot-id resolver. `tests/test_eval.py` covers the OHH-535 checkpoint eval runner. `tests/test_humanoid_telemetry.py` covers the OHH-327 humanoid telemetry block. `tests/test_humanoid_mujoco.py` covers the OHH-329 humanoid-mujoco backend and skips when MuJoCo is absent. `tests/test_ohho_booster.py` covers the booster plugin. `tests/test_booster_t2_walk.py` covers the OHH-331 headless walk and skips when MuJoCo or the pinned assets are absent. `tests/test_conformance.py` covers the OHH-315 kit. `tests/test_hil_mock.py` covers the OHH-35 mock scenarios. Hardware HIL stays skipped unless `OHHO_HIL=1`. |
 | CI | `.github/workflows/ci.yml` (multi-OS, Py 3.10-3.13; includes `ohho selftest --sim` smoke check and a ≥95% line+branch coverage gate on `ohho/safety.py`; installs `plugins/ohho-booster`). Ubuntu + Python 3.12 also installs `[humanoid-sim]` after a CPU torch wheel so the humanoid-mujoco tests run, and caches and fetches the pinned description archive and walk checkpoint. Other cells skip those tests when the packages or assets are absent. `.github/workflows/sim-loop.yml` is the nightly CPU sim loop. Serve CPU examples run via `python examples/serve/run_cpu.py` (OHH-491). |
 
@@ -222,20 +222,7 @@ sdk/
 │   ├── profiles.py       # HardwareProfile, detect_profile(), `ohho profile` CLI
 │   ├── market.py         # Skill registry, @skill decorator, run_skill(), `ohho market` CLI
 │   ├── hardware.py       # resolve_device("auto") -> cuda/mps/cpu (lazy torch)
-│   ├── cli.py            # argparse: doctor (--agent, --robot), config, verify, list(--plugins, --json --ci-sim), version, login, whoami, logout, connect, sim, drive, agent, serve, sim-serve, sim-loop, sim-demo, eval, selftest, hil, mcp, rules; main()
-│   ├── config.py         # robot-id resolver + RobotProfile (OHH-314)
-│   ├── session.py        # MCP RobotSession — one resolved robot id
-│   ├── mcp_server.py     # stdio JSON-RPC MCP server (OHH-173; tools from mcp_tools)
-│   ├── mcp_tools.py      # on-robot catalog + sim tools (OHH-47); OHH-278 sim-only unless --allow-hardware
-│   ├── mcp_split.py      # hosted vs on-robot MCP product sets
-│   ├── mcp_connect.py    # `ohho mcp connect` — merge ohho into 7 AI client configs (OHH-275)
-│   ├── mcp_toml.py       # stdlib TOML read + surgical `[mcp_servers.ohho]` edit (Codex)
-│   ├── auth.py           # device-flow login, ~/.ohho/credentials.json, whoami (OHH-273)
-│   ├── agent_doctor.py   # ohho doctor --agent readiness (OHH-271 phase 7); rules hook is ohho.agent_rules
-│   ├── agent_rules/      # ohho rules install (OHH-271 phase 6); body is ohho-rules.md
-│   ├── verify.py         # ohho verify --sim — sim:// only, through SafetyGate
-│   ├── plugins.py        # RobotPlugin, discovery, transport + sim-backend factories (OHH-310, OHH-311)
-│   ├── eval/             # ohho eval — Proof suite reference, kinematic sim, ohho.eval/v1 (OHH-535)
+│   ├── cli.py            # argparse: doctor (--agent, --robot), config, verify, list(--plugins, --json --ci-sim), version, login, whoami, logout, connect, sim, drive, agent, serve, sim-serve, sim-loop, sim-demo, eval, sweep, dataset, selftest, hil, mcp, rules; main()
 │   ├── robots/
 │   │   ├── __init__.py   # package for the built-in plugin and example manifests
 │   │   ├── builtin.py    # built-in plugin (sim, aerial); vendor SDKs stay lazy
