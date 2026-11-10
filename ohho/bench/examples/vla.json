@@ -1,0 +1,99 @@
+{
+  "schema": "ohho.bench/v1",
+  "run": {
+    "id": "vla-policy-001",
+    "model_sha": "3333333333333333333333333333333333333333333333333333333333333333",
+    "artifact_sha": "4444444444444444444444444444444444444444444444444444444444444444",
+    "target": "vla",
+    "manifest_ref": "manifests/vla-policy.json@3333333333333333",
+    "host": {
+      "name": "ci-runner-b",
+      "platform": "linux",
+      "arch": "x86_64",
+      "cpu": "generic-8c",
+      "accelerator": "generic"
+    },
+    "started_at": "2026-01-15T12:00:00Z",
+    "finished_at": "2026-01-15T12:04:12Z"
+  },
+  "latency": {
+    "mean": 48.0,
+    "median": 46.0,
+    "p50": 46.0,
+    "p90": 70.0,
+    "p95": 82.0,
+    "p99": 110.0,
+    "min": 30.0,
+    "max": 140.0,
+    "std": 16.0,
+    "unit": "ms",
+    "samples": 200,
+    "stages": [
+      {
+        "name": "encode",
+        "mean": 18.0,
+        "median": 17.0,
+        "p50": 17.0,
+        "p90": 26.0,
+        "p95": 30.0,
+        "p99": 40.0,
+        "min": 12.0,
+        "max": 48.0,
+        "std": 6.0,
+        "unit": "ms",
+        "samples": 200
+      },
+      {
+        "name": "act",
+        "mean": 30.0,
+        "median": 28.0,
+        "p50": 28.0,
+        "p90": 44.0,
+        "p95": 52.0,
+        "p99": 70.0,
+        "min": 18.0,
+        "max": 92.0,
+        "std": 11.0,
+        "unit": "ms",
+        "samples": 200
+      }
+    ]
+  },
+  "throughput": {
+    "value": 12.5,
+    "unit": "steps/s",
+    "samples": 200,
+    "batch_size": 1,
+    "duration_s": 16.0
+  },
+  "accuracy": {
+    "primary": {
+      "name": "success_rate",
+      "value": 0.82,
+      "unit": "fraction"
+    },
+    "metrics": [
+      {
+        "name": "mean_episode_length",
+        "value": 42.0,
+        "unit": "steps"
+      }
+    ],
+    "samples": 50
+  },
+  "telemetry": {
+    "duration_s": 640.0,
+    "samples": 200,
+    "cpu_percent_mean": 55.0,
+    "memory_mb_max": 4096.0,
+    "accelerator_memory_mb_max": 2048.0,
+    "accelerator_util_mean": 61.0
+  },
+  "environment": {
+    "versions": {
+      "python": "3.12.3",
+      "ohho": "1.2.0",
+      "numpy": "1.26.4"
+    }
+  }
+}

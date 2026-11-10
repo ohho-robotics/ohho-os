@@ -1,0 +1,10 @@
+schema_version: ohho.job/v1
+model:
+  version: repo/model@v1
+targets:
+  - cpu-local
+steps:
+  - bench
+bench:
+  iterations: 20
+  warmup: 2
