@@ -1079,11 +1079,14 @@ def check_stand_lie_cycle(
             measurements={},
             duration_s=dur,
         )
+    blocked: list[str] = []
     try:
-        sport("stand_up")
-        time.sleep(settle_s)
-        sport("stand_down")
-        time.sleep(settle_s)
+        for action in ("stand_up", "stand_down"):
+            # The tightened allowlist wrapper returns False and does not raise.
+            # A dropped command must not be reported as a completed cycle.
+            if sport(action) is False:
+                blocked.append(action)
+            time.sleep(settle_s)
     except Exception as e:
         dur = time.monotonic() - start_t
         return CheckResult(
@@ -1094,6 +1097,15 @@ def check_stand_lie_cycle(
             duration_s=dur,
         )
     dur = time.monotonic() - start_t
+    if blocked:
+        names = ", ".join(blocked)
+        return CheckResult(
+            name="stand_lie_cycle",
+            status="FAIL",
+            reason=(f"Stand/lie cycle blocked by the tightened allowlist ({names})"),
+            measurements={"blocked": blocked, "settle_s": settle_s},
+            duration_s=dur,
+        )
     return CheckResult(
         name="stand_lie_cycle",
         status="PASS",
@@ -1158,8 +1170,10 @@ def _limit_selftest_motion(
 
     Raw ``send_motor`` ignores velocity caps, so it is hidden and the wheel
     check uses ``send_velocity``. Sport names outside the tightened allowlist
-    are not forwarded. ``--allow-spin`` and ``--allow-stand`` stay the consent
-    for this path; the commands those flags send cannot exceed the profile.
+    are not forwarded: the wrapper returns ``False`` and does not raise.
+    ``check_stand_lie_cycle`` counts that ``False`` as a failed check.
+    ``--allow-spin`` and ``--allow-stand`` stay the consent for this path;
+    the commands those flags send cannot exceed the profile.
     """
     from .config import RobotProfile, merge_safety_overrides
     from .safety import SafetyConfig, normalize_action

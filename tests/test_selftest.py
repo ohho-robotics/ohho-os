@@ -16,10 +16,12 @@ from ohho.schema import ConnectionState, Odometry, Telemetry, TransportStatus
 from ohho.selftest import (
     CheckResult,
     SelfTestReport,
+    _limit_selftest_motion,
     _port_exists,
     check_camera_frames,
     check_imu_rate,
     check_serial_link,
+    check_stand_lie_cycle,
     check_sts3215_servos,
     check_wheel_spin_encoders,
     default_hardware_transport_uri,
@@ -740,6 +742,27 @@ class TestSelftestHonestyBugbotRegressions(unittest.TestCase):
                 self.assertEqual(code_allowed, 0)
 
 
+class _SportLink:
+    """DDS-shaped link whose sport commands record the call and return None.
+
+    ``None`` is what ``UnitreeDdsTransport.sport_command`` returns after it
+    forwards. The self-test allowlist wrapper returns ``False`` when it drops
+    a name, which is a different result.
+    """
+
+    protocol = "dds"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+
+    def send_velocity(self, vel: object) -> None:
+        return None
+
+    def sport_command(self, name: str, *args: float) -> None:
+        self.calls.append((name, args))
+        return None
+
+
 class TestSelfTestProfile(unittest.TestCase):
     def test_network_interface_replaces_the_default_dds_host(self):
         with patch.dict(os.environ, {"OHHO_GO2_IFACE": "eth0", "OHHO_GO2_DOMAIN": ""}):
@@ -844,6 +867,49 @@ class TestSelfTestProfile(unittest.TestCase):
         self.assertAlmostEqual(link.vel[0], 0.01)
         self.assertAlmostEqual(link.vel[1], 0.01)
         self.assertAlmostEqual(link.vel[2], 0.01)
+
+    def test_blocked_stand_lie_is_not_pass(self):
+        link = _SportLink()
+        wrapped = _limit_selftest_motion(
+            link,
+            get_spec("unitree-go2"),
+            {"allowlist": ["stop_move"]},
+        )
+        result = check_stand_lie_cycle(
+            wrapped, sim=False, allow_stand=True, settle_s=0.0
+        )
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.measurements["blocked"], ["stand_up", "stand_down"])
+        self.assertEqual(link.calls, [])
+        self.assertIn("allowlist", result.reason)
+
+        partial = _SportLink()
+        wrapped_partial = _limit_selftest_motion(
+            partial,
+            get_spec("unitree-go2"),
+            {"allowlist": ["stand_up", "stop_move"]},
+        )
+        partial_result = check_stand_lie_cycle(
+            wrapped_partial, sim=False, allow_stand=True, settle_s=0.0
+        )
+        self.assertEqual(partial_result.status, "FAIL")
+        self.assertEqual(partial_result.measurements["blocked"], ["stand_down"])
+        self.assertEqual([name for name, _args in partial.calls], ["stand_up"])
+
+    def test_allowlisted_stand_lie_still_passes(self):
+        link = _SportLink()
+        wrapped = _limit_selftest_motion(
+            link,
+            get_spec("unitree-go2"),
+            {"max_vx": 0.1},
+        )
+        result = check_stand_lie_cycle(
+            wrapped, sim=False, allow_stand=True, settle_s=0.0
+        )
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(
+            [name for name, _args in link.calls], ["stand_up", "stand_down"]
+        )
 
     def test_cli_passes_profile_transport_backend_and_caps(self):
         report = SelfTestReport(
