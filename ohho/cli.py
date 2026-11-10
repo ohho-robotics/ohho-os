@@ -17,6 +17,7 @@ from .protocol import PROTOCOL_VERSION
 from .adapters import available_adapters
 from .adapters.errors import AdapterUnavailable
 from .agent import Agent
+from .datasets.cli import add_dataset_parser
 from .config import (
     ConfigError,
     RobotProfile,
@@ -1906,6 +1907,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ev.set_defaults(func=_cmd_eval)
 
+    add_dataset_parser(sub)
     bench = sub.add_parser(
         "bench",
         help="validate ohho.bench/v1 benchmark results",
