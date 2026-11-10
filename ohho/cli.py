@@ -190,6 +190,15 @@ def _cmd_doctor(args) -> int:
     print(
         f"  train       : {'torch available' if have('torch') else 'mock only  (add [train] for real training)'}"
     )
+    optimize_ready = have("torch") and have("onnx") and have("onnxruntime")
+    print(
+        "  optimize    : "
+        + (
+            "onnx export and ORT CPU ready  (TensorRT, CUDA EP, AWQ, GPTQ, FP8 need a GPU)"
+            if optimize_ready
+            else "needs [optimize] extra  (torch, onnx, onnxruntime)"
+        )
+    )
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
@@ -1633,6 +1642,10 @@ def build_parser() -> argparse.ArgumentParser:
     from .targets.command import register_targets
 
     register_targets(sub)
+
+    from .optimize.command import register_optimize
+
+    register_optimize(sub)
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
