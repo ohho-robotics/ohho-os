@@ -159,6 +159,7 @@ export interface Environment {
   timing_note?: string;
   execution_provider?: string;
   driver?: string;
+  world?: "sim" | "recorded" | "hardware";
 }
 
 /**
@@ -243,6 +244,36 @@ export interface LlmBench {
 }
 
 /**
+ * End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on
+ * ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline
+ * version plus a converter.
+ * Additional properties are allowed.
+ */
+export interface PipelineBench {
+  version: "ohho.bench.pipeline/v1";
+  world: "sim" | "recorded" | "hardware";
+  source: string;
+  target_hz: number;
+  achieved_hz: number;
+  rate_sustained: boolean;
+  dropped_frames: number;
+  frames_presented: number;
+  frames_published: number;
+  jitter_ms: number;
+  interval_jitter_ms?: number;
+  control_period_ms?: number;
+  sink?: string;
+  device: "cpu" | "cuda";
+  live_robot: boolean;
+  gpu_follow_up?: string[];
+  gpu_note?: string;
+  policy?: string;
+  episode?: number;
+  frame_origin?: string;
+  recording?: string;
+}
+
+/**
  * Serve benchmark result (ohho.bench/v1). Objects allow additional properties.
  * Removing, renaming, or retyping a field requires ohho.bench/v2 and a
  * converter.
@@ -260,4 +291,5 @@ export interface BenchResult {
   gates?: Gates;
   batches?: BatchResult[];
   llm?: LlmBench;
+  pipeline?: PipelineBench;
 }

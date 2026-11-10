@@ -52,7 +52,7 @@ through a value that is already a non-mapping is an error.
 | `objectives` | Metrics a later runner optimizes. At most one `primary`. |
 | `early_stopping` | `metric`, `patience` (default 1), `min_delta` (default 0), `mode` (`min` or `max`). |
 | `strategy` | `grid` (default), `random`, `tpe`, `bayesian`, or `multi`. |
-| `seed` | Integer ≥ 0. Grid order ignores it. `random`, `tpe`, `bayesian`, and `multi` draw from this seed. |
+| `seed` | Integer ≥ 0. Derives the sampler seed and each trial's training seed. Grid order ignores it. |
 | `parallelism` | Integer ≥ 1. Recorded on the plan. It does not change the trial list. |
 | `budget.max_trials` | Keep this many surviving trials. Required for `random`, `tpe`, `bayesian`, and `multi` when `dimensions` is non-empty. `0` yields an empty plan. |
 | `sampler` | Knobs for `tpe`, `bayesian`, and `multi`. `grid` and `random` ignore them. |
@@ -88,12 +88,15 @@ or numeric order. The first dimension varies slowest. The same grid is
 produced for every seed. A grid whose cartesian size, before constraints,
 exceeds `ohho.train.sweep.MAX_TRIALS` (100000) is rejected.
 
-`random` draws `budget.max_trials` trials with `random.Random(seed)`. The
-same seed reproduces the same trials. A draw that fails a constraint is
-rejected and another is taken. If the constraints cannot be satisfied, the
-expander raises. `tpe`, `bayesian`, and `multi` use this same generator
-for their startup batch (`sampler.startup_trials`, capped by
-`budget.max_trials`). Later trials are described under Strategies.
+`random` draws `budget.max_trials` trials with
+`random.Random(sampler_seed(seed))`. `ohho.train.sweep.sampler_seed`
+returns the sweep seed, so this is `random.Random(seed)`. The same sweep
+seed reproduces the same trials. A draw that fails a constraint is rejected
+and another is taken. If the constraints cannot be satisfied, the expander
+raises. `tpe`, `bayesian`, and `multi` use this same generator for their
+startup batch (`sampler.startup_trials`, capped by `budget.max_trials`).
+Later trials are described under Strategies. Each trial's training seed is
+separate; see Seeds.
 
 ## Conditional parameters
 
@@ -209,13 +212,13 @@ one of them is `primary`. `multi` needs at least two objectives. A float or
 
 `sampler` defaults are `startup_trials: 10`, `gamma: 0.25`,
 `candidates: 64`, and `prior_weight: 1`. The startup trials are random
-draws from `seed`. After that many objectives have been recorded (and at
-least two), the estimator builds a Gaussian Parzen density on the better
-`gamma` fraction of trials and another on the rest. It draws `candidates`
-from the better density and samples the next trial with probability
-proportional to the ratio of the two densities. The bandwidth shrinks as
-more trials are told. `multi` puts the current Pareto front in the better
-group when that front is smaller than the whole run.
+draws from the derived sampler seed. After that many objectives have been
+recorded (and at least two), the estimator builds a Gaussian Parzen density
+on the better `gamma` fraction of trials and another on the rest. It draws
+`candidates` from the better density and samples the next trial with
+probability proportional to the ratio of the two densities. The bandwidth
+shrinks as more trials are told. `multi` puts the current Pareto front in
+the better group when that front is smaller than the whole run.
 
 The estimator is standard-library code. It does not import Optuna, NumPy,
 or PyTorch.
@@ -292,6 +295,34 @@ names. Nothing in the schema is specific to those metrics.
 `overrides` are the dotted path values for that trial. `sets` uses the
 `path=value` form. `trial` is the sampler's trial index.
 
+## Seeds
+
+The spec has one `seed`. Two integers are derived from it:
+
+| Value | Function | Role |
+| --- | --- | --- |
+| Sampler seed | `ohho.train.sweep.sampler_seed` | The sweep seed. It seeds the proposal generator. `grid` order ignores it. |
+| Trial training seed | `ohho.train.sweep.trial_training_seed` | Seed a trainer should use for that trial index. |
+
+The sampler seed is the sweep seed, so the proposal generator stays
+`random.Random(sweep_seed)`. The training seed is SHA-256 of the JSON array
+`["ohho.sweep.seed/v1", sweep_seed, "trial", trial_index]`. The integer is
+the first four digest bytes, unsigned and big-endian, so it is in
+`0 .. 2**32 - 1`. It does not draw from the proposal generator. Asking,
+telling, or resuming does not change the training seed of a trial index.
+
+The same spec and the same sweep seed propose the same trial sequence.
+`grid` order is the cartesian product for every seed; the training seeds
+still change when the sweep seed changes. `random` repeats when the sweep
+seed repeats. `tpe`, `bayesian`, and `multi` also repeat when the told
+objective values repeat in the same order.
+
+`expand` and `SweepSampler.ask` store the training seed on each trial as
+`seed`. `ohho sweep plan` prints it. `ohho.train.sweep.derived_trial_seed`
+reads that field from a trial-table row. `ohho.run/v1` run manifests are
+not defined in this package. A later manifest writer copies this integer
+onto the run record. This sweep record does not invent that schema.
+
 ## Resume
 
 `SweepSampler.dump_state()` returns an `ohho.sweep.sampler/v1` document.
@@ -316,7 +347,40 @@ Loading that state and asking again proposes the same next trials as the
 sampler that kept running, including later tells of the same objective
 values. `grid` order does not use the generator. `random` continues it.
 `tpe`, `bayesian`, and `multi` continue it and refit the densities from the
-told trials.
+told trials. Each restored trial keeps the training seed derived from the
+sweep seed and its index.
+
+## Persisted runs
+
+A stopped sweep continues from disk. The file is `ohho.sweep.run/v1`
+(`ohho/train/schemas/sweep.run.v1.json`). It holds the sampler state and
+the trial table. The table row's `seed` is that trial's training seed.
+`values: null` means the trial was proposed and not told.
+
+```bash
+ohho sweep start sweep.yaml --id push-lr
+ohho sweep resume push-lr
+ohho sweep resume push-lr --count 4 --json
+```
+
+`OHHO_SWEEP_DIR` overrides the default directory `~/.ohho/sweeps`. The run
+is `<dir>/<id>/run.json`. `start` refuses an id that already exists.
+`resume` loads that file and proposes the next trials. Indexes already in
+the table are not proposed again. One process should resume a given id at
+a time.
+
+```python
+from ohho.train.sweep_run import resume_sweep, start_sweep
+
+run = start_sweep("sweep.yaml", sweep_id="push-lr")
+trial = run.ask()[0]
+run.tell(trial.index, {"val_loss": 0.4})
+stopped = resume_sweep("push-lr")
+assert stopped.ask()[0].index == 1
+```
+
+The Connect console Resume button is a separate surface. This package
+exposes the run and `ohho sweep resume`.
 
 ## YAML subset
 
