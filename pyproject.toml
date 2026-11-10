@@ -99,7 +99,25 @@ ppo = "ohho.train.builtin_recipes:PPO"
 include = ["ohho", "ohho.*"]
 
 [tool.setuptools.package-data]
-ohho = ["robots/*.json", "testing/conformance/*.txt", "agent_rules/*.md", "datasets/*.json", "targets/profiles/*.json", "targets/*.json", "train/schema/*.json", "train/examples/*.yaml", "serve/job/schema.json", "serve/job/examples/*.yaml", "bench/schemas/*.json", "bench/examples/*.json", "eval/schemas/*.json", "eval/suites.json"]
+ohho = [
+  "robots/*.json",
+  "testing/conformance/*.txt",
+  "agent_rules/*.md",
+  "datasets/*.json",
+  "targets/profiles/*.json",
+  "targets/*.json",
+  "train/schema/*.json",
+  "train/examples/*.yaml",
+  "train/schemas/*.json",
+  "train/schemas/examples/*.json",
+  "train/schemas/examples/*.yaml",
+  "serve/job/schema.json",
+  "serve/job/examples/*.yaml",
+  "bench/schemas/*.json",
+  "bench/examples/*.json",
+  "eval/schemas/*.json",
+  "eval/suites.json",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

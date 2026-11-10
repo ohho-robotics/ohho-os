@@ -17,6 +17,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **`ohho sweep plan`** — `ohho.sweep/v1` search-space schema (package data) and an
+  expander that turns it into trial recipes. Each trial is the opaque base
+  recipe plus dotted `path=value` overrides (the same form as
+  `ohho train --set`). Conditional dimensions appear only on trials whose
+  `when` matches. Constraints drop invalid combinations. The plan prints the
+  trial count and estimated GPU-hours, computed from per-trial values in the
+  spec. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
   tags (`python examples/serve/run_cpu.py`). A failed example fails the
   release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and

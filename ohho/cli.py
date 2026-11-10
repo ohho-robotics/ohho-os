@@ -1153,6 +1153,16 @@ def _cmd_train(args) -> int:
     return execute(args.recipe, getattr(args, "set", None))
 
 
+def _cmd_sweep(args) -> int:
+    from .train.sweep import SweepError, run_plan
+
+    try:
+        return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+    except (SweepError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     """Accept a second optional positional that follows options.
 
@@ -1873,6 +1883,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="override a dotted field before validation (repeatable)",
     )
     train.set_defaults(func=_cmd_train)
+
+    sweep = sub.add_parser(
+        "sweep",
+        help="expand a training sweep into trial recipes",
+    )
+    sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
+    plan = sweep_sub.add_parser(
+        "plan",
+        help="print trial count, estimated GPU-hours, and resolved recipes",
+    )
+    plan.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="print the plan as JSON",
+    )
+    plan.set_defaults(func=_cmd_sweep)
 
     job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
     job_sub = job.add_subparsers(dest="job_command", required=True)
