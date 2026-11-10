@@ -374,8 +374,12 @@ class TestRunClone(unittest.TestCase):
                 (occupied / "keep.txt").read_text(encoding="utf-8"), "keep"
             )
             result = clone_run(source, [])
+            # Temp dirs are not spelled the same on every OS: macOS /var is a
+            # symlink to /private/var, and Windows may use an 8.3 short name.
+            # The clone path is the resolved source plus the sibling name.
             self.assertEqual(
-                Path(result.dest), source.with_name(source.name + "-clone")
+                Path(result.dest),
+                source.resolve().with_name(source.name + "-clone"),
             )
             self.assertEqual(result.note, OUTPUT_DIR_NOTE)
             self.assertIn(OUTPUT_DIR_NOTE, format_clone_result(result))
