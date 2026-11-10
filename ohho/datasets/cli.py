@@ -1,4 +1,4 @@
-"""``ohho dataset build|pin|stats``."""
+"""``ohho dataset build|pin|stats|import-hf``."""
 
 from __future__ import annotations
 
@@ -8,9 +8,13 @@ import sys
 from typing import Any
 
 from .build import build_version
+from .hf_import import import_hf_dataset
 from .model import (
     Augmentation,
     AxisRange,
+    CameraToggle,
+    ColorJitter,
+    Crop,
     DatasetSpec,
     DatasetStats,
     DatasetVersionError,
@@ -18,6 +22,7 @@ from .model import (
     SourceQuery,
     Split,
 )
+from .split import SPLIT_STRATEGIES
 from .store import pin_version, resolve_dataset_version, version_stats
 
 
@@ -25,7 +30,7 @@ def add_dataset_parser(sub: Any) -> None:
     """Register the ``dataset`` command on the root ``ohho`` parser."""
     dataset = sub.add_parser(
         "dataset",
-        help="version local episodes: build, pin, stats",
+        help="version local episodes: build, pin, stats, import-hf",
     )
     commands = dataset.add_subparsers(dest="dataset_command", required=True)
 
@@ -66,6 +71,19 @@ def add_dataset_parser(sub: Any) -> None:
     build.add_argument("--val-fraction", type=float, default=0.0)
     build.add_argument("--test-fraction", type=float, default=0.0)
     build.add_argument(
+        "--split-strategy",
+        choices=SPLIT_STRATEGIES,
+        default="episode",
+        help="group episodes by episode, session/day, task, or scene",
+    )
+    build.add_argument(
+        "--held-out-scene",
+        action="append",
+        default=None,
+        metavar="SCENE",
+        help="scene placed entirely in test (repeatable; strategy scene)",
+    )
+    build.add_argument(
         "--seed", type=int, default=0, help="split shuffle and noise seed"
     )
     build.add_argument("--action-scale", type=float, default=1.0)
@@ -76,6 +94,30 @@ def add_dataset_parser(sub: Any) -> None:
     build.add_argument("--state-noise", type=float, default=0.0)
     build.add_argument(
         "--copies", type=int, default=1, help="repeat the selected episodes"
+    )
+    build.add_argument("--crop-height", type=int, default=None)
+    build.add_argument("--crop-width", type=int, default=None)
+    build.add_argument("--resize-height", type=int, default=None)
+    build.add_argument("--resize-width", type=int, default=None)
+    build.add_argument("--brightness", type=float, default=0.0)
+    build.add_argument("--contrast", type=float, default=0.0)
+    build.add_argument("--saturation", type=float, default=0.0)
+    build.add_argument("--hue", type=float, default=0.0)
+    build.add_argument(
+        "--blur", type=float, default=0.0, help="Gaussian blur sigma in pixels"
+    )
+    build.add_argument(
+        "--temporal-stride",
+        type=int,
+        default=1,
+        help="train-time stride; keep every Nth frame (default: 1)",
+    )
+    build.add_argument(
+        "--camera-off",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="copy this camera through at train time (repeatable)",
     )
     build.add_argument(
         "--licence", default="unspecified", help="licence string stored on the version"
@@ -96,6 +138,19 @@ def add_dataset_parser(sub: Any) -> None:
     _add_common(stats)
     stats.set_defaults(func=dispatch)
 
+    import_hf = commands.add_parser(
+        "import-hf",
+        help="import a LeRobot dataset from Hugging Face Hub as a pinned version",
+    )
+    import_hf.add_argument("repo_id", help="Hugging Face dataset repo id (owner/name)")
+    import_hf.add_argument(
+        "--revision",
+        default=None,
+        help="branch, tag, or commit to resolve and pin (default: the Hub default)",
+    )
+    _add_common(import_hf)
+    import_hf.set_defaults(func=dispatch)
+
 
 def dispatch(args: argparse.Namespace) -> int:
     """Run the selected dataset subcommand. User errors exit 1."""
@@ -107,6 +162,8 @@ def dispatch(args: argparse.Namespace) -> int:
             return _pin(args)
         if command == "stats":
             return _stats(args)
+        if command == "import-hf":
+            return _import_hf(args)
     except DatasetVersionError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -121,6 +178,14 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
         help="version store (default: OHHO_DATASETS_ROOT or ~/.ohho/datasets)",
     )
     parser.add_argument("--json", action="store_true", help="print JSON on stdout")
+
+
+def _image_size(height: int | None, width: int | None, label: str) -> Crop | None:
+    if height is None and width is None:
+        return None
+    if height is None or width is None:
+        raise DatasetVersionError(f"{label} needs both height and width")
+    return Crop(height=height, width=width)
 
 
 def _build(args: argparse.Namespace) -> int:
@@ -138,6 +203,8 @@ def _build(args: argparse.Namespace) -> int:
             train=args.train_fraction,
             val=args.val_fraction,
             test=args.test_fraction,
+            strategy=args.split_strategy,
+            held_out_scenes=tuple(args.held_out_scene or ()),
         ),
         seed=args.seed,
         augmentation=Augmentation(
@@ -148,6 +215,20 @@ def _build(args: argparse.Namespace) -> int:
             action_noise=args.action_noise,
             state_noise=args.state_noise,
             copies=args.copies,
+            crop=_image_size(args.crop_height, args.crop_width, "crop"),
+            resize=_image_size(args.resize_height, args.resize_width, "resize"),
+            color_jitter=ColorJitter(
+                brightness=args.brightness,
+                contrast=args.contrast,
+                saturation=args.saturation,
+                hue=args.hue,
+            ),
+            blur=args.blur,
+            temporal_stride=args.temporal_stride,
+            cameras=tuple(
+                CameraToggle(name=name, enabled=False)
+                for name in (args.camera_off or ())
+            ),
         ),
         licence=args.licence,
     )
@@ -197,6 +278,37 @@ def _stats(args: argparse.Namespace) -> int:
         return 0
     print(f"version_id: {args.version_id}")
     _print_ranges(record_stats)
+    return 0
+
+
+def _import_hf(args: argparse.Namespace) -> int:
+    record = import_hf_dataset(args.repo_id, revision=args.revision, store=args.store)
+    dataset = resolve_dataset_version(record.version_id, store=args.store)
+    if record.warning:
+        print(f"warning: {record.warning}", file=sys.stderr)
+    if args.json:
+        _emit(
+            {
+                "version_id": record.version_id,
+                "repo_id": record.repo_id,
+                "revision": record.revision,
+                "requested_revision": record.requested_revision,
+                "licence": record.licence,
+                "non_commercial": record.non_commercial,
+                "revision_pinned": True,
+                "licence_pinned": True,
+                "pinned": True,
+                "dataset": str(dataset),
+                "warning": record.warning,
+            }
+        )
+        return 0
+    print(f"version_id: {record.version_id}")
+    print(f"repo_id: {record.repo_id}")
+    print(f"revision: {record.revision}")
+    print(f"licence: {record.licence}")
+    print(f"non_commercial: {str(record.non_commercial).lower()}")
+    print(f"dataset: {dataset}")
     return 0
 
 

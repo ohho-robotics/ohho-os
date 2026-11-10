@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/dataset_version.json",
   "title": "DatasetVersion",
-  "description": "Immutable local dataset version (ohho.dataset_version.v1). One record maps to one future dataset_versions row. This file is not part of the transport protocol manifest.",
+  "description": "Immutable local dataset version (ohho.dataset_version.v1). One record maps to one future dataset_versions row. split and augmentation are included in content_hash. This file is not part of the transport protocol manifest.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -73,12 +73,20 @@
     "split": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "train", "val", "test"],
+      "required": ["name", "train", "val", "test", "strategy", "held_out_scenes"],
       "properties": {
         "name": {"type": "string", "enum": ["all", "train", "val", "test"]},
         "train": {"type": "number", "minimum": 0},
         "val": {"type": "number", "minimum": 0},
-        "test": {"type": "number", "minimum": 0}
+        "test": {"type": "number", "minimum": 0},
+        "strategy": {
+          "type": "string",
+          "enum": ["episode", "session", "task", "scene"]
+        },
+        "held_out_scenes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
       }
     },
     "seed": {
@@ -94,7 +102,13 @@
         "state_offset",
         "action_noise",
         "state_noise",
-        "copies"
+        "copies",
+        "crop",
+        "resize",
+        "color_jitter",
+        "blur",
+        "temporal_stride",
+        "cameras"
       ],
       "properties": {
         "action_scale": {"type": "number"},
@@ -103,7 +117,16 @@
         "state_offset": {"type": "number"},
         "action_noise": {"type": "number", "minimum": 0},
         "state_noise": {"type": "number", "minimum": 0},
-        "copies": {"type": "integer", "minimum": 1}
+        "copies": {"type": "integer", "minimum": 1},
+        "crop": {"$ref": "#/$defs/optional_image_size"},
+        "resize": {"$ref": "#/$defs/optional_image_size"},
+        "color_jitter": {"$ref": "#/$defs/color_jitter"},
+        "blur": {"type": "number", "minimum": 0},
+        "temporal_stride": {"type": "integer", "minimum": 1},
+        "cameras": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/camera_toggle"}
+        }
       }
     },
     "stats": {
@@ -144,6 +167,35 @@
       "properties": {
         "min": {"type": "number"},
         "max": {"type": "number"}
+      }
+    },
+    "optional_image_size": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["height", "width"],
+      "properties": {
+        "height": {"type": "integer", "minimum": 1},
+        "width": {"type": "integer", "minimum": 1}
+      }
+    },
+    "color_jitter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["brightness", "contrast", "saturation", "hue"],
+      "properties": {
+        "brightness": {"type": "number", "minimum": 0},
+        "contrast": {"type": "number", "minimum": 0},
+        "saturation": {"type": "number", "minimum": 0},
+        "hue": {"type": "number", "minimum": 0, "maximum": 0.5}
+      }
+    },
+    "camera_toggle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "enabled"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "enabled": {"type": "boolean"}
       }
     }
   }

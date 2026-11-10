@@ -4,6 +4,10 @@ The schema file ``dataset_version.schema.json`` is the contract. One record
 maps onto one future ``dataset_versions`` row. ``pinned``, ``created_at``,
 ``stats``, ``parent_version_id``, and ``storage_prefix`` are stored with the
 version and are not part of the version id.
+
+``split`` and ``augmentation`` are stored on the record and are included in
+``content_hash``. ``seed`` is part of the version id. It changes
+``content_hash`` when it changes which rows are materialised.
 """
 
 from __future__ import annotations
@@ -85,18 +89,63 @@ class Filters:
 
 
 @dataclass(frozen=True)
+class Crop:
+    """Height and width in pixels."""
+
+    height: int
+    width: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {"height": self.height, "width": self.width}
+
+
+@dataclass(frozen=True)
+class ColorJitter:
+    """Maximum colour jitter. Zero leaves that channel unchanged."""
+
+    brightness: float = 0.0
+    contrast: float = 0.0
+    saturation: float = 0.0
+    hue: float = 0.0
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "brightness": self.brightness,
+            "contrast": self.contrast,
+            "saturation": self.saturation,
+            "hue": self.hue,
+        }
+
+
+@dataclass(frozen=True)
+class CameraToggle:
+    """Whether one camera receives image augmentation."""
+
+    name: str
+    enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "enabled": self.enabled}
+
+
+@dataclass(frozen=True)
 class Split:
-    """Which slice of the filtered episodes to materialise.
+    """Which slice of the filtered episodes to materialise, and how to assign it.
 
     ``name="all"`` keeps every filtered episode in source order. ``train``,
-    ``val``, and ``test`` partition that list with a seed-stable shuffle.
-    Fractions are weights, not required to sum to 1.
+    ``val``, and ``test`` materialise that part of a seeded partition.
+    Fractions are weights, not required to sum to 1. ``strategy`` is
+    ``episode``, ``session`` (session, else calendar day), ``task``, or
+    ``scene``. ``held_out_scenes`` applies when the strategy is ``scene``.
+    See :mod:`ohho.datasets.split`.
     """
 
     name: str = "all"
     train: float = 1.0
     val: float = 0.0
     test: float = 0.0
+    strategy: str = "episode"
+    held_out_scenes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,16 +153,26 @@ class Split:
             "train": self.train,
             "val": self.val,
             "test": self.test,
+            "strategy": self.strategy,
+            "held_out_scenes": list(self.held_out_scenes),
         }
 
 
 @dataclass(frozen=True)
 class Augmentation:
-    """Deterministic frame transform applied after the split.
+    """Transform stored on a dataset version.
 
-    Noise draws come from ``random.Random.random`` seeded by ``seed`` plus
-    the copy index. Zero noise does not draw, so it does not depend on the
-    seed. ``copies`` repeats the selected episodes.
+    ``action_scale``, ``state_scale``, ``action_offset``, ``state_offset``,
+    ``action_noise``, ``state_noise``, and ``copies`` are applied when the
+    version is materialised. Noise draws use ``random.Random.random`` seeded
+    by the version seed plus the copy index. Zero noise leaves that stream
+    untouched. ``copies`` repeats the selected episodes.
+
+    ``crop``, ``resize``, ``color_jitter``, ``blur``, ``temporal_stride``,
+    and ``cameras`` are stored with the version and applied at train time by
+    :func:`ohho.datasets.augment.apply_augmentation`. ``blur`` is a Gaussian
+    sigma in pixels. ``temporal_stride`` keeps every Nth frame.
+    ``cameras`` lists toggles; a camera omitted from the list is augmented.
     """
 
     action_scale: float = 1.0
@@ -123,6 +182,12 @@ class Augmentation:
     action_noise: float = 0.0
     state_noise: float = 0.0
     copies: int = 1
+    crop: Crop | None = None
+    resize: Crop | None = None
+    color_jitter: ColorJitter = field(default_factory=ColorJitter)
+    blur: float = 0.0
+    temporal_stride: int = 1
+    cameras: tuple[CameraToggle, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +198,12 @@ class Augmentation:
             "action_noise": self.action_noise,
             "state_noise": self.state_noise,
             "copies": self.copies,
+            "crop": None if self.crop is None else self.crop.to_dict(),
+            "resize": None if self.resize is None else self.resize.to_dict(),
+            "color_jitter": self.color_jitter.to_dict(),
+            "blur": self.blur,
+            "temporal_stride": self.temporal_stride,
+            "cameras": [camera.to_dict() for camera in self.cameras],
         }
 
 
@@ -289,11 +360,26 @@ def json_number(value: float) -> float:
     return float(loaded)
 
 
-def canonical_content_bytes(episodes: Sequence[CanonicalEpisode]) -> bytes:
-    """UTF-8 bytes of the canonical episode payload, including a trailing newline."""
+def canonical_content_bytes(
+    episodes: Sequence[CanonicalEpisode],
+    split: Split | None = None,
+    augmentation: Augmentation | None = None,
+) -> bytes:
+    """UTF-8 bytes hashed into ``content_hash``, including a trailing newline.
+
+    The payload includes the episode rows and the split and augmentation
+    configs. A config change hashes differently when the stored rows stay
+    the same, which is how train-time image settings enter the version hash.
+    """
+    if split is None:
+        split = Split()
+    if augmentation is None:
+        augmentation = Augmentation()
     payload = {
         "algorithm": CONTENT_ALGORITHM,
+        "augmentation": augmentation.to_dict(),
         "episodes": [episode.to_dict() for episode in episodes],
+        "split": split.to_dict(),
     }
     text = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -301,9 +387,19 @@ def canonical_content_bytes(episodes: Sequence[CanonicalEpisode]) -> bytes:
     return (text + "\n").encode("utf-8")
 
 
-def content_hash_of(episodes: Sequence[CanonicalEpisode]) -> str:
+def content_hash_of(
+    episodes: Sequence[CanonicalEpisode],
+    split: Split | None = None,
+    augmentation: Augmentation | None = None,
+) -> str:
     """``sha256:`` hash of :func:`canonical_content_bytes`."""
-    digest = hashlib.sha256(canonical_content_bytes(episodes)).hexdigest()
+    if split is None:
+        split = Split()
+    if augmentation is None:
+        augmentation = Augmentation()
+    digest = hashlib.sha256(
+        canonical_content_bytes(episodes, split, augmentation)
+    ).hexdigest()
     return f"sha256:{digest}"
 
 
@@ -416,6 +512,8 @@ def version_from_dict(document: Mapping[str, Any]) -> DatasetVersion:
             train=float(split["train"]),
             val=float(split["val"]),
             test=float(split["test"]),
+            strategy=split["strategy"],
+            held_out_scenes=tuple(split["held_out_scenes"]),
         ),
         seed=int(document["seed"]),
         augmentation=Augmentation(
@@ -426,6 +524,15 @@ def version_from_dict(document: Mapping[str, Any]) -> DatasetVersion:
             action_noise=float(augmentation["action_noise"]),
             state_noise=float(augmentation["state_noise"]),
             copies=int(augmentation["copies"]),
+            crop=_image_size(augmentation["crop"]),
+            resize=_image_size(augmentation["resize"]),
+            color_jitter=_color_jitter(augmentation["color_jitter"]),
+            blur=float(augmentation["blur"]),
+            temporal_stride=int(augmentation["temporal_stride"]),
+            cameras=tuple(
+                CameraToggle(name=item["name"], enabled=bool(item["enabled"]))
+                for item in augmentation["cameras"]
+            ),
         ),
         stats=DatasetStats(
             episodes=int(stats["episodes"]),
@@ -459,6 +566,23 @@ def validate_document(document: Mapping[str, Any]) -> None:
 
 def _axis(item: Mapping[str, Any]) -> AxisRange:
     return AxisRange(minimum=float(item["min"]), maximum=float(item["max"]))
+
+
+def _image_size(value: Any) -> Crop | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise DatasetVersionError("image size must be an object")
+    return Crop(height=int(value["height"]), width=int(value["width"]))
+
+
+def _color_jitter(value: Mapping[str, Any]) -> ColorJitter:
+    return ColorJitter(
+        brightness=float(value["brightness"]),
+        contrast=float(value["contrast"]),
+        saturation=float(value["saturation"]),
+        hue=float(value["hue"]),
+    )
 
 
 def _check(

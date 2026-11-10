@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.bench/v1.json",
+  "title": "BenchResult",
+  "description": "Serve benchmark result (ohho.bench/v1). Objects allow additional properties. Removing, renaming, or retyping a field requires ohho.bench/v2 and a converter.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "run",
+    "latency",
+    "throughput",
+    "accuracy",
+    "telemetry",
+    "environment"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "ohho.bench/v1",
+      "description": "Schema id. A breaking change uses a new id and a converter."
+    },
+    "run": {"$ref": "#/$defs/run"},
+    "latency": {"$ref": "#/$defs/latency_report"},
+    "throughput": {"$ref": "#/$defs/throughput"},
+    "accuracy": {"$ref": "#/$defs/accuracy"},
+    "telemetry": {"$ref": "#/$defs/telemetry"},
+    "environment": {"$ref": "#/$defs/environment"},
+    "comparison": {"$ref": "#/$defs/comparison"},
+    "gates": {"$ref": "#/$defs/gates"},
+    "batches": {
+      "type": "array",
+      "description": "Every measured batch. Top-level latency and throughput repeat the primary batch.",
+      "items": {"$ref": "#/$defs/batch_result"}
+    },
+    "pipeline": {
+      "$ref": "#/$defs/pipeline",
+      "description": "Camera-to-action pipeline block (ohho.bench.pipeline/v1). Absent on an artifact-only run."
+    }
+  },
+  "$defs": {
+    "host": {
+      "title": "BenchHost",
+      "description": "Machine that executed the run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Host name or CI runner id."
+        },
+        "platform": {"type": "string", "minLength": 1},
+        "arch": {"type": "string", "minLength": 1},
+        "cpu": {"type": "string", "minLength": 1},
+        "accelerator": {"type": "string", "minLength": 1}
+      }
+    },
+    "run": {
+      "title": "BenchRun",
+      "description": "Identity of the model, artifact, workload, manifest, and host.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["model_sha", "artifact_sha", "target", "manifest_ref", "host"],
+      "properties": {
+        "model_sha": {
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-fA-F]{7,128}$",
+          "description": "Digest of the model weights. Hex, optional sha256: prefix, 7 to 128 digits."
+        },
+        "artifact_sha": {
+          "type": "string",
+          "pattern": "^(sha256:)?[0-9a-fA-F]{7,128}$",
+          "description": "Digest of the packaged artifact that was executed."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Workload class. Common values are vision, vla, and llm.",
+          "examples": ["vision", "vla", "llm"]
+        },
+        "manifest_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Manifest the run was launched from (path, URI, or digest)."
+        },
+        "host": {"$ref": "#/$defs/host"},
+        "id": {"type": "string", "minLength": 1},
+        "started_at": {"type": "string", "minLength": 1},
+        "finished_at": {"type": "string", "minLength": 1}
+      }
+    },
+    "metric": {
+      "title": "Metric",
+      "description": "One named accuracy figure.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "value"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "value": {"type": "number"},
+        "unit": {"type": "string", "minLength": 1}
+      }
+    },
+    "latency_stats": {
+      "title": "LatencyStats",
+      "description": "Latency distribution for one sample set.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["mean", "median", "p50", "p90", "p95", "p99", "min", "max", "std", "unit"],
+      "properties": {
+        "mean": {"type": "number", "minimum": 0},
+        "median": {"type": "number", "minimum": 0},
+        "p50": {"type": "number", "minimum": 0},
+        "p90": {"type": "number", "minimum": 0},
+        "p95": {"type": "number", "minimum": 0},
+        "p99": {"type": "number", "minimum": 0},
+        "min": {"type": "number", "minimum": 0},
+        "max": {"type": "number", "minimum": 0},
+        "std": {"type": "number", "minimum": 0},
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Scale for every number in this object. Examples use ms."
+        },
+        "samples": {"type": "integer", "minimum": 0}
+      }
+    },
+    "latency_stage": {
+      "title": "LatencyStage",
+      "description": "Latency distribution for one named stage.",
+      "type": "object",
+      "additionalProperties": true,
+      "allOf": [
+        {"$ref": "#/$defs/latency_stats"},
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Stage name."
+            }
+          }
+        }
+      ]
+    },
+    "latency_report": {
+      "title": "LatencyReport",
+      "description": "End-to-end latency and the per-stage breakdown.",
+      "type": "object",
+      "additionalProperties": true,
+      "allOf": [
+        {"$ref": "#/$defs/latency_stats"},
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["stages"],
+          "properties": {
+            "stages": {
+              "type": "array",
+              "description": "Per-stage latency. An empty array means only the end-to-end distribution was recorded.",
+              "items": {"$ref": "#/$defs/latency_stage"}
+            }
+          }
+        }
+      ],
+      "properties": {
+        "cold_start_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "First iteration before warmup, in milliseconds."
+        },
+        "achievable_hz": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Iterations per second implied by the mean latency. Zero when the mean is zero."
+        }
+      }
+    },
+    "throughput": {
+      "title": "Throughput",
+      "description": "Work completed per unit of time.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": {"type": "number", "minimum": 0},
+        "unit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unit such as frames/s, steps/s, or tokens/s."
+        },
+        "samples": {"type": "integer", "minimum": 0},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "duration_s": {"type": "number", "minimum": 0}
+      }
+    },
+    "accuracy": {
+      "title": "Accuracy",
+      "description": "Quality of the model on the bench set.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["primary"],
+      "properties": {
+        "primary": {"$ref": "#/$defs/metric"},
+        "metrics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/metric"}
+        },
+        "samples": {"type": "integer", "minimum": 0}
+      }
+    },
+    "telemetry": {
+      "title": "Telemetry",
+      "description": "Resource and runtime measurements for the run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["duration_s", "samples"],
+      "properties": {
+        "duration_s": {"type": "number", "minimum": 0},
+        "samples": {"type": "integer", "minimum": 0},
+        "cpu_percent_mean": {"type": "number", "minimum": 0},
+        "memory_mb_max": {"type": "number", "minimum": 0},
+        "accelerator_memory_mb_max": {"type": "number", "minimum": 0},
+        "accelerator_util_mean": {"type": "number", "minimum": 0},
+        "power_w_mean": {"type": "number", "minimum": 0},
+        "memory_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How memory_mb_max was measured, when it is present."
+        }
+      }
+    },
+    "environment_versions": {
+      "title": "EnvironmentVersions",
+      "description": "Component name to version string. python and ohho are required.",
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1},
+      "required": ["python", "ohho"],
+      "properties": {
+        "python": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Python version."
+        },
+        "ohho": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ohho-os package version."
+        }
+      }
+    },
+    "environment": {
+      "title": "Environment",
+      "description": "Software environment the run executed in.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["versions"],
+      "properties": {
+        "versions": {"$ref": "#/$defs/environment_versions"},
+        "target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Hardware target profile id, such as x86-cpu."
+        },
+        "git_sha": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Git commit of the tree that ran the bench, or unknown."
+        },
+        "timing_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Clock used for stage timing: perf_counter, cuda_event, or virtual."
+        },
+        "timing_note": {"type": "string", "minLength": 1},
+        "execution_provider": {"type": "string", "minLength": 1},
+        "driver": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GPU driver version when a driver is visible."
+        },
+        "world": {
+          "type": "string",
+          "enum": ["sim", "recorded", "hardware"],
+          "description": "Where a pipeline run executed. sim is the in-process simulator. Omitted on an artifact-only run."
+        }
+      }
+    },
+    "comparison_metric": {
+      "title": "ComparisonMetric",
+      "description": "One baseline delta. Latency metrics treat an increase as a regression.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "baseline", "current", "delta", "regression"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "unit": {"type": "string", "minLength": 1},
+        "baseline": {"type": "number"},
+        "current": {"type": "number"},
+        "delta": {"type": "number"},
+        "pct_change": {"type": "number"},
+        "regression": {"type": "boolean"},
+        "higher_is_worse": {"type": "boolean"}
+      }
+    },
+    "comparison": {
+      "title": "Comparison",
+      "description": "Per-metric delta against a baseline ohho.bench/v1 result.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["baseline_ref", "metrics"],
+      "properties": {
+        "baseline_ref": {"type": "string", "minLength": 1},
+        "metrics": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/comparison_metric"}
+        }
+      }
+    },
+    "gate_check": {
+      "title": "GateCheck",
+      "description": "One SLO or regression gate.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "expr", "passed"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "expr": {"type": "string", "minLength": 1},
+        "passed": {"type": "boolean"},
+        "metric": {"type": "string", "minLength": 1},
+        "value": {"type": "number"},
+        "limit": {"type": "number"},
+        "detail": {"type": "string", "minLength": 1}
+      }
+    },
+    "gates": {
+      "title": "Gates",
+      "description": "SLO and regression gates for the primary batch.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["passed", "checks"],
+      "properties": {
+        "passed": {"type": "boolean"},
+        "checks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/gate_check"}
+        }
+      }
+    },
+    "batch_result": {
+      "title": "BatchResult",
+      "description": "Latency and throughput for one batch size.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["batch_size", "latency", "throughput"],
+      "properties": {
+        "batch_size": {"type": "integer", "minimum": 1},
+        "latency": {"$ref": "#/$defs/latency_report"},
+        "throughput": {"$ref": "#/$defs/throughput"}
+      }
+    },
+    "pipeline": {
+      "title": "PipelineBench",
+      "description": "End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline version plus a converter.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "version",
+        "world",
+        "source",
+        "target_hz",
+        "achieved_hz",
+        "rate_sustained",
+        "dropped_frames",
+        "frames_presented",
+        "frames_published",
+        "jitter_ms",
+        "device",
+        "live_robot"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "ohho.bench.pipeline/v1",
+          "description": "Pipeline block version. Independent of the ohho.bench/v1 document id."
+        },
+        "world": {
+          "type": "string",
+          "enum": ["sim", "recorded", "hardware"],
+          "description": "sim is the in-process simulator. hardware is a replay labelled hardware and is never a live robot in this block."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "sim, lerobot, rosbag, fixture, or hardware."
+        },
+        "target_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Configured control rate."
+        },
+        "achieved_hz": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Published frames per second across the paced window. This is the control rate, not latency.achievable_hz."
+        },
+        "rate_sustained": {
+          "type": "boolean",
+          "description": "True when no frame was dropped and every published frame finished inside its control period."
+        },
+        "dropped_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Frames skipped because the previous frame was still running at the target Hz."
+        },
+        "frames_presented": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frames_published": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "jitter_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Population standard deviation of measured end-to-end latencies, in milliseconds. Same value as latency.std."
+        },
+        "interval_jitter_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Population standard deviation of inter-publish intervals, in milliseconds."
+        },
+        "control_period_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sink": {"type": "string", "minLength": 1},
+        "device": {
+          "type": "string",
+          "enum": ["cpu", "cuda"],
+          "description": "cpu when H2D and D2H were host copies."
+        },
+        "live_robot": {
+          "type": "boolean",
+          "description": "True only if this process commanded a real robot. The pipeline bench writes false."
+        },
+        "gpu_follow_up": {
+          "type": "array",
+          "description": "Stages that stayed on the host because CUDA copies are not timed here.",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "gpu_note": {"type": "string", "minLength": 1},
+        "policy": {"type": "string", "minLength": 1},
+        "episode": {"type": "integer", "minimum": 0},
+        "frame_origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "camera, sim, or state-raster when a LeRobot episode has no stored image."
+        },
+        "recording": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

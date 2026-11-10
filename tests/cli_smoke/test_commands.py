@@ -192,6 +192,49 @@ class TestCliSmokeCore(unittest.TestCase):
             code, _, _ = run_in_home(["memory", "clear", "omnibot"])
             self.assertEqual(code, 0)
 
+    def test_eval_checkpoint_sim(self):
+        fixture = """\
+version: 1
+frame_id: map
+world: apartment
+scenarios:
+  - id: clear_goal
+    start: {x: 0.0, y: 0.0, yaw_deg: 0.0}
+    goal: {x: 1.0, y: 0.0, yaw_deg: 0.0}
+    obstacle:
+      name: off_path
+      pose: {x: 0.5, y: 3.0, yaw_deg: 0.0}
+      size: {x: 0.2, y: 0.2, z: 0.2}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = root / "checkpoint.json"
+            checkpoint.write_text('{"eval": {"speed_mps": 0.4}}\n', encoding="utf-8")
+            scenarios = root / "scenarios.yaml"
+            scenarios.write_text(fixture, encoding="utf-8")
+            out = root / "report.json"
+            code, stdout, err = _run_cli(
+                [
+                    "eval",
+                    str(checkpoint),
+                    "--suite",
+                    "gazebo-nav-regression",
+                    "--scenarios",
+                    str(scenarios),
+                    "--episodes",
+                    "1",
+                    "--seed",
+                    "0",
+                    "--out",
+                    str(out),
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            self.assertIn("ohho.eval/v1", stdout)
+            report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema"], "ohho.eval/v1")
+            self.assertEqual(report["success_rate"], 1.0)
+
     def test_sim_demo_sim_fast(self):
         # The harness binds its log stream at import, so redirect_stdout
         # does not capture the demo transcript. Exit code is the smoke check.
@@ -218,6 +261,24 @@ class TestCliSmokeCore(unittest.TestCase):
             self.assertTrue(report.is_file())
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertIn("overall_status", data)
+
+    def test_job_validate_and_run(self):
+        spec = (
+            Path(__file__).resolve().parents[2]
+            / "ohho"
+            / "serve"
+            / "job"
+            / "examples"
+            / "full.yaml"
+        )
+        code, out, err = _run_cli(["job", "validate", str(spec)])
+        self.assertEqual(code, 0, err)
+        self.assertIn("schema_version: ohho.job/v1", out)
+        code, out, err = _run_cli(["job", "run", str(spec)])
+        self.assertEqual(code, 2, err + out)
+        self.assertIn("optimize is not available in this build", out)
+        self.assertIn("parity is not available in this build", out)
+        self.assertIn("bench is not available in this build", out)
 
     def test_sim_serve_not_built(self):
         for backend in ("isaac", "mujoco"):
@@ -389,6 +450,22 @@ class TestCliSmokeSimLoop(unittest.TestCase):
             )
             self.assertEqual(code, 0, err + out)
             self.assertTrue((Path(tmp) / "dataset").exists())
+
+
+class TestCliSmokeTrain(unittest.TestCase):
+    """``ohho train`` on a family with no trainer in this build."""
+
+    def test_train_reports_unavailable_family(self):
+        from ohho.train.recipe_schema import example_path
+
+        code, out, err = _run_cli(["train", str(example_path("diffusion"))])
+        self.assertEqual(code, 3, err + out)
+        self.assertIn("family not available in this build", out)
+        self.assertIn("family not available in this build", err)
+        event = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(event["event"], "error")
+        self.assertEqual(event["exit_code"], 3)
+        self.assertNotIn('"event": "train_start"', out)
 
 
 if __name__ == "__main__":

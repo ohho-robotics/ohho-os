@@ -190,7 +190,7 @@ def load_sweep(source: str | Path | Mapping[str, Any]) -> SweepSpec:
     path = Path(source)
     if not path.is_file():
         raise SweepError(f"sweep spec not found: {path}")
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     if path.suffix.lower() == ".json":
         try:
             data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
@@ -503,7 +503,13 @@ def _type_ok(instance: Any, expected: str) -> bool:
     if expected == "string":
         return isinstance(instance, str)
     if expected == "integer":
-        return isinstance(instance, int) and not isinstance(instance, bool)
+        if isinstance(instance, bool):
+            return False
+        if isinstance(instance, int):
+            return True
+        if isinstance(instance, float) and math.isfinite(instance):
+            return instance.is_integer()
+        return False
     if expected == "number":
         return isinstance(instance, (int, float)) and not isinstance(instance, bool)
     if expected == "boolean":
@@ -1091,14 +1097,15 @@ def _assign(root: dict[str, Any], path: str, value: Any) -> None:
         raise SweepError(f"invalid override path {path!r}")
     current = root
     for part in parts[:-1]:
-        nxt = current.get(part)
-        if nxt is None:
-            nxt = {}
+        if part not in current:
+            nxt: dict[str, Any] = {}
             current[part] = nxt
-        elif not isinstance(nxt, dict):
-            raise SweepError(
-                f"cannot set {path}: {part!r} is not a mapping in the recipe"
-            )
+        else:
+            nxt = current[part]
+            if not isinstance(nxt, dict):
+                raise SweepError(
+                    f"cannot set {path}: {part!r} is not a mapping in the recipe"
+                )
         current = nxt
     current[parts[-1]] = copy.deepcopy(value)
 
