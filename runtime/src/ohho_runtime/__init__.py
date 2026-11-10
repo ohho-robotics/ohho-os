@@ -6,7 +6,9 @@ The supervisor lives in :mod:`ohho_runtime.supervisor`.
 
 ``LoopTimer``, ``LoopStats``, and ``loop_report`` load on first use so a
 worker that only imports :mod:`ohho_runtime.heartbeat` does not import
-``ohho``.
+``ohho``. ``Deadline``, ``Heartbeat``, and ``wire_contract`` load the same
+way. The wire contract is :mod:`ohho_runtime.deadline`. The socket lines
+stay in :mod:`ohho_runtime.heartbeat`.
 
 Structured logs live in :mod:`ohho_runtime.log`. Metrics live in
 :mod:`ohho_runtime.metrics`. The operator CLI lives in
@@ -27,6 +29,10 @@ _LAZY = {
     "loop_report": "ohho_runtime.timing",
     "CrashBundle": "ohho_runtime.crash",
     "write_crash_bundle": "ohho_runtime.crash",
+    "Deadline": "ohho_runtime.deadline",
+    "Heartbeat": "ohho_runtime.deadline",
+    "HeartbeatContract": "ohho_runtime.deadline",
+    "wire_contract": "ohho_runtime.deadline",
 }
 
 
@@ -46,9 +52,13 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "CrashBundle",
+    "Deadline",
+    "Heartbeat",
+    "HeartbeatContract",
     "LoopStats",
     "LoopTimer",
     "__version__",
     "loop_report",
+    "wire_contract",
     "write_crash_bundle",
 ]
