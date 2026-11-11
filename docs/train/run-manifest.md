@@ -64,6 +64,7 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `gpu` | GPU | `gpu` |
 | `final_loss` | Final loss | `final_loss` |
 | `precision_metrics` | Precision metrics | `precision_metrics` |
+| `pruning` | Pruning | `pruning` |
 | `qat` | QAT | `qat` |
 | `error` | Error | `error` |
 | `resolved_config` | Resolved config | `resolved_config` |
@@ -75,6 +76,8 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 `git` describes the checkout that contains the recipe file. `commit` is null when that directory is not a git checkout or the checkout has no commit yet. `dirty` is true when `git status --porcelain` shows any change, including untracked files. When git cannot read the status of a checkout that does exist, `dirty` is true.
 
 `library_versions` always includes `python` and `ohho` (the `ohho-os` version). `torch`, `numpy`, and `lerobot` are included when those distributions are installed. The version lookup uses package metadata.
+
+`pruning` is null when the recipe has no pruning block. A manifest that omits the key means the same thing and still validates. When a block was set, the value is the pruning report: method, schedule, target, per-layer sparsity, achieved sparsity, and, for a structured shrink, parameter counts and exported file sizes before and after. The human summary line prints method, schedule, target, achieved sparsity, parameter counts, and export sizes. Per-layer rows stay in the JSON. Details are in [Pruning](pruning.md).
 
 `precision` is the recipe value the device check accepted (`fp32`, `fp16`, `bf16`, or `fp8`). `loss_scaling` is true only for fp16, where the step uses GradScaler. `precision_backend` is `fp32`, `torch.amp` (fp16 and bf16), or `transformer_engine` (fp8). `precision_metrics` has one key per precision. The precision that ran holds `throughput_steps_per_s` and `peak_memory_bytes`. The others are null. While the run is still going, and when the trainer did not write those keys, the numbers are null. Throughput is training steps per second over the step loop. On CUDA, peak memory is `max_memory_allocated` in bytes after the loop starts. On CPU and MPS it is the process resident set sampled during the loop, which includes the interpreter. Details are in [Mixed precision](precision.md).
 
