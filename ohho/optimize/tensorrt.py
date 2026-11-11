@@ -243,7 +243,13 @@ def _apply_precision(
         flag = getattr(trt.BuilderFlag, "FP8", None)
         if flag is None:
             raise OptimizeCapabilityError(
-                "This TensorRT build has no FP8 builder flag. GPU follow-up."
+                "This TensorRT build has no FP8 builder flag. "
+                "FP8 needs an Ada or Hopper GPU."
+            )
+        has_fp8 = getattr(builder, "platform_has_fp8", None)
+        if has_fp8 is False:
+            raise OptimizeCapabilityError(
+                "This GPU does not support FP8. FP8 needs an Ada or Hopper GPU."
             )
         config.set_flag(flag)
         return

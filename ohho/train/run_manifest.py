@@ -6,7 +6,8 @@ The file sits in the run directory with the other artifacts.
 
 Database storage is :meth:`RunStore.save` only. This module does not open a
 connection, read credentials, or contact the network. Remote base-weight URIs
-are recorded and are not downloaded.
+are recorded and are not downloaded. ``cloned_from`` is omitted unless
+``ohho run clone`` produced the run.
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ CONSOLE_FIELDS = (
     "gpu",
     "final_loss",
     "precision_metrics",
+    "qat",
     "error",
     "resolved_config",
 )
@@ -183,8 +185,23 @@ class GpuRecord:
 
 
 @dataclass(frozen=True)
+class ClonedFrom:
+    """Source run a cloned config was derived from."""
+
+    run: str
+    manifest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"run": self.run, "manifest": self.manifest}
+
+
+@dataclass(frozen=True)
 class RunManifest:
-    """One ``ohho.run/v1`` document."""
+    """One ``ohho.run/v1`` document.
+
+    ``cloned_from`` is set only for a run written by ``ohho run clone``.
+    Training manifests omit it.
+    """
 
     schema: str
     status: str
@@ -211,12 +228,14 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
+    qat: dict[str, Any] | None
     lineage: dict[str, Any] | None = None
+    cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON object, with keys in console-summary order."""
         gpu = None if self.gpu is None else self.gpu.to_dict()
-        payload = {
+        document = {
             "schema": self.schema,
             "status": self.status,
             "started_at": self.started_at,
@@ -247,10 +266,13 @@ class RunManifest:
                 ),
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
+            "qat": _copy_qat(self.qat),
         }
         if self.lineage is not None:
-            payload["lineage"] = json.loads(json.dumps(self.lineage))
-        return payload
+            document["lineage"] = json.loads(json.dumps(self.lineage))
+        if self.cloned_from is not None:
+            document["cloned_from"] = self.cloned_from.to_dict()
+        return document
 
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> RunManifest:
@@ -322,7 +344,9 @@ class RunManifest:
                 "eval_hooks": [str(item) for item in hooks["eval_hooks"]],
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
+            qat=_copy_qat(document.get("qat")),
             lineage=_copy_lineage(document.get("lineage")),
+            cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
 
@@ -349,6 +373,7 @@ class RunCapture:
     gpu: GpuRecord | None
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
+    qat: dict[str, Any] | None
     lineage: dict[str, Any] | None = None
 
 
@@ -640,6 +665,7 @@ def capture_run(
         gpu=None if gpu is None else GpuRecord(**gpu),
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
+        qat=_qat_from_recipe(recipe),
         lineage=_collect_lineage(recipe),
     )
 
@@ -715,6 +741,7 @@ def manifest_from_capture(
             normalize_throughput(throughput_steps_per_s),
             normalize_peak(peak_memory_bytes),
         ),
+        qat=_copy_qat(capture.qat),
         lineage=_copy_lineage(capture.lineage),
     )
 
@@ -842,6 +869,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"final_loss: {_format_value(document.get('final_loss'))}",
             "precision_metrics: "
             + _format_precision_metrics(document.get("precision_metrics")),
+            f"qat: {_format_value(document.get('qat'))}",
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
             + json.dumps(
@@ -1157,6 +1185,12 @@ def _format_gpu(value: Any) -> str:
     )
 
 
+def _cloned_from(value: Any) -> ClonedFrom | None:
+    if value is None:
+        return None
+    return ClonedFrom(run=str(value["run"]), manifest=str(value["manifest"]))
+
+
 def _format_precision_metrics(value: Any) -> str:
     if not isinstance(value, dict):
         return "null"
@@ -1172,6 +1206,18 @@ def _format_precision_metrics(value: Any) -> str:
             f"{name} throughput_steps_per_s={throughput} peak_memory_bytes={peak}"
         )
     return " ".join(parts)
+
+
+def _qat_from_recipe(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    from ohho.compression.qat import settings_from_recipe
+
+    return settings_from_recipe(recipe)
+
+
+def _copy_qat(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return json.loads(json.dumps(dict(value)))
 
 
 def _capture_precision(recipe: Mapping[str, Any]) -> str:

@@ -1,10 +1,9 @@
-"""Weight-quant backends for LLM and VLM checkpoints.
+"""Weight-quant helpers for LLM and VLM checkpoints.
 
-AWQ, GPTQ, bitsandbytes, and FP8 share one :func:`quantize` entry. Each
-backend is an optional import. A missing package or a missing CUDA device
-raises :class:`OptimizeCapabilityError` and does not write a fake checkpoint.
-The CLI exposes ``awq`` and ``gptq``. ``bitsandbytes`` and ``fp8`` are the
-same interface for callers that already hold a module.
+AWQ, GPTQ, bitsandbytes, and the FP8 weight cast share :func:`quantize`.
+The CLI dispatches ``--precision`` through the ``ohho.quantizers`` plugins,
+which call these helpers. A missing package or a missing CUDA device raises
+:class:`OptimizeCapabilityError` and does not write a fake checkpoint.
 """
 
 from __future__ import annotations
@@ -162,7 +161,15 @@ def _run_bitsandbytes(model: LoadedModel, out_dir: Path, precision: str) -> Path
     except Exception as exc:
         raise OptimizeCapabilityError(_MISSING["bitsandbytes"]) from exc
     if precision == "INT4":
-        factory = bnb.nn.Linear4bit
+        # NF4 is the research baseline. Linear4bit's own default is not NF4.
+        def factory(in_features, out_features, bias):
+            return bnb.nn.Linear4bit(
+                in_features,
+                out_features,
+                bias=bias,
+                quant_type="nf4",
+            )
+
     else:
         factory = bnb.nn.Linear8bitLt
     count = replace_linear(model.module, factory)

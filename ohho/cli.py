@@ -1177,6 +1177,26 @@ def _cmd_run(args) -> int:
     return show_run(args.run_dir, as_json=bool(getattr(args, "json", False)))
 
 
+def _cmd_run_clone(args) -> int:
+    from .train.run_clone import clone_command
+
+    return clone_command(
+        args.run_id,
+        getattr(args, "set", None),
+        dest=getattr(args, "dest", None),
+    )
+
+
+def _cmd_run_diff(args) -> int:
+    from .train.run_clone import diff_command
+
+    return diff_command(
+        args.left,
+        args.right,
+        as_json=bool(getattr(args, "json", False)),
+    )
+
+
 def _cmd_sweep(args) -> int:
     from .train.sweep import SweepError, run_plan
     from .train.sweep_run import (
@@ -2081,7 +2101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser(
         "run",
-        help="show a training run, its storage, and artifact retention",
+        help="show, clone, diff, or manage storage for an ohho.run/v1 training run",
     )
     run_sub = run.add_subparsers(dest="run_command", required=True)
     show = run_sub.add_parser(
@@ -2098,6 +2118,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the manifest as JSON",
     )
     show.set_defaults(func=_cmd_run)
+    clone = run_sub.add_parser(
+        "clone",
+        help="tweak a run's resolved config and record cloned_from",
+    )
+    clone.add_argument(
+        "run_id",
+        help="source run directory or run_manifest.json",
+    )
+    clone.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="k=v",
+        help="override a dotted field on the resolved config (repeatable)",
+    )
+    clone.add_argument(
+        "--dest",
+        default=None,
+        metavar="DIR",
+        help="directory for the new run (default: <source>-clone)",
+    )
+    clone.set_defaults(func=_cmd_run_clone)
+    diff = run_sub.add_parser(
+        "diff",
+        help="compare the resolved configs of two runs",
+    )
+    diff.add_argument("left", help="run directory or run_manifest.json")
+    diff.add_argument("right", help="run directory or run_manifest.json")
+    diff.add_argument(
+        "--json",
+        action="store_true",
+        help="print the config diff as JSON",
+    )
+    diff.set_defaults(func=_cmd_run_diff)
     # OHH-545 retain and storage. Parser setup stays in ohho.train.artifacts.
     from .train.artifacts import add_run_commands
 
