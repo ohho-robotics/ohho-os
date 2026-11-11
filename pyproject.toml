@@ -114,6 +114,7 @@ ohho = [
   "parity/*.json",
   "train/schema/*.json",
   "train/examples/*.yaml",
+  "train/examples/il/*.yaml",
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",
