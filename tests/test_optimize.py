@@ -336,6 +336,12 @@ class TestImportAndSchema(unittest.TestCase):
         self.assertIn("calib_max_images", document["properties"]["flags"]["required"])
         self.assertIn("quantization", document["properties"]["flags"]["required"])
         self.assertIn("calib_max_images", document["properties"]["inputs"]["required"])
+        self.assertIn("model_sha256", document["required"])
+        self.assertIn("calibration_cache_sha256", document["required"])
+        self.assertIn("build_duration_s", document["required"])
+        self.assertIn("cuda", document["properties"]["versions"]["required"])
+        self.assertIn("driver", document["properties"]["versions"]["required"])
+        self.assertIn("jetpack", document["properties"]["versions"]["required"])
 
     def test_help_lists_the_engine_flags(self) -> None:
         out = io.StringIO()
@@ -362,6 +368,8 @@ class TestImportAndSchema(unittest.TestCase):
             "--out",
             "--json",
             "--submodule",
+            "--explain",
+            "--no-cache",
             "--allow-parity-fail",
         ):
             self.assertIn(flag, text)
@@ -974,7 +982,11 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
                 out_dir=str(root / "out1"),
             )
             with self.assertLogs("ohho.optimize", level="INFO") as first:
-                optimize(request, backends=OptimizeBackends(trt_module=trt, cuda=False))
+                optimize(
+                    request,
+                    backends=OptimizeBackends(trt_module=trt, cuda=False),
+                    no_cache=True,
+                )
             self.assertIsNone(trt.last_config.int8_calibrator)
             self.assertIsNotNone(trt.last_parser)
             self.assertIn(b"QuantizeLinear", trt.last_parser.data)
@@ -998,7 +1010,11 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
                 out_dir=str(root / "out2"),
             )
             with self.assertLogs("ohho.optimize", level="INFO") as reused:
-                optimize(second, backends=OptimizeBackends(trt_module=trt, cuda=False))
+                optimize(
+                    second,
+                    backends=OptimizeBackends(trt_module=trt, cuda=False),
+                    no_cache=True,
+                )
             self.assertTrue(
                 any("Reusing INT8 calibration cache" in line for line in reused.output)
             )
@@ -1045,6 +1061,7 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
                     out_dir=str(root / "out"),
                 ),
                 backends=OptimizeBackends(trt_module=trt, cuda=False),
+                no_cache=True,
             )
         self.assertIsNone(trt.last_config.int8_calibrator)
         self.assertEqual(document["flags"]["quantization"], "explicit")
@@ -1400,6 +1417,7 @@ class TestOptimizeInt8Wiring(unittest.TestCase):
                     out_dir=str(root / "out"),
                 ),
                 backends=OptimizeBackends(trt_module=trt, cuda=False),
+                no_cache=True,
             )
             self.assertEqual(trt.last_config.int8_calibrator.get_batch_size(), 2)
             self.assertIn("int8", trt.last_config.flags)
