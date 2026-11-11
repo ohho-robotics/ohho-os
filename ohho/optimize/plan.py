@@ -150,7 +150,9 @@ def resolve_precision(value: str) -> tuple[str, str | None]:
     return precision, quant
 
 
-def build_plan(request: OptimizeRequest) -> OptimizePlan:
+def build_plan(
+    request: OptimizeRequest, *, tensorrt_version: str | None = None
+) -> OptimizePlan:
     """Accept the request or raise :class:`OptimizeError`.
 
     The target profile is checked before a model is loaded and before a
@@ -200,7 +202,10 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
     if provider_text.strip().lower() in {"tensorrt", "trt"} or (
         provider_text.strip() == TRT_PROVIDER
     ):
-        version = installed_trt_version()
+        if tensorrt_version is None:
+            version = installed_trt_version()
+        else:
+            version = tensorrt_version.strip()
     try:
         precision, provider = check_combination(
             profile,

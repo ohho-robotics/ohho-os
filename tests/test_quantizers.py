@@ -387,7 +387,7 @@ class TestPublishHook(unittest.TestCase):
                     ),
                     patch("ohho.optimize.publish.run_parity", _spy),
                 ):
-                    kwargs = {}
+                    kwargs = {"no_cache": True}
                     if standins is not None:
                         kwargs["backends"] = standins
                     document = optimize(
@@ -504,7 +504,8 @@ class TestSmolVLADispatch(unittest.TestCase):
                         submodule="lm",
                         out_dir=str(root / "out"),
                         allow_parity_fail=True,
-                    )
+                    ),
+                    no_cache=True,
                 )
         self.assertEqual(calls[0]["ohho_backbone"], "lm")
         self.assertEqual(calls[0]["model_type"], "smollm")
@@ -537,7 +538,8 @@ class TestSmolVLADispatch(unittest.TestCase):
                     submodule="lm",
                     out_dir=str(root / "out"),
                     allow_parity_fail=True,
-                )
+                ),
+                no_cache=True,
             )
             artifact = root / "out" / document["outputs"][0]["path"]
             loaded = load_quantized(artifact, "awq")
@@ -671,7 +673,8 @@ class TestOrtStaticInt8(unittest.TestCase):
                             precision="int8",
                             out_dir=str(out),
                             allow_parity_fail=True,
-                        )
+                        ),
+                        no_cache=True,
                     )
                 self.assertEqual(document["precision"], "INT8")
                 self.assertEqual(document["flags"]["quant"], "ort-int8")
@@ -722,6 +725,7 @@ class TestFp8EngineDispatch(unittest.TestCase):
                         allow_parity_fail=True,
                     ),
                     backends=OptimizeBackends(trt_module=trt, cuda=False),
+                    no_cache=True,
                 )
             self.assertIn("fp8", trt.last_config.flags)
             self.assertEqual(document["outputs"][0]["backend"], "fp8")
