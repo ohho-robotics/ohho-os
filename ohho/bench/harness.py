@@ -30,6 +30,7 @@ from typing import Any
 
 from ohho.bench.clock import clock_for_providers
 from ohho.bench.compare import compare_results
+from ohho.bench.cost import CostOverrides, attach_cost, require_price
 from ohho.bench.environment import (
     GpuProbe,
     MemorySnapshot,
@@ -120,6 +121,7 @@ def run_benchmark(
     clock: Any = None,
     sources: Sequence[SensorSource] | None = None,
     gpu: GpuProbe | None = None,
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
     """Time ``config`` and return a schema-valid ohho.bench/v1 document.
 
@@ -133,6 +135,7 @@ def run_benchmark(
         profile = get_profile(config.target)
     except TargetProfileError as exc:
         raise BenchHarnessError(str(exc)) from exc
+    require_price(profile.id, cost)
     path = resolve_artifact(config.artifact)
     if runner is None:
         if path.suffix.lower() != ".onnx":
@@ -240,6 +243,7 @@ def run_benchmark(
     }
     if config.sustained is not None:
         document["sustained"] = primary["sustained"]
+    attach_cost(document, cost, profile_id=profile.id)
     _require_valid(document)
     return document
 
@@ -284,16 +288,23 @@ def execute(
     slos: Sequence[str] = (),
     max_regressions: Sequence[str] = (),
     parity_path: str | None = None,
+    cost: CostOverrides | None = None,
 ) -> dict[str, Any]:
-    """Measure, then apply baseline, gates, and parity.
+    """Measure, then apply baseline, gates, parity, and the cost estimate.
 
-    Gate expressions are checked before the runner is called. ``sources`` and
+    Gate expressions are checked before the runner is called. Cost uses the
+    measured throughput and does not add iterations. ``sources`` and
     ``gpu`` are optional stand-ins for the detected sensors and the one-shot
     accelerator probe.
     """
     check_gate_expressions(slos, max_regressions, has_baseline=bool(baseline_path))
     document = run_benchmark(
-        config, runner=runner, clock=clock, sources=sources, gpu=gpu
+        config,
+        runner=runner,
+        clock=clock,
+        sources=sources,
+        gpu=gpu,
+        cost=cost,
     )
     return finalize_result(
         document,
