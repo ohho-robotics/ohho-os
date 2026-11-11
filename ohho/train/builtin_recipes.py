@@ -94,6 +94,7 @@ class ActRecipe:
                 "precision": plan.precision,
                 "train_steps": train_steps,
                 "val_every": int(prepared.resolved["val_every"]),
+                "deterministic": prepared.deterministic,
             }
         )
         output_dir = Path(recipe["output"]["dir"]).expanduser()
@@ -128,6 +129,8 @@ class ActRecipe:
                     ),
                     vision_backbone=str(prepared.resolved["vision_backbone"]),
                     on_event=_on_event(self.id, emit),
+                    deterministic=prepared.deterministic,
+                    seed=prepared.seed,
                 )
             except (QatError, TrainFailed):
                 raise
