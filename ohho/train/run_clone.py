@@ -309,6 +309,21 @@ def _manifest_for_clone(
 ) -> RunManifest:
     family = config.get("family")
     device = config.get("device")
+    precision = config.get("precision")
+    precision_str = (
+        precision if isinstance(precision, str) and precision else source.precision
+    )
+    from .precision import PRECISIONS, backend_for
+
+    loss_scaling, backend = backend_for(precision_str)
+    if precision_str == source.precision:
+        precision_metrics = dict(source.precision_metrics)
+    else:
+        precision_metrics = {name: None for name in PRECISIONS}
+        precision_metrics[precision_str] = {
+            "throughput_steps_per_s": None,
+            "peak_memory_bytes": None,
+        }
     return RunManifest(
         schema=source.schema,
         status=source.status,
@@ -316,6 +331,9 @@ def _manifest_for_clone(
         finished_at=source.finished_at,
         family=family if isinstance(family, str) and family else source.family,
         device=device if isinstance(device, str) and device else source.device,
+        precision=precision_str,
+        loss_scaling=loss_scaling,
+        precision_backend=backend,
         resolved_config=config,
         seeds=source.seeds,
         git=source.git,
@@ -331,6 +349,7 @@ def _manifest_for_clone(
         checkpoint_dir=source.checkpoint_dir,
         metrics_path=source.metrics_path,
         declared_hooks=declared_hooks(config),
+        precision_metrics=precision_metrics,
         cloned_from=cloned_from,
     )
 

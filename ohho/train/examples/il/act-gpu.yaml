@@ -1,0 +1,27 @@
+schema: ohho.recipe/v1
+name: act-single-gpu
+family: act
+dataset:
+  path: hf://lerobot/aloha_sim_insertion_human
+hyperparameters:
+  train_steps: 100000
+  batch_size: 8
+  lr: 0.0001
+  chunk_size: 100
+  vision_backbone: resnet18
+  val_every: 1000
+  val_fraction: 0.2
+  early_stop_patience: 10
+  early_stop_min_delta: 0.0001
+  seed: 0
+  d_model: 512
+  nhead: 8
+  num_encoder_layers: 4
+  num_decoder_layers: 1
+  dim_feedforward: 3200
+  latent_dim: 32
+  kl_weight: 10.0
+precision: fp32
+device: cuda
+output:
+  dir: checkpoints/act-single-gpu

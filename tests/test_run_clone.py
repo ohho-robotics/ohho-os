@@ -77,6 +77,9 @@ def _manifest(config: dict[str, Any], recipe_path: str, **changes: Any) -> RunMa
         "finished_at": "2026-01-01T00:01:00Z",
         "family": config["family"],
         "device": config["device"],
+        "precision": config.get("precision", "fp32"),
+        "loss_scaling": False,
+        "precision_backend": "fp32",
         "resolved_config": config,
         "seeds": SeedRecord(
             recipe=1,
@@ -95,6 +98,12 @@ def _manifest(config: dict[str, Any], recipe_path: str, **changes: Any) -> RunMa
         "library_versions": {"python": "3.12.0", "ohho": "1.2.0"},
         "gpu": None,
         "final_loss": 0.25,
+        "precision_metrics": {
+            "fp32": {"throughput_steps_per_s": 10.0, "peak_memory_bytes": 1024},
+            "fp16": None,
+            "bf16": None,
+            "fp8": None,
+        },
         "error": None,
         "recipe_path": recipe_path,
         "overrides": ["hyperparameters.seed=1"],

@@ -1,13 +1,28 @@
+# CPU classic-control stand-in. The reference MuJoCo task and its reward
+# threshold are documented in docs/train/ppo.md.
 schema: ohho.recipe/v1
-name: ppo
+name: ppo-cartpole
 family: ppo
 dataset:
   path: datasets/sim-loop
 hyperparameters:
-  rollout_steps: 128
-  batch_size: 32
+  task: cartpole
+  backend: builtin
+  num_envs: 4
+  rollout_steps: 32
+  updates: 8
+  num_epochs: 4
+  batch_size: 64
   lr: 0.0003
+  clip_coef: 0.2
+  entropy_coef: 0.01
+  gae_lambda: 0.95
   gamma: 0.99
+  hidden_size: 32
+  reward_weights:
+    alive: 1.0
+    x_penalty: 0.0
+    theta_penalty: 0.0
   seed: 1
 precision: fp32
 device: cpu

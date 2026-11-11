@@ -59,6 +59,9 @@ class LocomotionPolicy:
         """Import the runtime and load the file. Repeated calls do nothing."""
         if self._session is not None or self._module is not None:
             return
+        from .model_safety import guard_runtime_checkpoint
+
+        guard_runtime_checkpoint(self.path, kind=self._kind)
         if self._kind == "onnx":
             try:
                 import onnxruntime as ort
