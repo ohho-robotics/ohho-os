@@ -128,8 +128,11 @@ memory when it can be read.
 energy, device memory, temperature, and clocks inside it are JSON `null`
 when no source reported them, and `reason` says why. `throttling_events` is
 an array. `sustained` is an additional top-level object present only for
-`--sustained`. Both stay on v1 because they do not change a field v1 already
-defined.
+`--sustained`. `exports` is an additional object written when `--export`
+succeeds. `exports.wandb.url` is the W&B run URL. `exports.prometheus`
+records the push URL, the mode (`pushgateway` or `remote-write`), and, for
+a Pushgateway, whether the grouping key was deleted. All of these stay on
+v1 because they do not change a field v1 already defined.
 
 Checked-in results:
 

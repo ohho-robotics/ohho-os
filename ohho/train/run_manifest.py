@@ -6,7 +6,8 @@ The file sits in the run directory with the other artifacts.
 
 Database storage is :meth:`RunStore.save` only. This module does not open a
 connection, read credentials, or contact the network. Remote base-weight URIs
-are recorded and are not downloaded.
+are recorded and are not downloaded. ``cloned_from`` is omitted unless
+``ohho run clone`` produced the run.
 """
 
 from __future__ import annotations
@@ -72,6 +73,7 @@ CONSOLE_FIELDS = (
     "final_loss",
     "precision_metrics",
     "pruning",
+    "qat",
     "error",
     "resolved_config",
 )
@@ -184,8 +186,23 @@ class GpuRecord:
 
 
 @dataclass(frozen=True)
+class ClonedFrom:
+    """Source run a cloned config was derived from."""
+
+    run: str
+    manifest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"run": self.run, "manifest": self.manifest}
+
+
+@dataclass(frozen=True)
 class RunManifest:
-    """One ``ohho.run/v1`` document."""
+    """One ``ohho.run/v1`` document.
+
+    ``cloned_from`` is set only for a run written by ``ohho run clone``.
+    Training manifests omit it.
+    """
 
     schema: str
     status: str
@@ -213,11 +230,13 @@ class RunManifest:
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
     pruning: dict[str, Any] | None = None
+    qat: dict[str, Any] | None = None
+    cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON object, with keys in console-summary order."""
         gpu = None if self.gpu is None else self.gpu.to_dict()
-        return {
+        document = {
             "schema": self.schema,
             "status": self.status,
             "started_at": self.started_at,
@@ -249,7 +268,11 @@ class RunManifest:
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
             "pruning": _copy_pruning(self.pruning),
+            "qat": _copy_qat(self.qat),
         }
+        if self.cloned_from is not None:
+            document["cloned_from"] = self.cloned_from.to_dict()
+        return document
 
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> RunManifest:
@@ -322,6 +345,8 @@ class RunManifest:
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
             pruning=_copy_pruning(document.get("pruning")),
+            qat=_copy_qat(document.get("qat")),
+            cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
 
@@ -349,6 +374,7 @@ class RunCapture:
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
     pruning: dict[str, Any] | None = None
+    qat: dict[str, Any] | None = None
 
 
 def schema_path() -> Path:
@@ -592,6 +618,7 @@ def capture_run(
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
         pruning=_capture_pruning(recipe),
+        qat=_qat_from_recipe(recipe),
     )
 
 
@@ -671,6 +698,7 @@ def manifest_from_capture(
         pruning=_copy_pruning(pruning_report)
         if pruning_from_metrics
         else _copy_pruning(capture.pruning),
+        qat=_copy_qat(capture.qat),
     )
 
 
@@ -791,6 +819,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             "precision_metrics: "
             + _format_precision_metrics(document.get("precision_metrics")),
             "pruning: " + _format_pruning(document.get("pruning")),
+            f"qat: {_format_value(document.get('qat'))}",
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
             + json.dumps(
@@ -1106,6 +1135,12 @@ def _format_gpu(value: Any) -> str:
     )
 
 
+def _cloned_from(value: Any) -> ClonedFrom | None:
+    if value is None:
+        return None
+    return ClonedFrom(run=str(value["run"]), manifest=str(value["manifest"]))
+
+
 def _format_precision_metrics(value: Any) -> str:
     if not isinstance(value, dict):
         return "null"
@@ -1153,6 +1188,17 @@ def _capture_pruning(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
 
     return pending_report(block)
 
+
+def _qat_from_recipe(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    from ohho.compression.qat import settings_from_recipe
+
+    return settings_from_recipe(recipe)
+
+
+def _copy_qat(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return json.loads(json.dumps(dict(value)))
 
 def _capture_precision(recipe: Mapping[str, Any]) -> str:
     precision = recipe.get("precision", "fp32")
