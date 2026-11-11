@@ -995,6 +995,9 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
             )
             self.assertIsNone(trt.last_config.int8_calibrator)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("onnx") is not None, "onnx package is not installed"
+    )
     def test_qdq_onnx_engine_does_not_attach_a_calibrator(self) -> None:
         from onnx import TensorProto, helper
 
