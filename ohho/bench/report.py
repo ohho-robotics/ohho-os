@@ -196,6 +196,20 @@ def render_markdown(document: dict[str, Any]) -> str:
         lines.append("### Parity")
         lines.append("")
         lines.append("A parity document is embedded on this result.")
+    exports = document.get("exports")
+    if isinstance(exports, dict) and exports:
+        lines.append("")
+        lines.append("### Exports")
+        lines.append("")
+        lines.append("| Exporter | Link |")
+        lines.append("| --- | --- |")
+        names = sorted(key for key in exports if isinstance(key, str))
+        for name in names:
+            record = exports[name]
+            link = ""
+            if isinstance(record, dict):
+                link = str(record.get("url") or "")
+            lines.append(f"| {_cell(name)} | {_cell(link)} |")
     lines.append("")
     return "\n".join(lines)
 
