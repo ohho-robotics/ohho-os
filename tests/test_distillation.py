@@ -281,7 +281,7 @@ class TestDistillationSchema(unittest.TestCase):
             recipe = root / "recipe.yaml"
             _recipe(
                 recipe,
-                family="diffusion",
+                family="smolvla",
                 dataset=dataset,
                 output=root / "out",
                 cache=root / "cache",

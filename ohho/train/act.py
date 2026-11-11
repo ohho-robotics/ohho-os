@@ -8,10 +8,17 @@ fine-tuning on simulated and real demonstration datasets.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
+from ..model_safety import (
+    UnsafeModelFile,
+    ensure_torch_weights_allowed,
+    managed_worker_mode,
+)
+from .il.progress import ValTracker, validation_due
 from .precision import PrecisionSession, capabilities_for, require_precision
 
 try:
@@ -171,6 +178,12 @@ def train_act(
     precision: str = "fp32",
     mock: bool = False,
     log_every: int = 25,
+    val_every: int | None = None,
+    val_fraction: float = 0.2,
+    early_stop_patience: int = 0,
+    early_stop_min_delta: float = 0.0,
+    vision_backbone: str = "none",
+    on_event: Any = None,
     **kwargs: Any,
 ) -> str:
     """Train a TinyACTPolicy on a LeRobot v2.0 dataset.
@@ -249,8 +262,15 @@ def train_act(
     tensor_s = torch.tensor(all_states, dtype=torch.float32)
     tensor_a = torch.tensor(all_action_chunks, dtype=torch.float32)
 
-    ds = TensorDataset(tensor_s, tensor_a)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
+    train_s, train_a, val_s, val_a = _split_act_tensors(
+        tensor_s, tensor_a, val_every, val_fraction
+    )
+    loader = DataLoader(
+        TensorDataset(train_s, train_a), batch_size=batch_size, shuffle=True
+    )
+    val_loader = DataLoader(
+        TensorDataset(val_s, val_a), batch_size=batch_size, shuffle=False
+    )
 
     dev = torch.device(device)
     model = TinyACTPolicy(
@@ -273,8 +293,12 @@ def train_act(
     session.begin()
 
     loss_curve: List[Tuple[int, float]] = []
+    validation_curve: List[Tuple[int, float]] = []
+    tracker = ValTracker(early_stop_patience, early_stop_min_delta)
     step = 0
-    while step < train_steps:
+    stopped_early = False
+    last_val: float | None = None
+    while step < train_steps and not stopped_early:
         for batch_s, batch_a in loader:
             batch_s = batch_s.to(dev)
             batch_a = batch_a.to(dev)
@@ -292,10 +316,43 @@ def train_act(
                 loss_curve.append((step, loss_val))
 
             step += 1
+            if val_every is not None and validation_due(
+                step, train_steps, int(val_every)
+            ):
+                vloss = _act_validation_loss(model, val_loader, dev)
+                if not math.isfinite(vloss):
+                    raise ValueError(f"validation loss is not finite at step {step}")
+                last_val = vloss
+                stop = tracker.observe(vloss)
+                validation_curve.append((step, vloss))
+                if on_event is not None:
+                    on_event(
+                        {
+                            "event": "validation",
+                            "step": step,
+                            "validation_loss": vloss,
+                            "best_validation_loss": tracker.best,
+                            "train_loss": round(float(total_loss.item()), 6),
+                        }
+                    )
+                if stop:
+                    stopped_early = True
+                    if on_event is not None:
+                        on_event(
+                            {
+                                "event": "early_stop",
+                                "step": step,
+                                "validation_loss": vloss,
+                                "best_validation_loss": tracker.best,
+                                "patience": early_stop_patience,
+                            }
+                        )
+                    break
             if step >= train_steps:
                 break
     stats = session.end(step)
 
+    completed_steps = step
     torch.save(model.state_dict(), out / "policy.pt")
 
     config = {
@@ -316,28 +373,63 @@ def train_act(
         "latent_dim": latent_dim,
         "kl_weight": kl_weight,
         "train_steps": train_steps,
+        "completed_steps": completed_steps,
+        "stopped_early": stopped_early,
+        "vision_backbone": vision_backbone,
+        "val_every": val_every,
         "loss_curve": loss_curve,
         "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
     with open(out / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "loss_curve": loss_curve,
-                "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
-                "train_steps": train_steps,
-                "precision": plan.precision,
-                "loss_scaling": plan.loss_scaling,
-                "precision_backend": plan.backend,
-                "throughput_steps_per_s": stats["throughput_steps_per_s"],
-                "peak_memory_bytes": stats["peak_memory_bytes"],
-            },
-            f,
-            indent=2,
-        )
+        metrics_body: Dict[str, Any] = {
+            "loss_curve": loss_curve,
+            "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
+            "train_steps": train_steps,
+            "completed_steps": completed_steps,
+            "stopped_early": stopped_early,
+            "precision": plan.precision,
+            "loss_scaling": plan.loss_scaling,
+            "precision_backend": plan.backend,
+            "throughput_steps_per_s": stats["throughput_steps_per_s"],
+            "peak_memory_bytes": stats["peak_memory_bytes"],
+        }
+        if last_val is not None:
+            metrics_body["validation_loss"] = last_val
+            metrics_body["validation_curve"] = validation_curve
+        json.dump(metrics_body, f, indent=2)
 
     return str(out)
+
+
+def _split_act_tensors(
+    states: Any, actions: Any, val_every: int | None, val_fraction: float
+) -> Tuple[Any, Any, Any, Any]:
+    count = int(states.shape[0])
+    val_n = 0
+    if val_every is not None and count >= 2:
+        val_n = int(round(count * float(val_fraction)))
+        val_n = min(max(val_n, 1), count - 1)
+    if val_n:
+        return states[:-val_n], actions[:-val_n], states[-val_n:], actions[-val_n:]
+    return states, actions, states, actions
+
+
+def _act_validation_loss(model: Any, loader: Any, dev: Any) -> float:
+    model.eval()
+    total = 0.0
+    count = 0
+    with torch.no_grad():
+        for batch_s, batch_a in loader:
+            batch_s = batch_s.to(dev)
+            batch_a = batch_a.to(dev)
+            pred_a, mu, logvar = model(batch_s, batch_a)
+            loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
+            total += float(loss.item()) * int(batch_s.shape[0])
+            count += int(batch_s.shape[0])
+    model.train()
+    return round(total / max(count, 1), 6)
 
 
 def load_act_checkpoint(
@@ -355,6 +447,8 @@ def load_act_checkpoint(
             config = json.load(f)
 
     pt_file = p / "policy.pt" if (p / "policy.pt").exists() else p
+    if pt_file.is_file() and pt_file.suffix.lower() in {".pt", ".pth", ".bin"}:
+        ensure_torch_weights_allowed(pt_file)
     if not TORCH_AVAILABLE or not pt_file.is_file():
         return None, config
 
@@ -371,7 +465,16 @@ def load_act_checkpoint(
         kl_weight=config.get("kl_weight", 10.0),
     )
     dev = torch.device(device)
-    state_dict = torch.load(pt_file, map_location=dev, weights_only=True)
+    try:
+        state_dict = torch.load(pt_file, map_location=dev, weights_only=True)
+    except Exception as exc:
+        if managed_worker_mode():
+            detail = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            raise UnsafeModelFile(
+                "managed workers refuse this checkpoint because "
+                "torch.load(weights_only=True) failed: " + detail[:200]
+            ) from exc
+        raise
     model.load_state_dict(state_dict)
     model.to(dev)
     model.eval()
