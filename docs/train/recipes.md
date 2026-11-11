@@ -2,7 +2,7 @@
 
 `ohho train` reads one recipe file and runs it on this machine. The same document is what a UI, a sweep, or a job worker submits. Families that do not have a trainer in this build are still valid recipes. Their run stops before training and does not invent a result.
 
-Every run that reaches `train_start` writes an [`ohho.run/v1`](run-manifest.md) manifest next to its artifacts. `ohho run show <run-dir>` prints it.
+Every run that reaches `train_start` writes an [`ohho.run/v1`](run-manifest.md) manifest next to its artifacts. `ohho run show <run-dir>` prints it. Artifact layout and retention are [`ohho run retain`](artifacts.md).
 
 The schema file is package data:
 

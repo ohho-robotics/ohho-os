@@ -100,3 +100,7 @@ Outside a container, `container_image_digest` is null. Inside a container (`/.do
 3. the first line of `/.ohho-image-digest`
 
 When none of those is set, the field stays null. `OHHO_IMAGE_DIGEST` on a host that is not a container is ignored.
+
+## Artifact retention
+
+Retention does not rewrite this file or `metrics.json`. Checkpoint deletion is recorded in `artifact_index.json` beside the manifest. See [artifacts.md](artifacts.md).
