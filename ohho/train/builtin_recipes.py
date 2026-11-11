@@ -12,8 +12,46 @@ from pathlib import Path
 from typing import Any
 
 from .il.family import DiffusionRecipe, prepare_il_run
+from .precision import PRECISIONS, prepare_precision
 from .recipe_registry import Emit, TrainResult, register
-from .recipe_schema import FamilyUnavailable, RecipeConfigError, TrainFailed
+from .recipe_schema import (
+    DatasetUnavailable,
+    FamilyUnavailable,
+    RecipeConfigError,
+    TrainFailed,
+)
+
+_ACT_KEYS = frozenset(
+    {
+        "train_steps",
+        "num_epochs",
+        "batch_size",
+        "lr",
+        "chunk_size",
+        "d_model",
+        "nhead",
+        "num_encoder_layers",
+        "num_decoder_layers",
+        "dim_feedforward",
+        "latent_dim",
+        "kl_weight",
+        "log_every",
+        "seed",
+    }
+)
+_PASSTHROUGH = (
+    "batch_size",
+    "lr",
+    "chunk_size",
+    "d_model",
+    "nhead",
+    "num_encoder_layers",
+    "num_decoder_layers",
+    "dim_feedforward",
+    "latent_dim",
+    "kl_weight",
+    "log_every",
+)
 
 
 class ActRecipe:
@@ -24,7 +62,17 @@ class ActRecipe:
     def available(self) -> bool:
         return True
 
+    def metadata(self) -> dict[str, Any]:
+        """Precisions the shared runner may select for ACT."""
+        return {"precisions": list(PRECISIONS)}
+
+    def preflight(self, recipe: dict[str, Any]) -> None:
+        from .il.family import preflight_il_recipe
+
+        preflight_il_recipe(recipe, family_id=self.id)
+
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
+        plan = prepare_precision(recipe, family=self)
         prepared = prepare_il_run(
             recipe,
             emit,
@@ -37,7 +85,8 @@ class ActRecipe:
             {
                 "event": "train_start",
                 "family": self.id,
-                "device": prepared.device,
+                "device": plan.device,
+                "precision": plan.precision,
                 "train_steps": train_steps,
                 "val_every": int(prepared.resolved["val_every"]),
             }
@@ -48,7 +97,8 @@ class ActRecipe:
             checkpoint = train_act(
                 dataset=str(prepared.dataset),
                 output_dir=str(Path(recipe["output"]["dir"]).expanduser()),
-                device=prepared.device,
+                device=plan.device,
+                precision=plan.precision,
                 mock=False,
                 train_steps=train_steps,
                 batch_size=int(prepared.resolved["batch_size"]),
@@ -79,7 +129,7 @@ class ActRecipe:
         return TrainResult(
             checkpoint_dir=str(Path(checkpoint)),
             metrics_path=str(metrics),
-            device=prepared.device,
+            device=plan.device,
             base_weights_loaded=False,
         )
 
@@ -92,6 +142,10 @@ class UnavailableRecipe:
 
     def available(self) -> bool:
         return False
+
+    def metadata(self) -> dict[str, Any]:
+        """The shared precision set. A later trainer picks it up unchanged."""
+        return {"precisions": list(PRECISIONS)}
 
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         del recipe, emit
@@ -124,6 +178,8 @@ def _on_event(family_id: str, emit: Emit) -> Emit:
 
 
 def _check_precision(recipe: dict[str, Any], family_id: str = "act") -> None:
+    if family_id == "act":
+        return
     precision = recipe.get("precision", "fp32")
     if precision != "fp32":
         raise RecipeConfigError(
@@ -137,18 +193,61 @@ def _resolve_device(requested: str, family_label: str = "ACT") -> str:
     if requested == "auto":
         from ohho.hardware import resolve_device
 
-        return resolve_device("auto")
+        device = resolve_device("auto")
+        return device if device in ("cpu", "cuda", "mps") else "cpu"
     torch = _load_torch(family_label)
-    if requested == "cuda":
+    if requested == "cuda" or requested.startswith("cuda:"):
         if not torch.cuda.is_available():
             raise RecipeConfigError("device 'cuda' is not available on this machine")
-        return "cuda"
+        return requested
     if requested == "mps":
         mps = getattr(torch.backends, "mps", None)
         if mps is None or not mps.is_available():
             raise RecipeConfigError("device 'mps' is not available on this machine")
         return "mps"
     raise RecipeConfigError(f"device {requested!r} is not available in this build")
+
+
+def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
+    hyperparameters = recipe.get("hyperparameters") or {}
+    if not isinstance(hyperparameters, dict):
+        raise RecipeConfigError("hyperparameters must be a mapping")
+    if "mock" in hyperparameters:
+        raise RecipeConfigError(
+            "hyperparameters.mock is not accepted; ohho train does not run a fake trainer"
+        )
+    unknown = sorted(set(hyperparameters) - _ACT_KEYS)
+    if unknown:
+        listed = ", ".join(unknown)
+        raise RecipeConfigError(f"unknown hyperparameters for family act: {listed}")
+    kwargs: dict[str, Any] = {}
+    for key in _PASSTHROUGH:
+        if key in hyperparameters:
+            kwargs[key] = hyperparameters[key]
+    if "train_steps" in hyperparameters:
+        kwargs["train_steps"] = hyperparameters["train_steps"]
+    elif "num_epochs" in hyperparameters:
+        kwargs["train_steps"] = int(hyperparameters["num_epochs"]) * 2
+    d_model = int(kwargs.get("d_model", 64))
+    nhead = int(kwargs.get("nhead", 2))
+    if nhead <= 0 or d_model % nhead != 0:
+        raise RecipeConfigError(
+            f"hyperparameters.d_model ({d_model}) must be divisible by nhead ({nhead})"
+        )
+    return kwargs
+
+
+def _dataset_dir(recipe: dict[str, Any]) -> Path:
+    dataset = recipe["dataset"]
+    if "path" not in dataset:
+        raise DatasetUnavailable(
+            "dataset version ids are not resolved in this build; "
+            "set dataset.path to a local dataset directory"
+        )
+    path = Path(str(dataset["path"])).expanduser()
+    if not path.is_dir():
+        raise DatasetUnavailable(f"dataset path does not exist: {path}")
+    return path
 
 
 def _import_torch() -> Any:
@@ -173,8 +272,10 @@ def _apply_seed(torch: Any, recipe: dict[str, Any], device: str) -> None:
         return
     seed = int(hyperparameters["seed"])
     torch.manual_seed(seed)
-    if device == "cuda" and hasattr(torch, "cuda"):
-        torch.cuda.manual_seed_all(seed)
+    if device == "cuda" or device.startswith("cuda:"):
+        cuda = getattr(torch, "cuda", None)
+        if cuda is not None and hasattr(cuda, "manual_seed_all"):
+            cuda.manual_seed_all(seed)
 
 
 def _emit_declared(

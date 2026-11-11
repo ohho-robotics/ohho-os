@@ -13,6 +13,8 @@ a Pareto split and stores the non-dominated set as
 The estimator is standard-library only. It does not import Optuna, NumPy,
 or PyTorch. :meth:`SweepSampler.dump_state` is JSON. Loading that state and
 asking again proposes the same next trials as the sampler that kept running.
+Each proposed trial records the training seed derived from the sweep seed
+and the trial index. That seed does not advance the proposal generator.
 
 A batch returned by one :meth:`SweepSampler.ask` shares the model built from
 trials :meth:`SweepSampler.tell` has already recorded.
@@ -52,6 +54,7 @@ from .sweep import (
     load_sweep,
     validate_sweep,
 )
+from .sweep_seed import sampler_seed, trial_training_seed
 
 LEADERBOARD_SCHEMA_ID = "ohho.sweep.leaderboard/v1"
 SAMPLER_SCHEMA_ID = "ohho.sweep.sampler/v1"
@@ -110,7 +113,7 @@ class SweepSampler:
                 "SweepSampler expects a SweepSpec; use SweepSampler.from_sweep"
             )
         self.spec = spec
-        self._rng = random.Random(spec.seed)
+        self._rng = random.Random(sampler_seed(spec.seed))
         self._cursor = 0
         self._hours = 0.0
         self._gpu_stop = False
@@ -356,6 +359,7 @@ class SweepSampler:
             sets=sets,
             recipe=recipe,
             estimated_gpu_hours=hours,
+            seed=trial_training_seed(self.spec.seed, self._cursor),
         )
 
     def _over_budget_hours(self, trial: Trial) -> bool:
@@ -368,6 +372,7 @@ class SweepSampler:
         self._trials.append(
             {
                 "index": trial.index,
+                "seed": trial.seed,
                 "overrides": copy.deepcopy(trial.overrides),
                 "sets": list(trial.sets),
                 "estimated_gpu_hours": float(trial.estimated_gpu_hours),
@@ -440,6 +445,7 @@ def _state_trial(item: Mapping[str, Any]) -> dict[str, Any]:
     values = item["values"]
     return {
         "index": item["index"],
+        "seed": item["seed"],
         "overrides": copy.deepcopy(item["overrides"]),
         "sets": list(item["sets"]),
         "estimated_gpu_hours": item["estimated_gpu_hours"],
@@ -457,6 +463,11 @@ def _restore_trial(
         raise SweepError("sampler trial indices must be 0..n-1 in order")
     values = raw.get("values")
     restored = None if values is None else _coerce_values(spec, values)
+    seed = raw.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise SweepError("sampler trial seed must be an integer in [0, 2**32)")
+    if seed != trial_training_seed(spec.seed, expected):
+        raise SweepError(f"trial {expected} seed does not match the sweep seed")
     hours = raw.get("estimated_gpu_hours")
     if isinstance(hours, bool) or not isinstance(hours, (int, float)):
         raise SweepError("estimated_gpu_hours must be a number")
@@ -470,6 +481,7 @@ def _restore_trial(
         raise SweepError("sampler trial overrides must be an object")
     return {
         "index": index,
+        "seed": seed,
         "overrides": copy.deepcopy(overrides),
         "sets": list(sets),
         "estimated_gpu_hours": float(hours),
@@ -555,7 +567,7 @@ def _spec_document(spec: SweepSpec) -> dict[str, Any]:
         "sampler": dict(spec.sampler),
     }
     if spec.early_stopping is not None:
-        document["early_stopping"] = dict(spec.early_stopping)
+        document["early_stopping"] = copy.deepcopy(spec.early_stopping)
     return document
 
 

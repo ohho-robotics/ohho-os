@@ -19,6 +19,7 @@ from ..model_safety import (
     managed_worker_mode,
 )
 from .il.progress import ValTracker, validation_due
+from .precision import PrecisionSession, capabilities_for, require_precision
 
 try:
     import torch
@@ -174,6 +175,7 @@ def train_act(
     dim_feedforward: int = 128,
     latent_dim: int = 16,
     kl_weight: float = 10.0,
+    precision: str = "fp32",
     mock: bool = False,
     log_every: int = 25,
     val_every: int | None = None,
@@ -184,7 +186,11 @@ def train_act(
     on_event: Any = None,
     **kwargs: Any,
 ) -> str:
-    """Train a TinyACTPolicy on a LeRobot v2.0 dataset on CPU."""
+    """Train a TinyACTPolicy on a LeRobot v2.0 dataset.
+
+    ``precision`` is ``fp32``, ``fp16`` (CUDA GradScaler), ``bf16``, or
+    ``fp8`` (Transformer Engine). The check runs before the step loop.
+    """
     out = Path(output_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +210,7 @@ def train_act(
             "policy": "act",
             "mock": True,
             "device": device,
+            "precision": precision,
             "state_dim": state_dim,
             "action_dim": action_dim,
             "chunk_size": chunk_size,
@@ -228,6 +235,12 @@ def train_act(
             "Training ACT policy requires torch: pip install 'ohho-os[train]'. "
             "Use mock=True for the dependency-free sim loop."
         )
+
+    if device == "auto":
+        from ohho.hardware import resolve_device
+
+        device = resolve_device("auto")
+    plan = require_precision(precision, capabilities_for(device, precision))
 
     all_states: List[List[float]] = []
     all_action_chunks: List[List[List[float]]] = []
@@ -276,6 +289,8 @@ def train_act(
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    session = PrecisionSession(plan)
+    session.begin()
 
     loss_curve: List[Tuple[int, float]] = []
     validation_curve: List[Tuple[int, float]] = []
@@ -289,14 +304,15 @@ def train_act(
             batch_a = batch_a.to(dev)
 
             optimizer.zero_grad()
-            pred_a, mu, logvar = model(batch_s, batch_a)
-            assert mu is not None and logvar is not None
-            total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
-            total_loss.backward()
-            optimizer.step()
+            with session.autocast():
+                pred_a, mu, logvar = model(batch_s, batch_a)
+                assert mu is not None and logvar is not None
+                total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
+            session.backward(total_loss)
+            session.optimizer_step(optimizer)
 
             if step % log_every == 0 or step == train_steps - 1:
-                loss_val = round(float(total_loss.item()), 4)
+                loss_val = round(float(total_loss.detach().float().item()), 4)
                 loss_curve.append((step, loss_val))
 
             step += 1
@@ -334,6 +350,7 @@ def train_act(
                     break
             if step >= train_steps:
                 break
+    stats = session.end(step)
 
     completed_steps = step
     torch.save(model.state_dict(), out / "policy.pt")
@@ -342,6 +359,9 @@ def train_act(
         "policy": "act",
         "mock": False,
         "device": device,
+        "precision": plan.precision,
+        "loss_scaling": plan.loss_scaling,
+        "precision_backend": plan.backend,
         "state_dim": state_dim,
         "action_dim": action_dim,
         "chunk_size": chunk_size,
@@ -369,6 +389,11 @@ def train_act(
             "train_steps": train_steps,
             "completed_steps": completed_steps,
             "stopped_early": stopped_early,
+            "precision": plan.precision,
+            "loss_scaling": plan.loss_scaling,
+            "precision_backend": plan.backend,
+            "throughput_steps_per_s": stats["throughput_steps_per_s"],
+            "peak_memory_bytes": stats["peak_memory_bytes"],
         }
         if last_val is not None:
             metrics_body["validation_loss"] = last_val

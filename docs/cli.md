@@ -63,11 +63,15 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
-| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)) |
+| `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
+| `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
-| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch ([`train/sweeps.md`](train/sweeps.md)) |
+| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
+| `ohho sweep start <file> [--id ID] [--backend native\|wandb\|auto]` | Native (the default) persists a run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` and prints no W&B URL. `wandb` creates a sweep through the W&B API when `WANDB_API_KEY` is set and prints the URL that client returns. `auto` uses W&B only when that key is set |
+| `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 
@@ -79,11 +83,25 @@ and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
 export are not in this tree; those examples are placeholders and do not print
 benchmark numbers.
 
+## Benchmark (`ohho bench`)
+
+| Command | Description |
+|---------|-------------|
+| `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
+| `ohho bench launch --backend vllm --model ID --dry-run` | Print the external engine command as JSON |
+| `ohho bench version --backend llama-cpp` | Print the engine version, or a clear error when it is not installed |
+| `ohho bench llm --endpoint URL --model ID --output FILE` | Measure TTFT, inter-token latency, tokens/s, and request throughput |
+| `ohho bench --mode generate --target PROFILE` | TTFT, TPOT, tokens/s, concurrency, and 4-bit vs FP16 |
+
+Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
+external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
+
 ## Training recipes
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
 
 ## Simulation services
 

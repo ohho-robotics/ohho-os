@@ -199,6 +199,14 @@ def _cmd_doctor(args) -> int:
             else "needs [optimize] extra  (torch, onnx, onnxruntime)"
         )
     )
+    print(
+        "  parity      : "
+        + (
+            "reference vs candidate  (ONNX compare needs onnxruntime; TensorRT is unchecked)"
+            if have("torch")
+            else "needs torch  (onnxruntime to compare an ONNX candidate)"
+        )
+    )
     from .mcp_tools import SIM_TOOL_NAMES
 
     print(
@@ -1156,17 +1164,82 @@ def _cmd_logout(args) -> int:
     return 0
 
 
+
 def _cmd_train(args) -> int:
     from .train.run_cli import execute
 
     return execute(args.recipe, getattr(args, "set", None))
 
 
+def _cmd_run(args) -> int:
+    from .train.run_manifest import show_run
+
+    return show_run(args.run_dir, as_json=bool(getattr(args, "json", False)))
+
+
 def _cmd_sweep(args) -> int:
     from .train.sweep import SweepError, run_plan
+    from .train.sweep_run import (
+        format_resume,
+        format_start,
+        resume_as_dict,
+        resume_sweep,
+    )
 
+    command = getattr(args, "sweep_command", "plan")
     try:
-        return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+        if command == "plan":
+            return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
+        if command == "start":
+            from .train.sweep_wandb import format_launch, launch_as_dict, launch_sweep
+
+            result = launch_sweep(
+                args.spec,
+                backend=getattr(args, "backend", "native"),
+                sweep_id=getattr(args, "id", None),
+                project=getattr(args, "wandb_project", None),
+                entity=getattr(args, "wandb_entity", None),
+            )
+            if result.backend == "native":
+                for note in result.notes:
+                    print(f"note: {note}", file=sys.stderr)
+                run = result.run
+                if run is None:
+                    raise SweepError("native sweep launch is missing its run")
+                if getattr(args, "json", False):
+                    json.dump(run.document(), sys.stdout, indent=2, sort_keys=True)
+                    sys.stdout.write("\n")
+                else:
+                    sys.stdout.write(format_start(run))
+                return 0
+            if getattr(args, "json", False):
+                json.dump(
+                    launch_as_dict(result),
+                    sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
+                sys.stdout.write("\n")
+            else:
+                sys.stdout.write(format_launch(result))
+            return 0
+        if command == "resume":
+            count = getattr(args, "count", 1)
+            run = resume_sweep(args.sweep_id)
+            proposed = run.ask(count)
+            if getattr(args, "json", False):
+                json.dump(
+                    resume_as_dict(run, proposed),
+                    sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
+                sys.stdout.write("\n")
+            else:
+                sys.stdout.write(format_resume(run, proposed))
+            return 0
+        print(f"error: unknown sweep command {command}", file=sys.stderr)
+        return 1
     except (SweepError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1244,6 +1317,7 @@ def _cmd_eval(args) -> int:
     if args.out:
         print(f"wrote {args.out}")
     return 0
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1644,8 +1718,10 @@ def build_parser() -> argparse.ArgumentParser:
     register_targets(sub)
 
     from .optimize.command import register_optimize
+    from .parity.command import register_parity
 
     register_optimize(sub)
+    register_parity(sub)
 
     st = sub.add_parser("selftest", help="hardware bring-up self-test with JSON report")
     st.add_argument(
@@ -1887,7 +1963,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sweep = sub.add_parser(
         "sweep",
-        help="expand a training sweep into trial recipes",
+        help="plan, start, or resume a training sweep",
     )
     sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
     plan = sweep_sub.add_parser(
@@ -1901,6 +1977,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the plan as JSON",
     )
     plan.set_defaults(func=_cmd_sweep)
+    start = sweep_sub.add_parser(
+        "start",
+        help="start a native sweep run, or a W&B sweep when a key is configured",
+    )
+    start.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
+    start.add_argument(
+        "--id",
+        default=None,
+        help="native sweep id (default: a generated id). Stored under OHHO_SWEEP_DIR or ~/.ohho/sweeps. W&B assigns its own id",
+    )
+    start.add_argument(
+        "--backend",
+        choices=("native", "wandb", "auto"),
+        default="native",
+        help="native (default) stores a local run and prints no W&B URL. wandb creates a sweep through the W&B API when WANDB_API_KEY is set and prints the URL that client returns. auto uses wandb only when that key is set",
+    )
+    start.add_argument(
+        "--wandb-project",
+        default=None,
+        help="W&B project name (default: WANDB_PROJECT). Not a URL",
+    )
+    start.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="W&B entity name (default: WANDB_ENTITY)",
+    )
+    start.add_argument("--json", action="store_true", help="print the run as JSON")
+    start.set_defaults(func=_cmd_sweep)
+    resume = sweep_sub.add_parser(
+        "resume",
+        help="propose the next trials of a stopped sweep without repeating one",
+    )
+    resume.add_argument("sweep_id", help="id passed to ohho sweep start")
+    resume.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="how many new trials to propose (default 1)",
+    )
+    resume.add_argument(
+        "--json",
+        action="store_true",
+        help="print the new trials as JSON",
+    )
+    resume.set_defaults(func=_cmd_sweep)
 
     job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
     job_sub = job.add_subparsers(dest="job_command", required=True)
@@ -1954,10 +2075,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ev.set_defaults(func=_cmd_eval)
     add_dataset_parser(sub)
-
     from .bench.command import register_bench
 
     register_bench(sub)
+
+    run = sub.add_parser(
+        "run",
+        help="show an ohho.run/v1 training manifest",
+    )
+    run_sub = run.add_subparsers(dest="run_command", required=True)
+    show = run_sub.add_parser(
+        "show",
+        help="print the manifest stored in a run directory",
+    )
+    show.add_argument(
+        "run_dir",
+        help="run directory that contains run_manifest.json",
+    )
+    show.add_argument(
+        "--json",
+        action="store_true",
+        help="print the manifest as JSON",
+    )
+    show.set_defaults(func=_cmd_run)
 
     return p
 
@@ -1975,12 +2115,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.command == "bench"
             and not getattr(args, "bench_command", None)
             and not getattr(args, "artifact", None)
+            and getattr(args, "mode", None) != "generate"
+            and not getattr(args, "pipeline", False)
         ):
             parser.error(
-                "bench needs `validate FILE` or `--artifact PATH --target PROFILE`"
+                "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
+                "`--mode generate --target PROFILE`, or `--pipeline`"
             )
         if not (
-            args.command == "mcp" and getattr(args, "mcp_command", None) == "connect"
+            (args.command == "mcp" and getattr(args, "mcp_command", None) == "connect")
+            or (args.command == "bench" and not getattr(args, "pipeline", False))
         ):
             _bind_robot(args)
         return args.func(args)

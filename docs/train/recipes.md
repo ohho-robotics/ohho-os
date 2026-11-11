@@ -2,6 +2,8 @@
 
 `ohho train` reads one recipe file and runs it on this machine. The same document is what a UI, a sweep, or a job worker submits. Families that do not have a trainer in this build are still valid recipes. Their run stops before training and does not invent a result.
 
+Every run that reaches `train_start` writes an [`ohho.run/v1`](run-manifest.md) manifest next to its artifacts. `ohho run show <run-dir>` prints it.
+
 The schema file is package data:
 
 `ohho/train/schema/ohho.recipe.v1.json`
@@ -35,7 +37,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `base_weights` | Optional `{uri, revision}`. The ACT trainer records the uri and does not load it. |
 | `dataset` | Exactly one of `path` (local directory) or `version_id`. |
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
-| `precision` | `fp32` (default), `fp16`, or `bf16`. ACT runs `fp32` only. |
+| `precision` | `fp32` (default), `fp16`, `bf16`, or `fp8`. See [Mixed precision](precision.md). An unsupported choice fails before training. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
@@ -51,10 +53,13 @@ Relative paths are resolved from the process working directory.
 2. Apply every `--set` override.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
-5. Family preflight (for ACT and diffusion: precision, hyperparameters, dataset, device, torch).
-6. Emit `train_start` and call the trainer.
+5. Shared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision.
+6. Family preflight (for ACT and diffusion: precision, hyperparameters, dataset, device, torch).
+7. On `train_start`, write `run_manifest.json` with `status: running`. The progress event includes `precision` (the runner fills it when the family omits it).
+8. Call the trainer.
+9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
 
-A failure in steps 1–5 does not call the trainer and does not emit `train_start`. Schema validation happens before the availability check, so an invalid field on an unavailable family is exit `1`, not exit `3`.
+A failure in steps 1–6 does not call the trainer, does not emit `train_start`, and does not write a manifest. Schema validation happens before the availability check, so an invalid field on an unavailable family is exit `1`, not exit `3`.
 
 ## `--set`
 
@@ -86,9 +91,9 @@ ACT and diffusion hyperparameters, their defaults, and their ranges are listed i
 
 ## What a successful ACT run writes
 
-`train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` then writes `run_manifest.json` in that same directory. `config.json` has `"mock": false` for this command.
+`train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command.
 
-The manifest is a small JSON object with `"schema": "ohho.train.run_manifest/v0"`. It records the resolved recipe, the overrides, the checkpoint directory, the metrics path, `final_loss`, `base_weights_loaded`, the declared hook names, and UTC start and finish timestamps. It is not an `ohho.run/v1` manifest. `base_weights_loaded` is false for ACT in this build, including when `base_weights.uri` is set. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
+The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. `metrics.json` carries the same precision, throughput, and peak memory. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
 
 ## Progress stream
 
@@ -99,15 +104,15 @@ Stdout is one JSON object per line and nothing else. Every object includes `"str
 | `error` | The process is failing. Fields: `exit_code`, `message`, and when relevant `family` and `errors` (a list of strings). |
 | `base_weights` | ACT, after preflight, when `base_weights` is set. `status` is `not_loaded`. |
 | `hook` | ACT, one object per declared hook, before training. `status` is `skipped`. |
-| `train_start` | Immediately before the trainer. Fields: `family`, `device`, `train_steps`, and `val_every` for ACT and diffusion. |
+| `train_start` | Immediately before the trainer. Fields: `family`, `device`, `train_steps`, `precision`, and `val_every` for ACT and diffusion. |
 | `validation` | During ACT or diffusion training, after every `val_every` optimizer step and after the final step. Fields: `family`, `step` (completed updates, starting at 1), `validation_loss`, `best_validation_loss`, `train_loss`. |
 | `early_stop` | Patience stopped ACT or diffusion before `train_steps`. Fields: `family`, `step`, `validation_loss`, `best_validation_loss`, `patience`. The process still exits 0 when the checkpoint is written. |
 | `metrics` | After a successful train. Fields: `path`, `final_loss`. |
 | `checkpoint` | Checkpoint directory. |
-| `manifest` | `run_manifest.json` path. |
+| `manifest` | `run_manifest.json` path. `status` is `running` at start and `succeeded`, `failed`, or `interrupted` when the file is finalised. |
 | `done` | Success. Fields: `exit_code` 0, `checkpoint_dir`, `manifest`. |
 
-A run that never starts training emits a single `error` line and no `train_start`. A trainer that raises after `train_start` emits `error` with exit code `5` and does not emit `done`. A missing `run_manifest.json` means the run did not succeed. Argparse usage errors (for example, no recipe path) write no JSON line.
+A run that never starts training emits a single `error` line and no `train_start`. A trainer that raises after `train_start` emits `error` with exit code `5`, does not emit `done`, and leaves `run_manifest.json` with `status: failed`. An interrupt leaves `status: interrupted` and then propagates. A missing `run_manifest.json` means the run never started. Argparse usage errors (for example, no recipe path) write no JSON line.
 
 ```json
 {"stream": "ohho.train.progress/v1", "event": "error", "exit_code": 3, "message": "family not available in this build", "family": "smolvla"}
@@ -117,16 +122,16 @@ A run that never starts training emits a single `error` line and no `train_start
 
 | Code | Name | Meaning |
 | --- | --- | --- |
-| 0 | ok | Checkpoint, metrics, and `run_manifest.json` were written. |
-| 1 | invalid | Parse error, `--set` error, schema error, or ACT/diffusion preflight refusal (unsupported precision, unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, torch missing). The trainer was not called. |
+| 0 | ok | Checkpoint, metrics, and a final `run_manifest.json` (`status: succeeded`) were written. |
+| 1 | invalid | Parse error, `--set` error, schema error, or ACT/diffusion preflight refusal (unsupported precision, precision the family metadata does not accept, unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, torch missing). The trainer was not called. |
 | 2 | usage | The process was invoked incorrectly. This is argparse (the recipe path was missing). No JSON line. |
 | 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build. `message` is `family not available in this build`. The trainer was not called. |
 | 4 | dataset | The family can train, but the dataset is not a local directory (`version_id` only, or `path` is not a directory). The trainer was not called. |
-| 5 | failed | `train_start` was emitted and the trainer then failed. No success manifest is written. |
+| 5 | failed | `train_start` was emitted and the trainer then failed. The manifest is finalised with `status: failed`. |
 
 ## Adding a family
 
-Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines.
+Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. Optional `metadata()` returns `{"precisions": [...]}`. Omit it, or list `fp32`, `fp16`, `bf16`, and `fp8`, and the shared runner applies the device check before `run`. A shorter list refuses the other precisions before training. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest. Put `throughput_steps_per_s` and `peak_memory_bytes` in `metrics.json` (a `PrecisionSession` from `ohho.train.precision` measures them) and the manifest records those numbers under the precision that ran. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines.
 
 ```python
 from ohho.train.recipe_registry import TrainResult, register

@@ -36,6 +36,13 @@ class DiffusionRecipe:
     def available(self) -> bool:
         return True
 
+    def metadata(self) -> dict[str, Any]:
+        """Precisions the shared runner may select for Diffusion."""
+        return {"precisions": ["fp32"]}
+
+    def preflight(self, recipe: dict[str, Any]) -> None:
+        preflight_il_recipe(recipe, family_id=self.id)
+
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         prepared = prepare_il_run(
             recipe,
@@ -45,6 +52,12 @@ class DiffusionRecipe:
             trainer_name="diffusion",
         )
         return _finish_diffusion(recipe, emit, prepared)
+
+
+def preflight_il_recipe(recipe: dict[str, Any], *, family_id: str) -> None:
+    """Validate hyperparameters and reject untrained backbones before training."""
+    resolved = resolve_hyperparameters(family_id, _hyperparameters(recipe))
+    _reject_untrained_backbone(str(resolved["vision_backbone"]))
 
 
 def prepare_il_run(
