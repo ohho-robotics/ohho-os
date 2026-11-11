@@ -99,6 +99,11 @@ smolvla = "ohho.train.builtin_recipes:SMOLVLA"
 openvla = "ohho.train.builtin_recipes:OPENVLA"
 ppo = "ohho.train.builtin_recipes:PPO"
 
+[project.entry-points."ohho.rl_tasks"]
+cartpole = "ohho.train.rl_tasks:CARTPOLE"
+mujoco-inverted-pendulum = "ohho.train.rl_tasks:MUJOCO_INVERTED_PENDULUM"
+isaac-velocity = "ohho.train.rl_tasks:ISAAC_VELOCITY"
+
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 

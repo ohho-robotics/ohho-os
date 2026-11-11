@@ -80,7 +80,20 @@
         "seed": {"type": "integer"},
         "horizon": {"type": "integer", "minimum": 1},
         "rollout_steps": {"type": "integer", "minimum": 1},
-        "gamma": {"type": "number", "minimum": 0, "maximum": 1}
+        "gamma": {"type": "number", "minimum": 0, "maximum": 1},
+        "task": {"type": "string", "minLength": 1},
+        "backend": {"type": "string", "minLength": 1},
+        "num_envs": {"type": "integer", "minimum": 1},
+        "updates": {"type": "integer", "minimum": 1},
+        "clip_coef": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "entropy_coef": {"type": "number", "minimum": 0},
+        "gae_lambda": {"type": "number", "minimum": 0, "maximum": 1},
+        "hidden_size": {"type": "integer", "minimum": 1},
+        "episode_steps": {"type": "integer", "minimum": 1},
+        "reward_weights": {
+          "type": "object",
+          "additionalProperties": {"type": "number"}
+        }
       }
     },
     "precision": {
