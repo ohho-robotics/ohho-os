@@ -60,6 +60,10 @@ def finetune(
         raise ValueError(
             f"unknown policy '{policy}'. Supported: {', '.join(SUPPORTED_POLICIES)}"
         )
+    if checkpoint:
+        from ..model_safety import prepare_model_load
+
+        prepare_model_load(checkpoint)
 
     dev = resolve_device(device)
     out = Path(output_dir).expanduser() / policy

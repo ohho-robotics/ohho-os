@@ -1,0 +1,112 @@
+{
+  "schema": "ohho.bench/v1",
+  "run": {
+    "id": "vision-policy-001",
+    "model_sha": "1111111111111111111111111111111111111111111111111111111111111111",
+    "artifact_sha": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "target": "vision",
+    "manifest_ref": "manifests/vision-policy.json@1111111111111111",
+    "host": {
+      "name": "ci-runner-a",
+      "platform": "linux",
+      "arch": "x86_64",
+      "cpu": "generic-8c",
+      "accelerator": "none"
+    },
+    "started_at": "2026-01-15T12:00:00Z",
+    "finished_at": "2026-01-15T12:04:12Z"
+  },
+  "latency": {
+    "mean": 12.4,
+    "median": 11.8,
+    "p50": 11.8,
+    "p90": 18.2,
+    "p95": 21.0,
+    "p99": 33.5,
+    "min": 8.1,
+    "max": 41.2,
+    "std": 4.6,
+    "unit": "ms",
+    "samples": 1000,
+    "stages": [
+      {
+        "name": "preprocess",
+        "mean": 1.1,
+        "median": 1.0,
+        "p50": 1.0,
+        "p90": 1.6,
+        "p95": 1.9,
+        "p99": 2.4,
+        "min": 0.6,
+        "max": 3.1,
+        "std": 0.4,
+        "unit": "ms",
+        "samples": 1000
+      },
+      {
+        "name": "infer",
+        "mean": 10.2,
+        "median": 9.7,
+        "p50": 9.7,
+        "p90": 15.4,
+        "p95": 17.8,
+        "p99": 29.0,
+        "min": 6.8,
+        "max": 36.0,
+        "std": 4.1,
+        "unit": "ms",
+        "samples": 1000
+      },
+      {
+        "name": "postprocess",
+        "mean": 1.1,
+        "median": 1.0,
+        "p50": 1.0,
+        "p90": 1.5,
+        "p95": 1.7,
+        "p99": 2.2,
+        "min": 0.5,
+        "max": 2.8,
+        "std": 0.3,
+        "unit": "ms",
+        "samples": 1000
+      }
+    ]
+  },
+  "throughput": {
+    "value": 80.5,
+    "unit": "frames/s",
+    "samples": 1000,
+    "batch_size": 1,
+    "duration_s": 12.4
+  },
+  "accuracy": {
+    "primary": {
+      "name": "top1",
+      "value": 0.764,
+      "unit": "fraction"
+    },
+    "metrics": [
+      {
+        "name": "top5",
+        "value": 0.931,
+        "unit": "fraction"
+      }
+    ],
+    "samples": 5000
+  },
+  "telemetry": {
+    "duration_s": 252.0,
+    "samples": 1000,
+    "cpu_percent_mean": 42.0,
+    "memory_mb_max": 1800.0,
+    "power_w_mean": 35.0
+  },
+  "environment": {
+    "versions": {
+      "python": "3.12.3",
+      "ohho": "1.2.0",
+      "numpy": "1.26.4"
+    }
+  }
+}
