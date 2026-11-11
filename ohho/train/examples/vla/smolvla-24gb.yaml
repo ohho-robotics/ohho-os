@@ -1,0 +1,29 @@
+schema: ohho.recipe/v1
+name: smolvla-24gb
+family: smolvla
+base_weights:
+  uri: lerobot/smolvla_base
+dataset:
+  path: datasets/vla-demos
+hyperparameters:
+  train_steps: 20000
+  batch_size: 8
+  lr: 0.0001
+  precision: bf16
+  gradient_checkpointing: true
+  tune_mode: full
+  lora_rank: 32
+  lora_alpha: 16
+  lora_dropout: 0.0
+  lora_target_modules: all-linear
+  grad_accumulation_steps: 1
+  warmup_steps: 0
+  max_grad_norm: 1.0
+  seed: 0
+  log_every: 25
+precision: bf16
+device: cuda
+compression_hooks: []
+eval_hooks: []
+output:
+  dir: checkpoints/smolvla-24gb

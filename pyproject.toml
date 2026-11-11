@@ -127,6 +127,7 @@ ohho = [
   "train/schema/*.json",
   "train/examples/*.yaml",
   "train/examples/il/*.yaml",
+  "train/examples/vla/*.yaml",
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",

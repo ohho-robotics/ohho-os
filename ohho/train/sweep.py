@@ -23,6 +23,10 @@ The sweep ``seed`` derives the sampler seed and each trial's training seed
 (:mod:`ohho.train.sweep_seed`). Grid order ignores the seed. The training
 seed is stored on the trial and does not advance the proposal generator.
 
+A ``dataset`` dimension is categorical over dataset version ids (``dv_``
+plus 32 hex characters). Each trial that applies it records
+``dataset_version_id``. A sweep has at most one dataset dimension.
+
 ``early_stopping.rule`` is ``patience`` (the default), ``asha``, or
 ``median``. Expansion copies that object onto the plan and does not drop
 trials. :mod:`ohho.train.sweep_early` is the library a trial runner and the
@@ -123,6 +127,7 @@ class Trial:
     """One concrete trial: dotted overrides plus the resolved recipe.
 
     ``seed`` is the training seed derived from the sweep seed and ``index``.
+    ``dataset_version_id`` is set when this trial applies the dataset dimension.
     """
 
     index: int
@@ -131,6 +136,7 @@ class Trial:
     recipe: dict[str, Any]
     estimated_gpu_hours: float
     seed: int = 0
+    dataset_version_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -259,6 +265,8 @@ def format_plan(plan: SweepPlan) -> str:
         lines.append("---")
         lines.append(f"trial: {trial.index}")
         lines.append(f"seed: {trial.seed}")
+        if trial.dataset_version_id is not None:
+            lines.append(f"dataset_version_id: {trial.dataset_version_id}")
         lines.append(
             f"estimated_gpu_hours: {_format_number(trial.estimated_gpu_hours)}"
         )
@@ -290,21 +298,25 @@ def plan_as_dict(plan: SweepPlan) -> dict[str, Any]:
             None if plan.early_stopping is None else dict(plan.early_stopping)
         ),
         "budget": dict(plan.budget),
-        "trial_recipes": [
-            {
-                "index": trial.index,
-                "seed": trial.seed,
-                "overrides": dict(trial.overrides),
-                "sets": list(trial.sets),
-                "recipe": trial.recipe,
-                "estimated_gpu_hours": trial.estimated_gpu_hours,
-            }
-            for trial in plan.trials
-        ],
+        "trial_recipes": [_public_trial(trial) for trial in plan.trials],
     }
     if plan.note:
         payload["note"] = plan.note
     return payload
+
+
+def _public_trial(trial: Trial) -> dict[str, Any]:
+    row = {
+        "index": trial.index,
+        "seed": trial.seed,
+        "overrides": dict(trial.overrides),
+        "sets": list(trial.sets),
+        "recipe": trial.recipe,
+        "estimated_gpu_hours": trial.estimated_gpu_hours,
+    }
+    if trial.dataset_version_id is not None:
+        row["dataset_version_id"] = trial.dataset_version_id
+    return row
 
 
 def run_plan(path: str | Path, *, as_json: bool = False) -> int:
@@ -629,6 +641,8 @@ def _check_semantics(doc: Mapping[str, Any]) -> None:
         seen_names.add(name)
         seen_paths.add(path)
         _check_dimension(dim, strategy, where)
+    if sum(1 for dim in dims if dim.get("type") == "dataset") > 1:
+        raise SweepError("at most one dataset dimension is allowed")
     primaries = [
         obj["name"] for obj in doc.get("objectives") or [] if obj.get("primary")
     ]
@@ -662,9 +676,9 @@ def _check_dimension(dim: Mapping[str, Any], strategy: str, where: str) -> None:
         )
     if "values" in dim:
         _check_values(dim, where)
-    if kind == "categorical" and "values" not in dim:
-        raise SweepError(f"{where}: categorical dimensions require values")
-    if kind == "categorical" or "values" in dim:
+    if kind in ("categorical", "dataset") and "values" not in dim:
+        raise SweepError(f"{where}: {kind} dimensions require values")
+    if kind in ("categorical", "dataset") or "values" in dim:
         return
     if "low" not in dim or "high" not in dim:
         raise SweepError(f"{where}: {kind} requires values or low and high")
@@ -702,6 +716,10 @@ def _check_values(dim: Mapping[str, Any], where: str) -> None:
     kind = dim["type"]
     for index, value in enumerate(dim["values"]):
         spot = f"{where}.values[{index}]"
+        if kind == "dataset":
+            if not _is_dataset_version_id(value):
+                raise SweepError(f"{spot}: dataset values must be dataset version ids")
+            continue
         if kind == "categorical":
             if isinstance(value, float):
                 _finite_number(value, spot)
@@ -911,6 +929,50 @@ def _build_dimension(raw: Mapping[str, Any]) -> Dimension:
     )
 
 
+def dataset_version_for(
+    spec: SweepSpec,
+    assigned: Mapping[str, Any] | Sequence[tuple[str, Any]],
+) -> str | None:
+    """Dataset version id selected by ``assigned``, or None.
+
+    ``assigned`` is dotted overrides or the expander's path/value pairs.
+    A conditional dataset dimension that does not apply returns None.
+    """
+
+    dims = [dim for dim in spec.dimensions if dim.type == "dataset"]
+    if len(dims) > 1:
+        raise SweepError("at most one dataset dimension is allowed")
+    if not dims:
+        return None
+    dim = dims[0]
+    if isinstance(assigned, Mapping):
+        if dim.path not in assigned:
+            return None
+        value = assigned[dim.path]
+    else:
+        value = None
+        found = False
+        for path, item in assigned:
+            if path == dim.path:
+                value = item
+                found = True
+        if not found:
+            return None
+    if not _is_dataset_version_id(value):
+        raise SweepError(
+            f"dimension {dim.name}: dataset value must be a dataset version id"
+        )
+    return value
+
+
+def _is_dataset_version_id(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    from ..datasets.model import is_version_id
+
+    return is_version_id(value)
+
+
 def _expand_spec(spec: SweepSpec) -> SweepPlan:
     if spec.strategy in ADAPTIVE_STRATEGIES:
         from .sweep_sampler import startup_rows
@@ -1010,6 +1072,7 @@ def _plan_from_rows(spec: SweepSpec, rows: list[list[tuple[str, Any]]]) -> Sweep
                 recipe=recipe,
                 estimated_gpu_hours=hours,
                 seed=trial_training_seed(spec.seed, index),
+                dataset_version_id=dataset_version_for(spec, assigned),
             )
         )
         total += hours

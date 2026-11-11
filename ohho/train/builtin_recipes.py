@@ -3,8 +3,9 @@
 ACT calls :func:`ohho.train.act.train_act` and writes a real checkpoint.
 Diffusion Policy calls :func:`ohho.train.il.diffusion_policy.train_diffusion`.
 PPO calls :func:`ohho.train.ppo.run_ppo` and writes a real checkpoint.
-SmolVLA and OpenVLA are registered so a recipe can name them, and their
-run step reports that the family is not available. They do not call a mock trainer.
+SmolVLA and OpenVLA validate their family parameters and then report that the
+weight-loading trainer is not available. They do not download base weights.
+None of them call a mock trainer.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from .recipe_schema import (
     RecipeConfigError,
     TrainFailed,
 )
+from .vla.family import OPENVLA, SMOLVLA
 
 _ACT_KEYS = frozenset(
     {
@@ -193,8 +195,6 @@ class UnavailableRecipe:
 
 ACT = ActRecipe()
 DIFFUSION = DiffusionRecipe()
-SMOLVLA = UnavailableRecipe("smolvla")
-OPENVLA = UnavailableRecipe("openvla")
 PPO = PpoRecipe()
 
 
