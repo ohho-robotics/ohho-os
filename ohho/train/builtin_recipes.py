@@ -2,7 +2,8 @@
 
 ACT calls :func:`ohho.train.act.train_act` and writes a real checkpoint.
 Diffusion Policy calls :func:`ohho.train.il.diffusion_policy.train_diffusion`.
-SmolVLA, OpenVLA, and PPO are registered so a recipe can name them, and their
+PPO calls :func:`ohho.train.ppo.run_ppo` and writes a real checkpoint.
+SmolVLA and OpenVLA are registered so a recipe can name them, and their
 run step reports that the family is not available. They do not call a mock trainer.
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ohho.compression.qat import QatError, prepare_qat_recipe
 from .il.family import DiffusionRecipe, prepare_il_run
 from .precision import PRECISIONS, prepare_precision
 from .recipe_registry import Emit, TrainResult, register
@@ -70,9 +72,11 @@ class ActRecipe:
         from .il.family import preflight_il_recipe
 
         preflight_il_recipe(recipe, family_id=self.id)
+        _prepare_qat(recipe)
 
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         plan = prepare_precision(recipe, family=self)
+        _prepare_qat(recipe)
         prepared = prepare_il_run(
             recipe,
             emit,
@@ -100,6 +104,7 @@ class ActRecipe:
                 device=plan.device,
                 precision=plan.precision,
                 mock=False,
+                qat=recipe.get("qat"),
                 train_steps=train_steps,
                 batch_size=int(prepared.resolved["batch_size"]),
                 lr=float(prepared.resolved["lr"]),
@@ -119,7 +124,7 @@ class ActRecipe:
                 vision_backbone=str(prepared.resolved["vision_backbone"]),
                 on_event=_on_event(self.id, emit),
             )
-        except TrainFailed:
+        except (QatError, TrainFailed):
             raise
         except Exception as exc:
             raise TrainFailed(f"ACT training failed: {exc}") from exc
@@ -132,6 +137,28 @@ class ActRecipe:
             device=plan.device,
             base_weights_loaded=False,
         )
+
+
+class PpoRecipe:
+    """PPO on a registered task.
+
+    The CPU path is a built-in PyTorch trainer. ``rsl_rl`` and ``skrl`` are
+    optional backends. See :mod:`ohho.train.ppo`.
+    """
+
+    id = "ppo"
+
+    def available(self) -> bool:
+        return True
+
+    def metadata(self) -> dict[str, Any]:
+        """Precisions the shared runner may select for PPO."""
+        return {"precisions": ["fp32"]}
+
+    def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
+        from .ppo import run_ppo
+
+        return run_ppo(recipe, emit)
 
 
 class UnavailableRecipe:
@@ -156,7 +183,7 @@ ACT = ActRecipe()
 DIFFUSION = DiffusionRecipe()
 SMOLVLA = UnavailableRecipe("smolvla")
 OPENVLA = UnavailableRecipe("openvla")
-PPO = UnavailableRecipe("ppo")
+PPO = PpoRecipe()
 
 
 def register_builtins() -> None:
@@ -234,7 +261,18 @@ def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeConfigError(
             f"hyperparameters.d_model ({d_model}) must be divisible by nhead ({nhead})"
         )
+    block = recipe.get("qat")
+    if isinstance(block, dict):
+        kwargs["qat"] = block
     return kwargs
+
+
+def _prepare_qat(recipe: dict[str, Any]) -> None:
+    """Refuse a QAT block the ACT trainer cannot run. Absent block is a no-op."""
+    block = recipe.get("qat")
+    if not isinstance(block, dict):
+        return
+    prepare_qat_recipe(block, family_id="act")
 
 
 def _dataset_dir(recipe: dict[str, Any]) -> Path:

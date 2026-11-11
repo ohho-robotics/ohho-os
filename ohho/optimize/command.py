@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ohho.optimize.errors import OptimizeError
-from ohho.optimize.plan import OptimizeRequest
+from ohho.optimize.plan import PRECISION_FLAGS, OptimizeRequest
 from ohho.parity.errors import ParityError, ParityFailed, TaskFailed
 
 
@@ -29,9 +29,15 @@ def register_optimize(subparsers: Any) -> None:
             "  ohho optimize --model policy.pt --target jetson-orin-nx "
             "--precision int8 --tensorrt --calib-data calib --calib-batch 8 "
             "--calib-max-images 32 --calib-cache build/int8.cache --out build/int8\n"
+            "  ohho optimize --model smolvla/ --submodule lm --precision int4-awq "
+            "--target INT4_PROFILE --out build/awq\n"
+            "  ohho optimize --model reference-act --target x86-cpu "
+            "--precision int8 --out build/int8\n"
             "\n"
             "TensorRT, the CUDA execution provider, AWQ, GPTQ, bitsandbytes, "
-            "and FP8 fail fast when they are not installed. That is a GPU follow-up.\n"
+            "and FP8 fail fast when they are not installed. That is a GPU follow-up. "
+            "FP8 is TensorRT on Ada and Hopper only. int8 on x86-cpu and rpi5-cpu "
+            "is ORT static INT8. int4-bnb is a bitsandbytes NF4 research baseline.\n"
             "\n"
             "The parity gate runs after the export. A mean absolute difference "
             "above 0.05 refuses to publish unless --allow-parity-fail is set. "
@@ -49,8 +55,11 @@ def register_optimize(subparsers: Any) -> None:
     parser.add_argument(
         "--precision",
         required=True,
-        choices=("fp32", "fp16", "int8", "fp8", "int4"),
-        help="precision to apply",
+        choices=PRECISION_FLAGS,
+        help=(
+            "fp32, fp16, int8 (ORT static on CPU; TensorRT with --tensorrt), "
+            "fp8 (TensorRT, Ada/Hopper), int4, int4-awq, int4-gptq, int4-bnb, nf4"
+        ),
     )
     parser.add_argument("--onnx", action="store_true", help="write an ONNX file")
     parser.add_argument(
@@ -95,7 +104,7 @@ def register_optimize(subparsers: Any) -> None:
     parser.add_argument(
         "--submodule",
         default=None,
-        help="dotted module path, or a role: vision, actor, encoder",
+        help="dotted module path, or a role: vision, actor, encoder, lm",
     )
     parser.add_argument("--out", required=True, help="output directory")
     parser.add_argument(

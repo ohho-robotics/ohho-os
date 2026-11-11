@@ -92,6 +92,13 @@ builtin = "ohho.robots.builtin:plugin"
 omnibot = "ohho.robots.omnibot:plugin"
 unitree = "ohho.robots.unitree:plugin"
 
+[project.entry-points."ohho.quantizers"]
+awq = "ohho.optimize.quantizers.awq:backend"
+gptq = "ohho.optimize.quantizers.gptq:backend"
+bitsandbytes = "ohho.optimize.quantizers.bitsandbytes:backend"
+fp8 = "ohho.optimize.quantizers.fp8:backend"
+ort-int8 = "ohho.optimize.quantizers.ort_int8:backend"
+
 [project.entry-points."ohho.recipes"]
 act = "ohho.train.builtin_recipes:ACT"
 diffusion = "ohho.train.builtin_recipes:DIFFUSION"
@@ -105,6 +112,10 @@ sim_success = "ohho.parity.tasks.sim_success:evaluator"
 detection_map = "ohho.parity.tasks.detection_map:evaluator"
 token_match = "ohho.parity.tasks.token_match:evaluator"
 
+[project.entry-points."ohho.rl_tasks"]
+cartpole = "ohho.train.rl_tasks:CARTPOLE"
+mujoco-inverted-pendulum = "ohho.train.rl_tasks:MUJOCO_INVERTED_PENDULUM"
+isaac-velocity = "ohho.train.rl_tasks:ISAAC_VELOCITY"
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
