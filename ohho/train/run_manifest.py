@@ -72,6 +72,7 @@ CONSOLE_FIELDS = (
     "gpu",
     "final_loss",
     "precision_metrics",
+    "qat",
     "error",
     "resolved_config",
 )
@@ -227,6 +228,7 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
+    qat: dict[str, Any] | None
     cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -263,6 +265,7 @@ class RunManifest:
                 ),
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
+            "qat": _copy_qat(self.qat),
         }
         if self.cloned_from is not None:
             document["cloned_from"] = self.cloned_from.to_dict()
@@ -338,6 +341,7 @@ class RunManifest:
                 "eval_hooks": [str(item) for item in hooks["eval_hooks"]],
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
+            qat=_copy_qat(document.get("qat")),
             cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
@@ -365,6 +369,7 @@ class RunCapture:
     gpu: GpuRecord | None
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
+    qat: dict[str, Any] | None
 
 
 def schema_path() -> Path:
@@ -607,6 +612,7 @@ def capture_run(
         gpu=None if gpu is None else GpuRecord(**gpu),
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
+        qat=_qat_from_recipe(recipe),
     )
 
 
@@ -681,6 +687,7 @@ def manifest_from_capture(
             normalize_throughput(throughput_steps_per_s),
             normalize_peak(peak_memory_bytes),
         ),
+        qat=_copy_qat(capture.qat),
     )
 
 
@@ -800,6 +807,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"final_loss: {_format_value(document.get('final_loss'))}",
             "precision_metrics: "
             + _format_precision_metrics(document.get("precision_metrics")),
+            f"qat: {_format_value(document.get('qat'))}",
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
             + json.dumps(
@@ -1136,6 +1144,18 @@ def _format_precision_metrics(value: Any) -> str:
             f"{name} throughput_steps_per_s={throughput} peak_memory_bytes={peak}"
         )
     return " ".join(parts)
+
+
+def _qat_from_recipe(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    from ohho.compression.qat import settings_from_recipe
+
+    return settings_from_recipe(recipe)
+
+
+def _copy_qat(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return json.loads(json.dumps(dict(value)))
 
 
 def _capture_precision(recipe: Mapping[str, Any]) -> str:

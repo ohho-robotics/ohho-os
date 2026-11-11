@@ -39,6 +39,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
 | `precision` | `fp32` (default), `fp16`, `bf16`, or `fp8`. See [Mixed precision](precision.md). An unsupported choice fails before training. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
+| `qat` | Optional quantisation-aware training block. See [Quantisation-aware training](qat.md). `bit_width`, `granularity`, `calibration_steps`, and `finetune_steps` are plain `--set` fields. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `output.dir` | Directory for the checkpoint, `metrics.json`, and `run_manifest.json`. |
@@ -54,7 +55,7 @@ Relative paths are resolved from the process working directory.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
 5. Shared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision.
-6. Family preflight: for ACT and diffusion: precision, hyperparameters, dataset, device, torch. PPO checks precision, hyperparameters, the task, the backend, torch, and onnx. A missing dataset directory does not stop PPO. `version_id` alone still does.
+6. Family preflight: for ACT and diffusion: precision, hyperparameters, dataset, device, torch (for ACT: also the QAT block when set; a QAT block that asks ACT to export ONNX, or weight-and-activation QAT with `calibration_steps` of 0, fails here). PPO checks precision, hyperparameters, the task, the backend, torch, and onnx. A missing dataset directory does not stop PPO. `version_id` alone still does.
 7. On `train_start`, write `run_manifest.json` with `status: running`. The progress event includes `precision` (the runner fills it when the family omits it).
 8. Call the trainer.
 9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
@@ -95,7 +96,7 @@ PPO hyperparameters are `task`, `backend`, `num_envs`, `rollout_steps`, `updates
 
 `train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command.
 
-The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. `metrics.json` carries the same precision, throughput, and peak memory. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
+The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, the resolved `qat` block (or null), every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. When `qat` is enabled, ACT runs the calibration warm-up and the fake-quant fine-tune after the precision loop. `policy.pt` stays fp32. See [Quantisation-aware training](qat.md). `metrics.json` carries the same precision, throughput, and peak memory. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
 
 ## Progress stream
 

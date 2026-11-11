@@ -104,6 +104,7 @@ def _manifest(config: dict[str, Any], recipe_path: str, **changes: Any) -> RunMa
             "bf16": None,
             "fp8": None,
         },
+        "qat": None,
         "error": None,
         "recipe_path": recipe_path,
         "overrides": ["hyperparameters.seed=1"],

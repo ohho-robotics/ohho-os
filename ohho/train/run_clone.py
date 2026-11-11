@@ -350,6 +350,7 @@ def _manifest_for_clone(
         metrics_path=source.metrics_path,
         declared_hooks=declared_hooks(config),
         precision_metrics=precision_metrics,
+        qat=getattr(source, "qat", None),
         cloned_from=cloned_from,
     )
 
