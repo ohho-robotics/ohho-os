@@ -32,6 +32,12 @@ from .recipe_schema import (
     TrainFailed,
     load_recipe_file,
 )
+from .compression.distillation import (
+    distillation_requested,
+    prepare_distillation,
+    require_il_student,
+    train_distilled,
+)
 from .precision import prepare_precision
 from .run_manifest import (
     MANIFEST_NAME,
@@ -176,6 +182,8 @@ def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
         family_id = str(loaded.get("family", ""))
         ensure_loaded()
         family = get_family(family_id)
+        if distillation_requested(loaded):
+            require_il_student(loaded, family)
         if family is None or not family.available():
             return _unavailable(family_id)
         run.bind(recipe_path=recipe, overrides=list(overrides or []), recipe=loaded)
@@ -183,6 +191,8 @@ def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
         if callable(preflight):
             preflight(loaded)
         prepare_precision(loaded, family=family)
+        if distillation_requested(loaded):
+            prepare_distillation(loaded)
 
         def emit(event: dict[str, Any]) -> None:
             if event.get("event") == "train_start" and not run.started:
@@ -202,7 +212,10 @@ def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
                 return
             _emit(event)
 
-        result = family.run(loaded, emit)
+        if distillation_requested(loaded):
+            result = train_distilled(loaded, emit)
+        else:
+            result = family.run(loaded, emit)
         if not run.started:
             run.begin(result.device)
         manifest_path, final_loss = run.succeed(result)
