@@ -1,0 +1,30 @@
+schema: ohho.recipe/v1
+name: act-tiny-cpu
+family: act
+dataset:
+  path: datasets/sim-loop
+hyperparameters:
+  train_steps: 2
+  batch_size: 4
+  lr: 0.0001
+  chunk_size: 4
+  vision_backbone: none
+  val_every: 1
+  val_fraction: 0.2
+  early_stop_patience: 0
+  early_stop_min_delta: 0.0
+  seed: 0
+  d_model: 32
+  nhead: 2
+  num_encoder_layers: 1
+  num_decoder_layers: 1
+  dim_feedforward: 64
+  latent_dim: 8
+  kl_weight: 10.0
+  log_every: 1
+precision: fp32
+device: cpu
+compression_hooks: []
+eval_hooks: []
+output:
+  dir: checkpoints/act-tiny-cpu

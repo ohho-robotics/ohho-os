@@ -28,7 +28,7 @@ def register_optimize(subparsers: Any) -> None:
             "--dynamic-batch --out build/fp16\n"
             "  ohho optimize --model policy.pt --target jetson-orin-nx "
             "--precision int8 --tensorrt --calib-data calib --calib-batch 8 "
-            "--calib-cache build/int8.cache --out build/int8\n"
+            "--calib-max-images 32 --calib-cache build/int8.cache --out build/int8\n"
             "\n"
             "TensorRT, the CUDA execution provider, AWQ, GPTQ, bitsandbytes, "
             "and FP8 fail fast when they are not installed. That is a GPU follow-up.\n"
@@ -65,6 +65,12 @@ def register_optimize(subparsers: Any) -> None:
     )
     parser.add_argument(
         "--calib-cache", default=None, help="INT8 calibration cache path"
+    )
+    parser.add_argument(
+        "--calib-max-images",
+        type=int,
+        default=None,
+        help="maximum number of INT8 calibration samples to read",
     )
     parser.add_argument(
         "--ort-ep",
@@ -173,6 +179,7 @@ def run_optimize(args: argparse.Namespace) -> int:
         calib_data=args.calib_data,
         calib_batch=args.calib_batch,
         calib_cache=args.calib_cache,
+        calib_max_images=args.calib_max_images,
         ort_ep=args.ort_ep,
         quant=args.quant,
         workspace_gb=args.workspace_gb,

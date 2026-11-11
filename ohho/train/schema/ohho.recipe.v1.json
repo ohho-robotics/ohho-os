@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.recipe/v1.json",
+  "title": "ohho.recipe/v1",
+  "description": "One description of a training run. Families are an open registry id. This build ships examples for act, diffusion, smolvla, openvla, and ppo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "family", "dataset", "output"],
+  "properties": {
+    "schema": {
+      "description": "Recipe document identifier.",
+      "const": "ohho.recipe/v1"
+    },
+    "name": {
+      "description": "Human-readable run name.",
+      "type": "string"
+    },
+    "family": {
+      "description": "Policy family id. Built-in ids: act, diffusion, smolvla, openvla, ppo. Plugins register more.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "base_weights": {
+      "description": "Checkpoint the trainer should start from. Loading it is family-specific.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    },
+    "dataset": {
+      "description": "Local directory or a dataset version id. Set exactly one.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["path"],
+          "not": {"required": ["version_id"]}
+        },
+        {
+          "required": ["version_id"],
+          "not": {"required": ["path"]}
+        }
+      ]
+    },
+    "hyperparameters": {
+      "description": "Family hyperparameters. Known keys are typed; other keys are left for plugins.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "train_steps": {"type": "integer", "minimum": 1},
+        "num_epochs": {"type": "integer", "minimum": 1},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "lr": {"type": "number", "exclusiveMinimum": 0},
+        "chunk_size": {"type": "integer", "minimum": 1},
+        "d_model": {"type": "integer", "minimum": 1},
+        "nhead": {"type": "integer", "minimum": 1},
+        "num_encoder_layers": {"type": "integer", "minimum": 1},
+        "num_decoder_layers": {"type": "integer", "minimum": 1},
+        "dim_feedforward": {"type": "integer", "minimum": 1},
+        "latent_dim": {"type": "integer", "minimum": 1},
+        "kl_weight": {"type": "number", "minimum": 0},
+        "log_every": {"type": "integer", "minimum": 1},
+        "seed": {"type": "integer"},
+        "horizon": {"type": "integer", "minimum": 1},
+        "rollout_steps": {"type": "integer", "minimum": 1},
+        "gamma": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "precision": {
+      "description": "Numeric format for the training step. fp32 is the default and runs on every device. fp16 uses torch.amp autocast and GradScaler loss scaling on CUDA. bf16 uses torch.amp autocast where bfloat16 runs, including CPU when that autocast succeeds. fp8 uses Transformer Engine on a CUDA GPU with compute capability 8.9 or newer. An unsupported choice fails before training. There is no fallback to another precision.",
+      "type": "string",
+      "enum": ["fp32", "fp16", "bf16", "fp8"],
+      "default": "fp32"
+    },
+    "device": {
+      "type": "string",
+      "enum": ["cpu", "cuda", "mps", "auto"],
+      "default": "cpu"
+    },
+    "compression_hooks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/hook"}
+    },
+    "eval_hooks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/hook"}
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir"],
+      "properties": {
+        "dir": {
+          "description": "Directory for the checkpoint, metrics, and run manifest.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "params": {"type": "object", "additionalProperties": true}
+      }
+    }
+  }
+}
