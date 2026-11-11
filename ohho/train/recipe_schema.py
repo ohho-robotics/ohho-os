@@ -155,6 +155,7 @@ def apply_defaults(recipe: dict[str, Any]) -> dict[str, Any]:
     filled = copy.deepcopy(recipe)
     filled.setdefault("precision", "fp32")
     filled.setdefault("device", "cpu")
+    filled.setdefault("deterministic", False)
     filled.setdefault("hyperparameters", {})
     filled.setdefault("compression_hooks", [])
     filled.setdefault("eval_hooks", [])

@@ -107,6 +107,11 @@
       "enum": ["cpu", "cuda", "mps", "auto"],
       "default": "cpu"
     },
+    "deterministic": {
+      "description": "When true, seed batch order, pin DataLoader workers, and request deterministic torch and cuDNN algorithms. Omitted means false.",
+      "type": "boolean",
+      "default": false
+    },
     "qat": {
       "description": "Optional quantisation-aware training block. Absent means QAT does not run. bit_width (8 or 4), granularity (per_tensor or per_channel), calibration_steps, and finetune_steps are plain fields a sweep can set. scope is weight_only (default) or weight_and_activation. Weight-and-activation needs calibration_steps >= 1. symmetric defaults to true; activation_granularity and activation_symmetric default to the weight settings. export_onnx asks for a Q/DQ ONNX file. Family act cannot lower its transformer, so that flag is refused for act.",
       "type": "object",
