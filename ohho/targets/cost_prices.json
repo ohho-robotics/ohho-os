@@ -1,0 +1,56 @@
+{
+  "schema": "ohho.bench.cost_prices/v1",
+  "estimate": true,
+  "label": "estimate",
+  "note": "Illustrative estimates for comparison. Not an invoice, a cloud bill, or a hardware quote. Cloud rows are USD per GPU-hour. Edge rows are purchase price divided by amortisation_hours (26280 hours, three 365-day years), plus typical_watts times electricity_usd_per_kwh when a run has no measured watts. Edit any number.",
+  "electricity_usd_per_kwh": 0.15,
+  "amortisation_hours": 26280,
+  "control_rate_hz": 50,
+  "profiles": {
+    "jetson-orin-nano": {
+      "pricing": "edge_amortised",
+      "hardware_usd": 249,
+      "typical_watts": 15
+    },
+    "jetson-orin-nx": {
+      "pricing": "edge_amortised",
+      "hardware_usd": 599,
+      "typical_watts": 25
+    },
+    "jetson-agx-orin": {
+      "pricing": "edge_amortised",
+      "hardware_usd": 1999,
+      "typical_watts": 40
+    },
+    "rpi5-cpu": {
+      "pricing": "edge_amortised",
+      "hardware_usd": 80,
+      "typical_watts": 8
+    },
+    "x86-cpu": {
+      "pricing": "edge_amortised",
+      "hardware_usd": 800,
+      "typical_watts": 65
+    },
+    "x86-cuda": {
+      "pricing": "edge_amortised",
+      "hardware_usd": 1600,
+      "typical_watts": 200
+    },
+    "cloud-l4": {
+      "pricing": "cloud_gpu_hour",
+      "gpu_hour_usd": 0.8,
+      "typical_watts": 72
+    },
+    "cloud-a10g": {
+      "pricing": "cloud_gpu_hour",
+      "gpu_hour_usd": 1.0,
+      "typical_watts": 150
+    },
+    "cloud-h100": {
+      "pricing": "cloud_gpu_hour",
+      "gpu_hour_usd": 4.0,
+      "typical_watts": 700
+    }
+  }
+}

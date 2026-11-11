@@ -16,10 +16,20 @@ model.
 ``execute_sweep`` measures a serving sweep (concurrency, batch tokens, prefix
 cache, chunked prefill, speculative decoding) and writes a Pareto table on
 the same document.
+
+``recompute_cost`` fills USD estimates from measured throughput and a
+user-editable price.
 """
 
 from __future__ import annotations
 
+from ohho.bench.cost import (
+    CostOverrides,
+    format_estimate,
+    price_catalog,
+    rank_by_cost,
+    recompute_cost,
+)
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.exports import export_result
 from ohho.bench.generate import GenerateConfig, execute_generate
@@ -54,6 +64,7 @@ __all__ = [
     "BenchConversionError",
     "BenchHarnessError",
     "BenchValidationError",
+    "CostOverrides",
     "GenerateConfig",
     "SweepConfig",
     "StageRunner",
@@ -65,7 +76,11 @@ __all__ = [
     "execute_sweep",
     "export_result",
     "finalize_result",
+    "format_estimate",
     "load_schema",
+    "price_catalog",
+    "rank_by_cost",
+    "recompute_cost",
     "render_markdown",
     "render_prometheus",
     "run_benchmark",
