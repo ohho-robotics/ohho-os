@@ -23,6 +23,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   `int4-gptq`, `fp8`, and `int8` select them. The older `--quant` flag still
   works. Each manifest output records the backend name and version. Publish
   calls `run_parity` so OHH-430 can gate the artifact.
+- **Bench export (OHH-498)** — `ohho bench --export` sends one result through
+  optional exporter plugins. A W&B spec records the job spec, manifest,
+  latency, accuracy, and energy, and the result stores the run URL. A
+  Prometheus spec pushes gauges to a Pushgateway (the grouping key is deleted
+  after `--export-ttl` minutes) or remote-write. Failures are warnings.
+  `export_result` is the same hook an optimize run calls. Docs:
+  [`docs/serve/bench.md`](docs/serve/bench.md).
 - **LLM serving sweep** (OHH-476) — `ohho bench llm --sweep` varies
   concurrency, max batch tokens, prefix caching, chunked prefill, and
   speculative decoding where the serving adapter supports the option.
