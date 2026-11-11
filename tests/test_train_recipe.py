@@ -14,7 +14,7 @@ from unittest.mock import patch
 from ohho import __version__
 from ohho.cli import main as cli_main
 from ohho.sim_loop import record_sim_episodes
-from ohho.train.builtin_recipes import ACT, PPO
+from ohho.train.builtin_recipes import ACT, DIFFUSION, PPO
 from ohho.train.recipe_registry import (
     RecipeRegistryError,
     TrainResult,
@@ -282,11 +282,13 @@ class TestRegistry(unittest.TestCase):
             {"act", "diffusion", "smolvla", "openvla", "ppo"} <= set(family_ids())
         )
         self.assertTrue(get_family("act").available())
+        self.assertTrue(get_family("diffusion").available())
         self.assertTrue(get_family("ppo").available())
-        for family in ("diffusion", "smolvla", "openvla"):
-            self.assertFalse(get_family(family).available())
         self.assertIs(get_family("act"), ACT)
+        self.assertIs(get_family("diffusion"), DIFFUSION)
         self.assertIs(get_family("ppo"), PPO)
+        for family in ("smolvla", "openvla"):
+            self.assertFalse(get_family(family).available())
         register(ACT, source="again")
 
         class Other:
@@ -371,7 +373,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(caught.exception.code, EXIT_USAGE)
 
     def test_unavailable_families_do_not_train(self) -> None:
-        for family in ("diffusion", "smolvla", "openvla"):
+        for family in ("smolvla", "openvla"):
             with self.subTest(family=family):
                 code, events, err = _run(example_path(family))
                 self.assertEqual(code, EXIT_UNAVAILABLE, err)
@@ -390,7 +392,7 @@ class TestTrainCommand(unittest.TestCase):
                     "train",
                     str(example_path("act")),
                     "--set",
-                    "family=diffusion",
+                    "family=smolvla",
                     "--set",
                     "dataset.path=null",
                     "--set",
@@ -400,7 +402,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(code, EXIT_UNAVAILABLE, stderr.getvalue())
         event = json.loads(stdout.getvalue().strip().splitlines()[-1])
         self.assertEqual(event["message"], UNAVAILABLE_MESSAGE)
-        self.assertEqual(event["family"], "diffusion")
+        self.assertEqual(event["family"], "smolvla")
 
     def test_invalid_config_fails_before_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
