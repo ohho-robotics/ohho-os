@@ -66,6 +66,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
 | `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench --export SPEC` | Optional W&B or Prometheus export; failures are warnings ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
@@ -100,8 +101,10 @@ external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). SmolVLA and OpenVLA parameters, the memory estimate, and LoRA export are in [`train/vla-recipes.md`](train/vla-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). SmolVLA and OpenVLA parameters, the memory estimate, and LoRA export are in [`train/vla-recipes.md`](train/vla-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). An optional `qat` block is described in [`train/qat.md`](train/qat.md). |
 | `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
+| `ohho run clone <run> [--set k=v ...] [--dest DIR]` | Write a new run config from that run's resolved recipe. `--set` is repeatable, dotted, and typed like `ohho train`, then validated as `ohho.recipe/v1`. The new manifest records `cloned_from`. Clone does not train. |
+| `ohho run diff <a> <b> [--json]` | Config diff of the two runs' resolved recipes. `--json` is `ohho.run.diff/v1`. Text and JSON both come from `ohho.train.run_clone.diff_run_configs`. |
 | `ohho run retain <path> [--dry-run] [--days N] [--experiment ID] [--json]` | Delete intermediate checkpoints of pruned trials older than N days (default 14). Keeps best, last, logs, eval reports, and pinned or promoted versions. `--dry-run` does not delete. See [`train/artifacts.md`](train/artifacts.md). |
 | `ohho run storage <path> [--experiment ID] [--json]` | Print bytes used by one run or by each run under a directory. |
 
