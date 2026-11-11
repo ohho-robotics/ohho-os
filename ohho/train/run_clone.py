@@ -25,7 +25,6 @@ from typing import Any, Literal
 
 from .recipe_schema import (
     RecipeConfigError,
-    apply_defaults,
     apply_overrides,
     validate_recipe,
 )
@@ -131,8 +130,9 @@ def cloned_config(
     """Return ``resolved_config`` with ``--set`` overrides applied.
 
     Overrides use the same dotted keys and typed values as ``ohho train``.
-    The result is validated against ``ohho.recipe/v1``, then recipe defaults
-    are filled. A ``null`` value deletes a mapping key.
+    The result is validated against ``ohho.recipe/v1``. The source is already
+    resolved, so cloning does not materialise defaults that it does not contain.
+    A ``null`` value deletes a mapping key.
     """
     if not isinstance(resolved_config, dict):
         raise RunConfigError("resolved config is not an object")
@@ -147,7 +147,7 @@ def cloned_config(
             "cloned config is not a valid ohho.recipe/v1 recipe", errors
         )
     try:
-        parsed = json.loads(json.dumps(apply_defaults(updated)))
+        parsed = json.loads(json.dumps(updated))
     except (TypeError, ValueError) as exc:
         raise RunConfigError(f"cloned config is not JSON: {exc}") from exc
     if not isinstance(parsed, dict):
