@@ -101,6 +101,7 @@ class ActRecipe:
                 "precision": plan.precision,
                 "train_steps": planned,
                 "val_every": int(prepared.resolved["val_every"]),
+                "deterministic": prepared.deterministic,
             }
         )
         try:
@@ -132,6 +133,8 @@ class ActRecipe:
                 early_stop_min_delta=float(prepared.resolved["early_stop_min_delta"]),
                 vision_backbone=str(prepared.resolved["vision_backbone"]),
                 on_event=_on_event(self.id, emit),
+                deterministic=prepared.deterministic,
+                seed=prepared.seed,
             )
         except (QatError, TrainFailed):
             raise
