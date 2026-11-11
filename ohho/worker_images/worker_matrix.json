@@ -1,0 +1,58 @@
+{
+  "schema": "ohho.serve_worker_matrix.v1",
+  "repository": "ohho-serve-worker",
+  "version": "1.2.0",
+  "variants": [
+    {
+      "variant": "cpu",
+      "platforms": ["linux/amd64"],
+      "arches": ["x86_64"],
+      "base_image": "python:3.12-slim-bookworm",
+      "torch": "2.5.1",
+      "torch_index": "https://download.pytorch.org/whl/cpu",
+      "ort": "1.20.1",
+      "ort_package": "onnxruntime",
+      "tensorrt": null,
+      "tensorrt_pip": false,
+      "cuda": null,
+      "jetpack": null,
+      "l4t": null,
+      "target_profile": "x86-cpu",
+      "cuda_identity": "absent"
+    },
+    {
+      "variant": "cuda",
+      "platforms": ["linux/amd64"],
+      "arches": ["x86_64"],
+      "base_image": "nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04",
+      "torch": "2.5.1",
+      "torch_index": "https://download.pytorch.org/whl/cu124",
+      "ort": "1.20.1",
+      "ort_package": "onnxruntime-gpu",
+      "tensorrt": "10.0.1",
+      "tensorrt_pip": true,
+      "cuda": "12.4.1",
+      "jetpack": null,
+      "l4t": null,
+      "target_profile": "x86-cuda",
+      "cuda_identity": "required"
+    },
+    {
+      "variant": "jetson",
+      "platforms": ["linux/arm64"],
+      "arches": ["aarch64"],
+      "base_image": "nvcr.io/nvidia/l4t-base:r36.2.0",
+      "torch": "2.5.1",
+      "torch_index": "https://download.pytorch.org/whl/cpu",
+      "ort": "1.20.1",
+      "ort_package": "onnxruntime",
+      "tensorrt": "8.6.2",
+      "tensorrt_pip": false,
+      "cuda": "12.2.12",
+      "jetpack": "6.0",
+      "l4t": "36.2.0",
+      "target_profile": "jetson-orin-nano",
+      "cuda_identity": "jetpack"
+    }
+  ]
+}

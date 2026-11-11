@@ -24,8 +24,10 @@ from unittest.mock import patch
 
 from ohho.bench.schema import validate, validate_path
 from ohho.cli import main
-from ohho.optimize.engine import OptimizeBackends, _gate_and_publish
+from ohho.optimize.cache import LocalBuildCache
+from ohho.optimize.engine import OptimizeBackends, _applied_flags, _gate_and_publish
 from ohho.optimize.plan import OptimizeRequest, build_plan
+from ohho.optimize.toolchain import HostGpu
 from ohho.parity.errors import ParityError, TaskFailed
 from ohho.parity.gate import decide
 from ohho.parity.metrics import tensor_metrics
@@ -107,6 +109,27 @@ def _tensor_report() -> dict:
             }
         ],
     )
+
+
+def _gate_kwargs(plan, cache_root: Path) -> dict:
+    return {
+        "target": {
+            "id": plan.profile.id,
+            "arch": plan.profile.arch,
+            "accelerator": plan.profile.accelerator,
+        },
+        "flags": _applied_flags(plan, None),
+        "versions": dict.fromkeys(
+            ("torch", "onnx", "onnxruntime", "tensorrt", "cuda", "driver", "jetpack")
+        ),
+        "model_sha256": "0" * 64,
+        "calibration_cache_sha256": None,
+        "host": HostGpu(None, None),
+        "duration": 0.0,
+        "cache_key": "0" * 64,
+        "local": LocalBuildCache(cache_root),
+        "registry": None,
+    }
 
 
 class TestEvaluators(unittest.TestCase):
@@ -415,6 +438,9 @@ class TestWiring(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
+            cache_tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(cache_tmp.cleanup)
+            cache_root = Path(cache_tmp.name)
             with patch("ohho.parity.gate.compare_export", return_value=report):
                 with patch(
                     "ohho.parity.tasks.stage.run_task_stage",
@@ -428,7 +454,7 @@ class TestWiring(unittest.TestCase):
                         [],
                         [],
                         OptimizeBackends(),
-                        wrote_onnx=False,
+                        **_gate_kwargs(plan, cache_root),
                     )
             self.assertEqual(document["parity"]["result"], "pass")
             self.assertFalse((out / "accuracy.json").exists())
@@ -450,6 +476,9 @@ class TestWiring(unittest.TestCase):
         failing = {"accuracy": {"result": "fail", "reasons": ["action_mae missed"]}}
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
+            cache_tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(cache_tmp.cleanup)
+            cache_root = Path(cache_tmp.name)
             artifact = out / "model.onnx"
             artifact.write_bytes(b"onnx")
             outputs = [{"role": "onnx", "path": "model.onnx"}]
@@ -467,7 +496,7 @@ class TestWiring(unittest.TestCase):
                             outputs,
                             [],
                             OptimizeBackends(),
-                            wrote_onnx=True,
+                            **_gate_kwargs(plan, cache_root),
                         )
             self.assertFalse(artifact.exists())
             self.assertFalse((out / "manifest.json").exists())

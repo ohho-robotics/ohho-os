@@ -116,4 +116,21 @@ class Agent:
         self.brain: Brain = brain or _default_brain()
 
     def run(self, goal: str, max_steps: int = 20) -> List[str]:
-        return self.brain.run(self.robot, goal, max_steps)
+        import os
+
+        from ohho.worker_images.policy import refusal_for_environment
+
+        reason = refusal_for_environment()
+        if reason is not None:
+            return [f"goal: {goal}", f"refused: {reason}"]
+        log = list(self.brain.run(self.robot, goal, max_steps))
+        image = os.environ.get("OHHO_WORKER_IMAGE", "").strip()
+        if not image:
+            return log
+        tag, _, digest_ref = image.partition("@")
+        digest = os.environ.get("OHHO_WORKER_IMAGE_DIGEST", "").strip() or digest_ref
+        return [
+            f"worker_image: {tag}",
+            f"image_digest: {digest or 'unset'}",
+            *log,
+        ]
