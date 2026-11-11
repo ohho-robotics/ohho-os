@@ -137,6 +137,22 @@ def optimize(
         precision=plan.precision,
         flags=flags,
         versions=versions,
+        parity={
+            "parity_set": (
+                None if request.parity_set is None else str(request.parity_set)
+            ),
+            "inputs": (
+                None
+                if request.parity_inputs is None
+                else (
+                    str(request.parity_inputs)
+                    if isinstance(request.parity_inputs, (str, Path))
+                    else [str(item) for item in request.parity_inputs]
+                )
+            ),
+            "n": request.parity_n,
+            "seed": request.parity_seed,
+        },
     )
     out = Path(request.out_dir)
     local = LocalBuildCache(cache_dir if cache_dir is not None else default_cache_dir())

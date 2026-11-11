@@ -55,12 +55,14 @@ def cache_key(
     precision: str,
     flags: dict[str, Any],
     versions: dict[str, Any],
+    parity: dict[str, Any] | None = None,
 ) -> str:
     """sha256 of the model, target, precision, flags, and toolchain versions.
 
     Precision sits beside the flag object so two precisions that share every
     other flag still miss. ``versions`` is the toolchain recorded on the
-    manifest, including TensorRT.
+    manifest, including TensorRT. ``parity`` is included only when provided so
+    parity-gated builds do not share a key with builds from another input set.
     """
     payload = {
         "model_sha256": model_sha256,
@@ -73,6 +75,8 @@ def cache_key(
         "flags": flags,
         "versions": versions,
     }
+    if parity is not None:
+        payload["parity"] = parity
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
