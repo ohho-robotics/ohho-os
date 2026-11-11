@@ -32,6 +32,7 @@ _REQUIRED = (
     "host",
     "build_duration_s",
     "cache",
+    "parity",
 )
 _FLAG_KEYS = (
     "onnx",
@@ -47,6 +48,7 @@ _FLAG_KEYS = (
     "quantization",
     "opset",
     "submodule",
+    "allow_parity_fail",
 )
 _MODEL_KEYS = ("ref", "kind", "submodule", "source")
 _TARGET_KEYS = ("id", "arch", "accelerator")
@@ -78,6 +80,7 @@ _INPUT_KEYS = (
     "calib_batch",
     "calib_max_images",
     "submodule",
+    "allow_parity_fail",
 )
 _OUTPUT_KEYS = ("role", "path", "sha256", "bytes", "backend", "backend_version")
 _ROLES = frozenset(
@@ -200,11 +203,12 @@ def build_manifest(
     inputs: dict[str, Any],
     outputs: list[dict[str, Any]],
     session_providers: list[str],
-    model_sha256: str,
-    calibration_cache_sha256: str | None,
-    host: dict[str, Any],
-    build_duration_s: float,
-    cache: dict[str, Any],
+    parity: dict[str, Any],
+    model_sha256: str = "0" * 64,
+    calibration_cache_sha256: str | None = None,
+    host: dict[str, Any] | None = None,
+    build_duration_s: float = 0.0,
+    cache: dict[str, Any] | None = None,
     versions: dict[str, str | None] | None = None,
     created: str | None = None,
 ) -> dict[str, Any]:
@@ -231,9 +235,10 @@ def build_manifest(
         "session_providers": session_providers,
         "model_sha256": model_sha256,
         "calibration_cache_sha256": calibration_cache_sha256,
-        "host": host,
+        "host": host if host is not None else {"gpu_name": None, "gpu_architecture": None},
         "build_duration_s": build_duration_s,
-        "cache": cache,
+        "cache": cache if cache is not None else {"key": "0" * 64, "hit": False, "source": "miss"},
+        "parity": parity,
     }
     problems = manifest_problems(document)
     if problems:
@@ -337,6 +342,19 @@ def manifest_problems(document: object) -> list[str]:
                     problems.append(
                         f"outputs[{index}].bytes must be a non-negative integer"
                     )
+    inputs = document.get("inputs")
+    if (
+        isinstance(inputs, dict)
+        and "allow_parity_fail" in inputs
+        and type(inputs.get("allow_parity_fail")) is not bool
+    ):
+        problems.append("inputs.allow_parity_fail must be a boolean")
+    parity = document.get("parity")
+    if "parity" in document:
+        from ohho.parity.report import report_problems
+
+        for problem in report_problems(parity):
+            problems.append("parity: " + problem)
     providers = document.get("session_providers")
     if not isinstance(providers, list) or not all(
         isinstance(item, str) for item in providers
@@ -351,6 +369,11 @@ def manifest_problems(document: object) -> list[str]:
             problems.append("flags.onnx and flags.tensorrt must be booleans")
         if type(flags.get("dynamic_batch")) is not bool:
             problems.append("flags.dynamic_batch must be a boolean")
+        if (
+            "allow_parity_fail" in flags
+            and type(flags.get("allow_parity_fail")) is not bool
+        ):
+            problems.append("flags.allow_parity_fail must be a boolean")
         if type(flags.get("max_batch")) is not int or flags.get("max_batch") < 1:
             problems.append("flags.max_batch must be an integer >= 1")
         if (
