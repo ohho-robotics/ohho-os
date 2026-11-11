@@ -34,12 +34,13 @@ _ACTION_FAMILIES = frozenset(
     {"act", "rl_mlp", "diffusion", "smolvla", "openvla", "policy"}
 )
 _LOGIT_FAMILIES = frozenset({"classifier", "llm", "vlm"})
-_RUNNABLE_ROLES = ("onnx", "torchscript")
+_RUNNABLE_ROLES = ("onnx", "ort-int8", "torchscript")
 _UNCHECKED_REASON = {
     "engine": "TensorRT engine execution is a GPU follow-up and was not compared.",
     "awq": "AWQ weights were not executed.",
     "gptq": "GPTQ weights were not executed.",
     "bitsandbytes": "bitsandbytes weights were not executed.",
+    "nf4": "NF4 weights were not executed.",
     "fp8": "FP8 weights were not executed.",
 }
 _NOT_RUNNABLE = (

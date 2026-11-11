@@ -298,6 +298,52 @@ class TestPublishHook(unittest.TestCase):
             del args, kwargs
             return SimpleNamespace(get_providers=lambda: ["CPUExecutionProvider"])
 
+        def _passing_report(*args, **kwargs):
+            del args, kwargs
+            from ohho.parity.thresholds import resolve_thresholds
+
+            return {
+                "schema": "ohho.parity/v1",
+                "result": "pass",
+                "reasons": [],
+                "reference": {
+                    "ref": "publish-hook-test",
+                    "kind": "unknown",
+                    "family": "unknown",
+                },
+                "candidate": {"path": None, "format": None},
+                "target": "publish-hook-test",
+                "precision": "FP32",
+                "thresholds": resolve_thresholds(
+                    "unknown", "publish-hook-test", "FP32"
+                ).to_json(),
+                "inputs": {
+                    "source": "random",
+                    "path": None,
+                    "seed": 0,
+                    "n_requested": 1,
+                    "n": 0,
+                    "indices": None,
+                    "sha256": None,
+                    "dtype": "float32",
+                },
+                "outputs": [
+                    {
+                        "name": "output",
+                        "shape": [1],
+                        "mean_abs": 0.0,
+                        "max_abs": 0.0,
+                        "rmse": 0.0,
+                        "cosine": 1.0,
+                        "per_joint": None,
+                        "action_chunk": None,
+                        "top1": None,
+                        "kl": None,
+                    }
+                ],
+                "unchecked": [],
+            }
+
         cases = (
             ("int4-awq", "awq", "int4"),
             ("int4-gptq", "gptq", "int4"),
@@ -335,6 +381,10 @@ class TestPublishHook(unittest.TestCase):
                         return_value=(True, backend),
                     ),
                     patch("ohho.optimize.engine.build_session", _session),
+                    patch(
+                        "ohho.parity.gate.compare_export",
+                        side_effect=_passing_report,
+                    ),
                     patch("ohho.optimize.publish.run_parity", _spy),
                 ):
                     kwargs = {}
@@ -346,6 +396,7 @@ class TestPublishHook(unittest.TestCase):
                             target=target,
                             precision=precision,
                             out_dir=str(root / backend),
+                            allow_parity_fail=True,
                         ),
                         **kwargs,
                     )
@@ -452,6 +503,7 @@ class TestSmolVLADispatch(unittest.TestCase):
                         precision="int4-awq",
                         submodule="lm",
                         out_dir=str(root / "out"),
+                        allow_parity_fail=True,
                     )
                 )
         self.assertEqual(calls[0]["ohho_backbone"], "lm")
@@ -484,6 +536,7 @@ class TestSmolVLADispatch(unittest.TestCase):
                     precision="int4-awq",
                     submodule="lm",
                     out_dir=str(root / "out"),
+                    allow_parity_fail=True,
                 )
             )
             artifact = root / "out" / document["outputs"][0]["path"]
@@ -617,6 +670,7 @@ class TestOrtStaticInt8(unittest.TestCase):
                             target=profile_id,
                             precision="int8",
                             out_dir=str(out),
+                            allow_parity_fail=True,
                         )
                     )
                 self.assertEqual(document["precision"], "INT8")
@@ -665,6 +719,7 @@ class TestFp8EngineDispatch(unittest.TestCase):
                         target="cloud-h100",
                         precision="fp8",
                         out_dir=str(out),
+                        allow_parity_fail=True,
                     ),
                     backends=OptimizeBackends(trt_module=trt, cuda=False),
                 )
