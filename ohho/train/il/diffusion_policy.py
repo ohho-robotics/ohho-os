@@ -17,6 +17,11 @@ import math
 from pathlib import Path
 from typing import Any
 
+from ..determinism import (
+    dataloader_kwargs,
+    deterministic_algorithms,
+    reseed_runtime,
+)
 from .data import load_windows
 from .progress import ValTracker, validation_due
 
@@ -215,6 +220,8 @@ def train_diffusion(
     early_stop_patience: int = 0,
     early_stop_min_delta: float = 0.0,
     on_event: Any = None,
+    deterministic: bool = False,
+    seed: int | None = None,
 ) -> str:
     """Train :class:`TinyDiffusionPolicy` and write the serve checkpoint layout."""
     out = Path(output_dir).expanduser()
@@ -228,15 +235,80 @@ def train_diffusion(
     states, chunks, state_dim, action_dim = load_windows(Path(dataset), chunk_size)
     tensor_s = torch.tensor(states, dtype=torch.float32)
     tensor_a = torch.tensor(chunks, dtype=torch.float32)
+    with deterministic_algorithms(torch, enabled=deterministic):
+        return _train_diffusion_body(
+            out,
+            tensor_s,
+            tensor_a,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            device=device,
+            train_steps=train_steps,
+            batch_size=batch_size,
+            lr=lr,
+            chunk_size=chunk_size,
+            vision_backbone=vision_backbone,
+            diffusion_steps=diffusion_steps,
+            scheduler=scheduler,
+            num_inference_steps=num_inference_steps,
+            d_model=d_model,
+            log_every=log_every,
+            val_every=val_every,
+            val_fraction=val_fraction,
+            early_stop_patience=early_stop_patience,
+            early_stop_min_delta=early_stop_min_delta,
+            on_event=on_event,
+            deterministic=deterministic,
+            seed=seed,
+        )
+
+
+def _train_diffusion_body(
+    out: Path,
+    tensor_s: Any,
+    tensor_a: Any,
+    *,
+    state_dim: int,
+    action_dim: int,
+    device: str,
+    train_steps: int,
+    batch_size: int,
+    lr: float,
+    chunk_size: int,
+    vision_backbone: str,
+    diffusion_steps: int,
+    scheduler: str,
+    num_inference_steps: int,
+    d_model: int,
+    log_every: int,
+    val_every: int | None,
+    val_fraction: float,
+    early_stop_patience: int,
+    early_stop_min_delta: float,
+    on_event: Any,
+    deterministic: bool,
+    seed: int | None,
+) -> str:
+    """Fit one diffusion run. Caller holds the deterministic-algorithm scope."""
     train_s, train_a, val_s, val_a = _split_tensors(
         tensor_s, tensor_a, val_every, val_fraction
     )
     loader = DataLoader(
-        TensorDataset(train_s, train_a), batch_size=batch_size, shuffle=True
+        TensorDataset(train_s, train_a),
+        batch_size=batch_size,
+        **dataloader_kwargs(
+            torch, deterministic=deterministic, seed=seed, shuffle=True
+        ),
     )
     val_loader = DataLoader(
-        TensorDataset(val_s, val_a), batch_size=batch_size, shuffle=False
+        TensorDataset(val_s, val_a),
+        batch_size=batch_size,
+        **dataloader_kwargs(
+            torch, deterministic=deterministic, seed=seed, shuffle=False
+        ),
     )
+    if deterministic and seed is not None:
+        reseed_runtime(torch, seed)
     dev = torch.device(device)
     model = TinyDiffusionPolicy(
         state_dim=state_dim,
@@ -311,6 +383,7 @@ def train_diffusion(
         stopped_early=stopped_early,
         val_every=val_every,
         final_loss=final_loss,
+        deterministic=bool(deterministic),
     )
     _write_json(out / "config.json", config)
     metrics: dict[str, Any] = {
@@ -319,6 +392,7 @@ def train_diffusion(
         "train_steps": train_steps,
         "completed_steps": completed,
         "stopped_early": stopped_early,
+        "deterministic": bool(deterministic),
     }
     if last_val is not None:
         metrics["validation_loss"] = last_val
