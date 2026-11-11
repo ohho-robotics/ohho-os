@@ -45,6 +45,8 @@ jobs:
         run: python -m ohho_booster.assets
       - name: Unit tests
         run: python -m unittest discover -s tests
+      - name: Serve CPU examples
+        run: python examples/serve/run_cpu.py
       - name: SafetyGate coverage gate (ohho/safety.py >= 95% line+branch)
         shell: bash
         run: |

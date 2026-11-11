@@ -17,6 +17,91 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **LLM serving sweep** (OHH-476) — `ohho bench llm --sweep` varies
+  concurrency, max batch tokens, prefix caching, chunked prefill, and
+  speculative decoding where the serving adapter supports the option.
+  Workloads are short commands, long-context prompts with an image, and a
+  shared system prompt. The `ohho.bench/v1` result includes a Pareto table
+  of p95 TTFT against tokens/s. `--target-p95-ttft` recommends the
+  highest-throughput configuration at or under that TTFT. Unsupported
+  options are skipped with a reason. The CPU path is a stand-in and does
+  not launch an engine. A one-GPU run is not part of this command.
+- **`ohho parity`** — numerical gate between a reference model and an optimized
+  artifact (`ohho.parity/v1`). Reports mean absolute difference, max absolute
+  difference, RMSE, and cosine similarity per output; action heads also report
+  per-joint and action-chunk error; classifiers and LLMs also report top-1
+  agreement and logit KL. The default fail is mean absolute difference above
+  0.05, configurable per model family and target. Inputs are seeded random, a
+  LeRobot dataset, or a sim-loop episode. `ohho optimize` runs the gate before
+  it writes `manifest.json` and exits 1 without publishing when the gate fails,
+  unless `--allow-parity-fail` is set (recorded in the manifest). Docs:
+  [`docs/serve/parity.md`](docs/serve/parity.md).
+- **Generate-mode bench** (OHH-436) — `ohho bench --mode generate` measures
+  TTFT, TPOT (mean, median, p95), end-to-end latency, and tokens/s for an
+  autoregressive workload (`llm`, `vlm`, `vla`). The default CPU stand-in
+  sweeps concurrency and prompt or image size and compares FP16 / BF16 with
+  bitsandbytes 4-bit, AWQ, and GPTQ (latency, weight memory, top-1
+  action-token agreement). `--slo ttft_p95<=...` and `--slo tpot_p95<=...`
+  gate the primary cell. Optional `transformers` and the vLLM, SGLang, and
+  TensorRT-LLM adapters are used only when selected and the target supports
+  them.
+- **LLM serving backends** (OHH-475) — `ServingBackend` adapters for vLLM,
+  SGLang, TensorRT-LLM (`trtllm-serve` or `tritonserver`), and llama.cpp.
+  Each builds a launch command and parses a version. The engines stay
+  external programs and are not base dependencies. A failed launch reports
+  the exit or the health timeout and stops the process tree. `ohho bench llm`
+  measures time to first token, inter-token latency, tokens/s, and request
+  throughput against an OpenAI-compatible stream and writes `ohho.bench/v1`
+  with an optional `llm` block (`ohho.bench.llm/v1`).
+- **`ohho optimize`** — ONNX opset 17 export (dynamic batch, submodule
+  selection, ACT-style and MLP policies, TorchScript), TensorRT FP16/INT8/FP8
+  builds with an entropy calibrator attached before the build, ONNX Runtime
+  sessions checked against a target profile, and AWQ/GPTQ/bitsandbytes/FP8
+  weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
+  quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
+  Docs: [`docs/optimize.md`](docs/optimize.md).
+- **INT8 calibration cache (OHH-467)** — TensorRT 10 and newer build explicit
+  Q/DQ; TensorRT 8 and 9 keep the implicit entropy calibrator on
+  `config.int8_calibrator`. `--calib-max-images` caps how many samples are
+  read. The cache sidecar stores the model sha256 and preprocessing config,
+  is reused on the next build, and is invalidated when either changes. INT8
+  without calibration data is refused unless the ONNX graph already has Q/DQ
+  nodes.
+- **`ohho sweep plan`** — `ohho.sweep/v1` search-space schema (package data) and an
+  expander that turns it into trial recipes. Each trial is the opaque base
+  recipe plus dotted `path=value` overrides (the same form as
+  `ohho train --set`). Conditional dimensions appear only on trials whose
+  `when` matches. Constraints drop invalid combinations. The plan prints the
+  trial count and estimated GPU-hours, computed from per-trial values in the
+  spec. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep samplers** — `grid`, `random`, built-in TPE (`strategy: tpe` and
+  `bayesian`), and multi-objective TPE (`strategy: multi`). `SweepSampler`
+  proposes trials from completed objectives, stores an
+  `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep early stopping** — `early_stopping.rule` `asha` (successive
+  halving at rungs) and `median`, plus the existing `patience` rule.
+  `SweepRun.report` records an intermediate metric and `SweepRun.decide`
+  returns continue or stop. A stopped trial stays `pruned`, keeps its last
+  checkpoint and metrics, and is distinct from `failed`. Resume keeps that
+  status. A 32-trial synthetic ASHA benchmark uses under half the
+  trial-steps of the same sweep with no stopping rule.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
+  `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
+  `ohho sweep start --backend native` (the default) stores a local run and
+  prints no W&B URL. `--backend wandb` creates the sweep through the W&B
+  API when `WANDB_API_KEY` is set and prints the URL that client returns.
+  Each agent trial runs `python -m ohho.train.sweep_agent`, one OhhO train
+  job. `wandb` is an optional extra and is imported only on that path.
+  Patience-based `early_stopping` is not sent as Hyperband `early_terminate`
+  (OHH-520). Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
+  tags (`python examples/serve/run_cpu.py`). A failed example fails the
+  release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and
+  W&B/Prometheus export are placeholders until those commands are on main,
+  and they do not publish benchmark numbers. GPU examples run nightly on a
+  self-hosted runner when one is online.
 - **Protocol version** — `ohho.PROTOCOL_VERSION` (`1.0.0`) decoupled from package
   semver; `ohho version` / `ohho doctor` print it.
 - **JSON schemas** — `schemas/` (generated via `python scripts/export_json_schemas.py`);
@@ -68,6 +153,19 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Security
 
+- **Managed workers refuse untrusted pickle checkpoints** (OHH-485).
+  `ohho.model_safety` scans pickle opcodes before any load and accepts
+  safetensors, ONNX, or `torch.load(..., weights_only=True)` only.
+  `.pt`/`.bin` files that fail the scan, and files for which
+  `weights_only=True` fails, are refused when `OHHO_MANAGED_WORKER=1`.
+  There is no unrestricted pickle fallback. `ohho.worker_sandbox` records a
+  per-job container spec: read-only root, no host mounts, non-root user,
+  CPU/memory/GPU limits, wiped scratch, egress limited to the console API
+  and registry storage, and a short-lived job token instead of the user's
+  external-platform credentials. The spec is not executed here. Security
+  review sign-off is still required before cloud workers accept external
+  users. Docs:
+  [`docs/security/model-files-and-worker-sandbox.md`](docs/security/model-files-and-worker-sandbox.md).
 - **MCP stays on `sim://` unless a human passes `--allow-hardware`** (OHH-278).
   `OHHO_ALLOW_HARDWARE`, `OHHO_ARM_HARDWARE`, and tool arguments do not enable
   hardware. `ohho mcp connect` records `mcp serve` with neither

@@ -97,8 +97,9 @@
       }
     },
     "precision": {
+      "description": "Numeric format for the training step. fp32 is the default and runs on every device. fp16 uses torch.amp autocast and GradScaler loss scaling on CUDA. bf16 uses torch.amp autocast where bfloat16 runs, including CPU when that autocast succeeds. fp8 uses Transformer Engine on a CUDA GPU with compute capability 8.9 or newer. An unsupported choice fails before training. There is no fallback to another precision.",
       "type": "string",
-      "enum": ["fp32", "fp16", "bf16"],
+      "enum": ["fp32", "fp16", "bf16", "fp8"],
       "default": "fp32"
     },
     "device": {

@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/optimize-manifest.v1.json",
+  "title": "OptimizeManifest",
+  "description": "One ohho optimize run: the target profile, the flags that were applied, package versions, sha256 of each output file, and the ohho.parity/v1 gate result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "ohho_version",
+    "created",
+    "model",
+    "target",
+    "precision",
+    "execution_provider",
+    "flags",
+    "versions",
+    "inputs",
+    "outputs",
+    "session_providers",
+    "parity"
+  ],
+  "properties": {
+    "schema": {"const": "ohho.optimize_manifest.v1"},
+    "ohho_version": {"type": "string"},
+    "created": {"type": "string", "format": "date-time"},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "kind", "submodule", "source"],
+      "properties": {
+        "ref": {"type": "string"},
+        "kind": {"type": "string"},
+        "submodule": {"type": ["string", "null"]},
+        "source": {"type": "string", "enum": ["registry", "file"]}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "arch", "accelerator"],
+      "properties": {
+        "id": {"type": "string"},
+        "arch": {"type": "string"},
+        "accelerator": {"type": "string"}
+      }
+    },
+    "precision": {"type": "string", "enum": ["FP32", "FP16", "INT8", "FP8", "INT4"]},
+    "execution_provider": {"type": "string"},
+    "flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "onnx",
+        "tensorrt",
+        "quant",
+        "ort_ep",
+        "workspace_gb",
+        "workspace_bytes",
+        "max_batch",
+        "dynamic_batch",
+        "calib_batch",
+        "calib_max_images",
+        "quantization",
+        "opset",
+        "submodule",
+        "allow_parity_fail"
+      ],
+      "properties": {
+        "onnx": {"type": "boolean"},
+        "tensorrt": {"type": "boolean"},
+        "quant": {"type": ["string", "null"]},
+        "ort_ep": {"type": ["string", "null"]},
+        "workspace_gb": {"type": ["number", "null"]},
+        "workspace_bytes": {"type": "integer", "minimum": 0},
+        "max_batch": {"type": "integer", "minimum": 1},
+        "dynamic_batch": {"type": "boolean"},
+        "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
+        "quantization": {"type": ["string", "null"], "enum": ["implicit", "explicit", null]},
+        "opset": {"type": ["integer", "null"]},
+        "submodule": {"type": ["string", "null"]},
+        "allow_parity_fail": {"type": "boolean"}
+      }
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["torch", "onnx", "onnxruntime", "tensorrt"],
+      "properties": {
+        "torch": {"type": ["string", "null"]},
+        "onnx": {"type": ["string", "null"]},
+        "onnxruntime": {"type": ["string", "null"]},
+        "tensorrt": {"type": ["string", "null"]}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "target",
+        "precision",
+        "onnx",
+        "tensorrt",
+        "quant",
+        "ort_ep",
+        "workspace_gb",
+        "max_batch",
+        "dynamic_batch",
+        "calib_data",
+        "calib_cache",
+        "calib_batch",
+        "calib_max_images",
+        "submodule",
+        "allow_parity_fail"
+      ],
+      "properties": {
+        "model": {"type": "string"},
+        "target": {"type": "string"},
+        "precision": {"type": "string"},
+        "onnx": {"type": "boolean"},
+        "tensorrt": {"type": "boolean"},
+        "quant": {"type": ["string", "null"]},
+        "ort_ep": {"type": ["string", "null"]},
+        "workspace_gb": {"type": ["number", "null"]},
+        "max_batch": {"type": "integer"},
+        "dynamic_batch": {"type": "boolean"},
+        "calib_data": {"type": ["string", "null"]},
+        "calib_cache": {"type": ["string", "null"]},
+        "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
+        "submodule": {"type": ["string", "null"]},
+        "allow_parity_fail": {"type": "boolean"}
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "sha256", "bytes"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["onnx", "torchscript", "engine", "awq", "gptq", "bitsandbytes", "fp8"]
+          },
+          "path": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "session_providers": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "parity": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "ohho.parity/v1 report. The full schema is ohho/parity/parity_report.schema.json.",
+      "required": ["schema", "result", "allow_parity_fail", "reasons", "inputs", "outputs"],
+      "properties": {
+        "schema": {"const": "ohho.parity/v1"},
+        "result": {"enum": ["pass", "fail"]},
+        "allow_parity_fail": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

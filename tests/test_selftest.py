@@ -16,10 +16,12 @@ from ohho.schema import ConnectionState, Odometry, Telemetry, TransportStatus
 from ohho.selftest import (
     CheckResult,
     SelfTestReport,
+    _limit_selftest_motion,
     _port_exists,
     check_camera_frames,
     check_imu_rate,
     check_serial_link,
+    check_stand_lie_cycle,
     check_sts3215_servos,
     check_wheel_spin_encoders,
     default_hardware_transport_uri,
@@ -738,6 +740,244 @@ class TestSelftestHonestyBugbotRegressions(unittest.TestCase):
                     ["selftest", "--allow-spin", "--allow-all-skip", "--out", out_f]
                 )
                 self.assertEqual(code_allowed, 0)
+
+
+class _SportLink:
+    """DDS-shaped link whose sport commands record the call and return None.
+
+    ``None`` is what ``UnitreeDdsTransport.sport_command`` returns after it
+    forwards. The self-test allowlist wrapper returns ``False`` when it drops
+    a name, which is a different result.
+    """
+
+    protocol = "dds"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+
+    def send_velocity(self, vel: object) -> None:
+        return None
+
+    def sport_command(self, name: str, *args: float) -> None:
+        self.calls.append((name, args))
+        return None
+
+
+class TestSelfTestProfile(unittest.TestCase):
+    def test_network_interface_replaces_the_default_dds_host(self):
+        with patch.dict(os.environ, {"OHHO_GO2_IFACE": "eth0", "OHHO_GO2_DOMAIN": ""}):
+            with patch(
+                "ohho.adapters.resolve_transport", side_effect=RuntimeError("stop")
+            ) as res:
+                with self.assertRaises(RuntimeError):
+                    run_selftest(
+                        "unitree-go2",
+                        sim=False,
+                        network_interface="enp3s0",
+                        replace_network_interface=True,
+                    )
+        self.assertEqual(res.call_args.args[0], "dds://enp3s0")
+
+    def test_explicit_dds_host_is_kept(self):
+        with patch(
+            "ohho.adapters.resolve_transport", side_effect=RuntimeError("stop")
+        ) as res:
+            with self.assertRaises(RuntimeError):
+                run_selftest(
+                    "unitree-go2",
+                    sim=False,
+                    transport_uri="dds://eth1",
+                    network_interface="enp3s0",
+                )
+        self.assertEqual(res.call_args.args[0], "dds://eth1")
+
+    def test_sim_backend_and_asset_path_select_the_sim_link(self):
+        from ohho.adapters import resolve_transport as real_resolve
+
+        seen: dict = {}
+
+        def spy(uri, spec, *args, **kwargs):
+            seen["uri"] = uri
+            seen["backend"] = spec.sim_backend
+            seen["urdf"] = spec.assets.urdf
+            return real_resolve(uri, spec, *args, **kwargs)
+
+        with patch("ohho.adapters.resolve_transport", spy):
+            report = run_selftest(
+                "sim",
+                sim=True,
+                sim_backend="kinematic",
+                asset_path="bot.urdf",
+            )
+        self.assertEqual(seen["uri"], "sim://")
+        self.assertEqual(seen["backend"], "kinematic")
+        self.assertEqual(seen["urdf"], "bot.urdf")
+        self.assertEqual(report.mode, "sim")
+        self.assertEqual(report.overall_status, "PASS")
+
+    def test_hardware_motion_uses_tighter_caps_and_not_raw_motors(self):
+        from ohho.schema import Velocity
+
+        class _Link:
+            protocol = "serial"
+
+            def __init__(self) -> None:
+                self.vel = None
+                self.sport = None
+                self.motor = None
+
+            def connect(self):
+                return None
+
+            def disconnect(self):
+                return None
+
+            def send_velocity(self, vel):
+                self.vel = (vel.linear_x, vel.linear_y, vel.angular_z)
+
+            def send_motor(self, *args):
+                self.motor = args
+
+            def sport_command(self, name, *args):
+                self.sport = (name, args)
+                return True
+
+        link = _Link()
+
+        def checks(_profile, transport, **_kwargs):
+            transport.send_velocity(Velocity(linear_x=1.0, linear_y=0.4, angular_z=3.0))
+            motor = getattr(transport, "send_motor", None)
+            if callable(motor):
+                motor(50, 0, 0, 0)
+            self.assertFalse(transport.sport_command("stand_up"))
+            self.assertFalse(transport.sport_command("dance"))
+            self.assertTrue(transport.sport_command("stop_move"))
+            return {}
+
+        with patch("ohho.selftest._run_profile_checks", checks):
+            run_selftest(
+                "omnibot",
+                sim=False,
+                transport=link,
+                safety_overrides={"max_vx": 0.01, "max_vy": 0.01, "max_wz": 0.01},
+            )
+        self.assertIsNone(link.motor)
+        self.assertEqual(link.sport, ("stop_move", ()))
+        self.assertIsNotNone(link.vel)
+        self.assertAlmostEqual(link.vel[0], 0.01)
+        self.assertAlmostEqual(link.vel[1], 0.01)
+        self.assertAlmostEqual(link.vel[2], 0.01)
+
+    def test_blocked_stand_lie_is_not_pass(self):
+        link = _SportLink()
+        wrapped = _limit_selftest_motion(
+            link,
+            get_spec("unitree-go2"),
+            {"allowlist": ["stop_move"]},
+        )
+        result = check_stand_lie_cycle(
+            wrapped, sim=False, allow_stand=True, settle_s=0.0
+        )
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.measurements["blocked"], ["stand_up", "stand_down"])
+        self.assertEqual(link.calls, [])
+        self.assertIn("allowlist", result.reason)
+
+        partial = _SportLink()
+        wrapped_partial = _limit_selftest_motion(
+            partial,
+            get_spec("unitree-go2"),
+            {"allowlist": ["stand_up", "stop_move"]},
+        )
+        partial_result = check_stand_lie_cycle(
+            wrapped_partial, sim=False, allow_stand=True, settle_s=0.0
+        )
+        self.assertEqual(partial_result.status, "FAIL")
+        self.assertEqual(partial_result.measurements["blocked"], ["stand_down"])
+        self.assertEqual([name for name, _args in partial.calls], ["stand_up"])
+
+    def test_allowlisted_stand_lie_still_passes(self):
+        link = _SportLink()
+        wrapped = _limit_selftest_motion(
+            link,
+            get_spec("unitree-go2"),
+            {"max_vx": 0.1},
+        )
+        result = check_stand_lie_cycle(
+            wrapped, sim=False, allow_stand=True, settle_s=0.0
+        )
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(
+            [name for name, _args in link.calls], ["stand_up", "stand_down"]
+        )
+
+    def test_cli_passes_profile_transport_backend_and_caps(self):
+        report = SelfTestReport(
+            timestamp="t",
+            robot="omnibot",
+            mode="sim",
+            overall_status="PASS",
+            summary={
+                "total": 1,
+                "passed": 1,
+                "failed": 0,
+                "skipped": 0,
+                "duration_s": 0.0,
+            },
+            checks={},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = os.path.join(tmp, ".ohho", "robots", "omnibot.toml")
+            os.makedirs(os.path.dirname(profile))
+            with open(profile, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "\n".join(
+                        [
+                            'transport = "serial:///dev/ttyUSB9"',
+                            'sim_backend = "kinematic"',
+                            'asset_path = "bot.urdf"',
+                            'network_interface = "enp3s0"',
+                            "",
+                            "[safety]",
+                            "max_vx = 0.1",
+                            "",
+                        ]
+                    )
+                )
+            out = os.path.join(tmp, "out.json")
+            with patch.dict(os.environ, {"OHHO_HOME": tmp}):
+                os.environ.pop("OHHO_ROBOT", None)
+                with patch("ohho.selftest.run_selftest", return_value=report) as run:
+                    code = main(
+                        ["selftest", "--sim", "--robot", "omnibot", "--out", out]
+                    )
+            self.assertEqual(code, 0)
+            kwargs = run.call_args.kwargs
+            self.assertEqual(kwargs["transport_uri"], "serial:///dev/ttyUSB9")
+            self.assertEqual(kwargs["sim_backend"], "kinematic")
+            self.assertEqual(kwargs["asset_path"], "bot.urdf")
+            self.assertEqual(kwargs["network_interface"], "enp3s0")
+            self.assertTrue(kwargs["replace_network_interface"])
+            self.assertAlmostEqual(kwargs["safety_overrides"]["max_vx"], 0.1)
+
+            with patch.dict(os.environ, {"OHHO_HOME": tmp}):
+                os.environ.pop("OHHO_ROBOT", None)
+                with patch("ohho.selftest.run_selftest", return_value=report) as run:
+                    code = main(
+                        [
+                            "selftest",
+                            "--sim",
+                            "--robot",
+                            "omnibot",
+                            "--transport",
+                            "dds://eth1",
+                            "--out",
+                            out,
+                        ]
+                    )
+            self.assertEqual(code, 0)
+            self.assertEqual(run.call_args.kwargs["transport_uri"], "dds://eth1")
+            self.assertFalse(run.call_args.kwargs["replace_network_interface"])
 
 
 if __name__ == "__main__":
