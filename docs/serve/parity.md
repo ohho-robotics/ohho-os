@@ -42,11 +42,66 @@ file, the gate fails closed.
 | A LeRobot dataset directory, or `dataset:PATH` | `observation.state` rows. A dataset longer than `--n` is subsampled with `--seed` and then sorted back into time order. A shorter dataset uses every frame. |
 | `recorded` | One episode from `ohho.sim_loop.record_sim_episodes` (at most 8 steps), then the same reader. |
 | `recorded:PATH` or an episode `.jsonl` | Frames already written by that recorder. |
+| `camera:PATH` | A camera log: a `.jsonl` file, or a directory with `frames.jsonl` or `log.jsonl`. Each row has `observation.state`. An optional `image` is a path to that frame. |
 
 The report records `inputs.source`, `inputs.path`, `inputs.seed`,
 `inputs.n_requested`, `inputs.n`, `inputs.indices` (null for random), and
 `inputs.sha256`. The hash is SHA-256 of the little-endian float32 values,
 row-major, input names in sorted order. `inputs.dtype` is `float32`.
+`inputs.sha256` is the hash of the inputs only. `parity_set.sha256` is the
+hash of `samples.json`, which is the inputs and the FP32 reference outputs.
+
+## Parity sets
+
+`ohho parity capture` runs the FP32 reference on N real inputs and writes a
+versioned set. The inputs are a LeRobot dataset, a sim rollout (`recorded`
+or `recorded:PATH`), or a camera log (`camera:PATH`).
+
+```bash
+ohho parity capture --reference reference-act --inputs ./dataset --n 32 --seed 0 \
+  --out build/act-golden --id act-golden
+ohho parity capture --reference reference-act --inputs recorded --n 8 \
+  --out build/act-rollout --id act-rollout
+ohho parity capture --reference reference-act --inputs camera:log/frames.jsonl \
+  --n 8 --out build/act-camera.tar.gz --id act-camera
+```
+
+The directory contains `manifest.json` (`ohho.parity_set/v1`) and
+`samples.json`. `manifest.sha256` is the SHA-256 of the `samples.json` bytes.
+`--out` ending in `.tar.gz` or `.tgz` writes those files as an archive. The
+directory and the archive of the same samples share that sha256. Image files
+from a camera log are copied under `media/` and listed in the manifest. They
+are not part of the hash.
+
+`--register` copies the set into the local registry (`OHHO_PARITY_SETS`, or
+`~/.ohho/parity-sets`) and records an attachment from the reference model to
+`--model-version` (default `current`). `attach_parity_set(..., publisher=...)`
+is the upload hook. `ParitySetPublisher.publish` receives the local directory
+and the manifest and returns a registry URI. The default publisher returns
+`local://<id>@<version>` and does not upload. Console storage supplies its
+own publisher. That upload is a separate change.
+
+`ohho parity` and `ohho optimize` accept `--parity-set <id|path>`. An id is
+resolved in the local registry (`act-golden` or `act-golden@1`). A path may
+be the directory, `manifest.json`, or a `.tar.gz` archive. The gate feeds the
+stored inputs to the candidate and compares the candidate to the stored FP32
+outputs. The set must belong to the same reference model. `--inputs`, `--n`,
+and `--seed` do not replace the stored samples.
+
+The report field `parity_set` records `id`, `version`, `sha256`, `synthetic`,
+and `source`.
+
+Without `--parity-set`, random inputs are an auto-generated set with `id`
+`synthetic`, `source` `synthetic`, and `synthetic` true. A console can badge
+that case. Real `--inputs` without a captured set stay on those inputs and
+are recorded as `id` `ephemeral` with `synthetic` false. They are not a
+versioned registry set. Capture them to get one.
+
+```bash
+ohho parity --reference reference-act --candidate build/act --parity-set act-golden
+ohho optimize --model reference-act --target x86-cpu --precision fp32 \
+  --out build/act --parity-set build/act-golden
+```
 
 ## Metrics
 
@@ -160,6 +215,13 @@ An empty list means every output was compared.
     "indices": null,
     "sha256": "…64 lowercase hex characters…",
     "dtype": "float32"
+  },
+  "parity_set": {
+    "id": "synthetic",
+    "version": 1,
+    "sha256": "…64 lowercase hex characters…",
+    "synthetic": true,
+    "source": "synthetic"
   },
   "outputs": [
     {

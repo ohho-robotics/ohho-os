@@ -8,6 +8,7 @@ and ``outputs`` without another schema.
 
 from __future__ import annotations
 
+import re
 from importlib.resources import files
 from typing import Any
 
@@ -26,6 +27,7 @@ _TOP = (
     "precision",
     "thresholds",
     "inputs",
+    "parity_set",
     "outputs",
     "unchecked",
     "allow_parity_fail",
@@ -43,7 +45,10 @@ _INPUTS = (
     "sha256",
     "dtype",
 )
-_SOURCES = frozenset({"random", "dataset", "recorded"})
+_SOURCES = frozenset({"random", "dataset", "recorded", "camera"})
+_PARITY_SET = ("id", "version", "sha256", "synthetic", "source")
+_SET_SOURCES = frozenset({"synthetic", "dataset", "recorded", "camera"})
+_SET_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
 _THRESHOLDS = (
     "mean_abs",
     "max_abs",
@@ -90,8 +95,18 @@ def build_report(
     outputs: list[dict[str, Any]],
     unchecked: list[dict[str, Any]] | None = None,
     allow_parity_fail: bool = False,
+    parity_set: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble a report and reject a document that does not match the schema."""
+    """Assemble a report and reject a document that does not match the schema.
+
+    ``parity_set`` records the golden set that was scored. Callers that do not
+    have one yet receive the unscored synthetic record; ``ohho parity`` and
+    ``ohho optimize`` always pass the set they actually used.
+    """
+    if parity_set is None:
+        from ohho.parity.sets import unscored_parity_set
+
+        parity_set = unscored_parity_set()
     document = {
         "schema": SCHEMA_ID,
         "result": result,
@@ -102,6 +117,7 @@ def build_report(
         "precision": precision,
         "thresholds": thresholds,
         "inputs": inputs,
+        "parity_set": parity_set,
         "outputs": outputs,
         "unchecked": list(unchecked or []),
         "allow_parity_fail": allow_parity_fail,
@@ -144,6 +160,7 @@ def report_problems(document: object) -> list[str]:
     _optional_text(document.get("precision"), "precision", problems)
     _thresholds(document.get("thresholds"), problems)
     _inputs(document.get("inputs"), problems)
+    _parity_set(document.get("parity_set"), problems)
     _outputs(document.get("outputs"), result, problems)
     _unchecked(document.get("unchecked"), problems)
     if type(document.get("allow_parity_fail")) is not bool:
@@ -195,7 +212,7 @@ def _inputs(value: object, problems: list[str]) -> None:
     assert isinstance(value, dict)
     source = value.get("source")
     if source not in _SOURCES:
-        problems.append("inputs.source must be random, dataset, or recorded")
+        problems.append("inputs.source must be random, dataset, recorded, or camera")
     path = value.get("path")
     if path is not None and not isinstance(path, str):
         problems.append("inputs.path must be a string or null")
@@ -231,6 +248,42 @@ def _inputs(value: object, problems: list[str]) -> None:
         problems.append("inputs.sha256 must be 64 lowercase hex characters")
     if value.get("dtype") != "float32":
         problems.append("inputs.dtype must be float32")
+
+
+def _parity_set(value: object, problems: list[str]) -> None:
+    if not _object_keys(value, _PARITY_SET, "parity_set", problems):
+        return
+    assert isinstance(value, dict)
+    set_id = value.get("id")
+    if not isinstance(set_id, str) or _SET_ID.fullmatch(set_id) is None:
+        problems.append("parity_set.id must be a lowercase slug")
+        set_id = ""
+    version = value.get("version")
+    if type(version) is not int or version < 1:
+        problems.append("parity_set.version must be an integer >= 1")
+    synthetic = value.get("synthetic")
+    if type(synthetic) is not bool:
+        problems.append("parity_set.synthetic must be a boolean")
+        synthetic = None
+    source = value.get("source")
+    if source not in _SET_SOURCES:
+        problems.append(
+            "parity_set.source must be synthetic, dataset, recorded, or camera"
+        )
+    if synthetic is True and (set_id != "synthetic" or source != "synthetic"):
+        problems.append("a synthetic parity set has id synthetic and source synthetic")
+    if synthetic is False and (set_id == "synthetic" or source == "synthetic"):
+        problems.append("a captured parity set is not synthetic")
+    digest = value.get("sha256")
+    if digest is None:
+        if synthetic is not True:
+            problems.append("parity_set.sha256 is required unless the set is synthetic")
+    elif (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(ch not in _HEX for ch in digest)
+    ):
+        problems.append("parity_set.sha256 must be 64 lowercase hex characters or null")
 
 
 def _outputs(value: object, result: object, problems: list[str]) -> None:
