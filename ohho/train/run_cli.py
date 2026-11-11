@@ -59,6 +59,7 @@ EXIT_DATASET = 4
 EXIT_TRAIN_FAILED = 5
 
 UNAVAILABLE_MESSAGE = "family not available in this build"
+_NO_PRUNING = object()
 
 
 class _RunSession:
@@ -117,7 +118,7 @@ class _RunSession:
         metrics_path = Path(result.metrics_path).expanduser()
         if not metrics_path.is_file():
             raise TrainFailed(f"trainer did not write a metrics file: {metrics_path}")
-        final_loss, throughput, peak = _read_metric_fields(metrics_path)
+        final_loss, throughput, peak, pruning = _read_metric_fields(metrics_path)
         if self.capture is None:
             self.begin(result.device)
         if self.capture is None:
@@ -134,6 +135,8 @@ class _RunSession:
             device=result.device,
             throughput_steps_per_s=throughput,
             peak_memory_bytes=peak,
+            pruning_report=None if pruning is _NO_PRUNING else pruning,
+            pruning_from_metrics=pruning is not _NO_PRUNING,
         )
         path = write_run_manifest(checkpoint_dir / MANIFEST_NAME, manifest)
         if self.path is not None and self.path.resolve() != path.resolve():
@@ -179,6 +182,7 @@ def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
     run = _RunSession()
     try:
         loaded = load_recipe_file(recipe, overrides)
+        loaded = _apply_pruning_defaults(loaded)
         family_id = str(loaded.get("family", ""))
         ensure_loaded()
         family = get_family(family_id)
@@ -308,17 +312,33 @@ def _emit_success(result: TrainResult, manifest_path: Path, final_loss: Any) -> 
     )
 
 
-def _read_metric_fields(metrics_path: Path) -> tuple[Any, Any, Any]:
+def _apply_pruning_defaults(recipe: dict[str, Any]) -> dict[str, Any]:
+    """Fill defaults on an optional pruning block before the run is captured."""
+    block = recipe.get("pruning")
+    if block is None:
+        return recipe
+    if not isinstance(block, dict):
+        raise RecipeConfigError("pruning must be a mapping")
+    from .compression.pruning import normalize_pruning
+
+    updated = dict(recipe)
+    updated["pruning"] = normalize_pruning(block)
+    return updated
+
+
+def _read_metric_fields(metrics_path: Path) -> tuple[Any, Any, Any, Any]:
     try:
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise TrainFailed(f"could not read metrics {metrics_path}: {exc}") from exc
     if not isinstance(metrics, dict):
-        return None, None, None
+        return None, None, None, _NO_PRUNING
+    pruning = metrics["pruning"] if "pruning" in metrics else _NO_PRUNING
     return (
         metrics.get("final_loss"),
         metrics.get("throughput_steps_per_s"),
         metrics.get("peak_memory_bytes"),
+        pruning,
     )
 
 

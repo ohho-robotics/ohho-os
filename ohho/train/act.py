@@ -182,6 +182,7 @@ def train_act(
     precision: str = "fp32",
     mock: bool = False,
     log_every: int = 25,
+    pruning: Optional[Dict[str, Any]] = None,
     val_every: int | None = None,
     val_fraction: float = 0.2,
     early_stop_patience: int = 0,
@@ -202,6 +203,12 @@ def train_act(
     qat_block = kwargs.pop("qat", None)
     out = Path(output_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
+    if mock and pruning is not None:
+        from .recipe_schema import RecipeConfigError
+
+        raise RecipeConfigError(
+            "pruning does not run when mock=True; the mock checkpoint has no weights"
+        )
 
     reader = DatasetReader(dataset)
     state_dim = reader.state_dim or 9
@@ -283,6 +290,7 @@ def train_act(
             device=device,
             plan=plan,
             qat_block=qat_block,
+            pruning=pruning,
             train_steps=train_steps,
             batch_size=batch_size,
             lr=lr,
@@ -316,6 +324,7 @@ def _train_act_body(
     device: str,
     plan: Any,
     qat_block: Any,
+    pruning: Optional[Dict[str, Any]],
     train_steps: int,
     batch_size: int,
     lr: float,
@@ -376,6 +385,17 @@ def _train_act_body(
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    prune = None
+    if pruning is not None:
+        from .compression.pruning import PruningSession
+
+        prune = PruningSession(
+            model,
+            pruning,
+            train_steps=train_steps,
+            export_dir=out,
+        )
+        train_steps = prune.optimizer_steps
     session = PrecisionSession(plan)
     session.begin()
 
@@ -387,6 +407,8 @@ def _train_act_body(
     last_val: float | None = None
     while step < train_steps and not stopped_early:
         for batch_s, batch_a in loader:
+            if prune is not None:
+                prune.before_step(step)
             batch_s = batch_s.to(dev)
             batch_a = batch_a.to(dev)
 
@@ -397,6 +419,8 @@ def _train_act_body(
                 total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
             session.backward(total_loss)
             session.optimizer_step(optimizer)
+            if prune is not None:
+                prune.after_step(step)
 
             if step % log_every == 0 or step == train_steps - 1:
                 loss_val = round(float(total_loss.detach().float().item()), 4)
@@ -438,6 +462,7 @@ def _train_act_body(
             if step >= train_steps:
                 break
     stats = session.end(step)
+    report = prune.finish() if prune is not None else None
     qat_report = _run_qat_phases(
         model,
         qat_block,
@@ -477,6 +502,13 @@ def _train_act_body(
         "loss_curve": loss_curve,
         "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
+    if report is not None:
+        config["pruning"] = {
+            "method": report["method"],
+            "schedule": report["schedule"],
+            "target_sparsity": report["target_sparsity"],
+            "achieved_sparsity": report["achieved_sparsity"],
+        }
     if qat_report is not None:
         config["qat"] = qat_report
     with open(out / "config.json", "w", encoding="utf-8") as f:
@@ -493,6 +525,8 @@ def _train_act_body(
         "throughput_steps_per_s": stats["throughput_steps_per_s"],
         "peak_memory_bytes": stats["peak_memory_bytes"],
     }
+    if report is not None:
+        metrics["pruning"] = report
     if qat_report is not None:
         metrics["qat"] = qat_report
     if last_val is not None:
