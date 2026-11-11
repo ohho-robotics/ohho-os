@@ -39,6 +39,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
 | `precision` | `fp32` (default), `fp16`, `bf16`, or `fp8`. See [Mixed precision](precision.md). An unsupported choice fails before training. SmolVLA and OpenVLA store BF16 on `hyperparameters.precision` and do not read this field. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
+| `deterministic` | `false` (default) or `true`. ACT and Diffusion Policy honor `true`: seeded batch order, DataLoader workers fixed at 0, and torch / cuDNN deterministic algorithms when those knobs exist. See [`determinism.md`](determinism.md). |
 | `qat` | Optional quantisation-aware training block. See [Quantisation-aware training](qat.md). `bit_width`, `granularity`, `calibration_steps`, and `finetune_steps` are plain `--set` fields. |
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
@@ -54,7 +55,7 @@ Relative paths are resolved from the process working directory.
 2. Apply every `--set` override.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
-5. Shared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision.
+5.  and diffusionShared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision. `deterministic: true` with no `hyperparameters.seed` records seed `0`. It is not a separate exit.
 6. Family preflight: for ACT and diffusion: precision, hyperparameters, dataset, device, torch (for ACT: also the QAT block when set; a QAT block that asks ACT to export ONNX, or weight-and-activation QAT with `calibration_steps` of 0, fails here). SmolVLA and OpenVLA check family hyperparameters (BF16 is `hyperparameters.precision`; the shared precision field is not read) and build a memory estimate, then stop (they do not download weights and do not emit `train_start`). PPO checks precision, hyperparameters, the task, the backend, torch, and onnx. A missing dataset directory does not stop PPO. `version_id` alone still does.
 7. On `train_start`, write `run_manifest.json` with `status: running`. The progress event includes `precision` (the runner fills it when the family omits it).
 8. Call the trainer.
@@ -126,7 +127,7 @@ A run that never starts training emits a single `error` line and no `train_start
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | ok | Checkpoint, metrics, and a final `run_manifest.json` (`status: succeeded`) were written. |
-| 1 | invalid | Parse error, `--set` error, schema error, or preflight refusal. ACT and diffusion refuse unsupported precision, precision the family metadata does not accept, an unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, or missing torch. SmolVLA/OpenVLA refuse hyperparameters outside their range. PPO refuses those same precision, hyperparameter, device, and torch problems, plus an unknown or unavailable task, a GPU-only task or backend, a missing onnx package, or an optional backend that is not installed. The trainer was not called. |
+| 1 | invalid | Parse error, `--set` error, schema error, or preflight refusal. ACT and diffusion refuse unsupported precision, precision the family metadata does not accept, an unknown hyperparameter, value outside its range, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, `vision_backbone` other than `none`, device not available, or missing torch. SmolVLA/OpenVLA refuse hyperparameters outside their range. PPO refuses those same precision, hyperparameter, device, and torch problems, plus an unknown or unavailable task, a GPU-only task or backend, a missing onnx package, or an optional backend that is not installed. The trainer was not called. |
 | 2 | usage | The process was invoked incorrectly. This is argparse (the recipe path was missing). No JSON line. |
 | 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build (including schema-valid SmolVLA or OpenVLA recipes whose parameters are in range, which do not download base weights or launch fine-tuning). `message` is `family not available in this build`. The trainer was not called. |
 | 4 | dataset | The family can train, but the dataset cannot be used. `version_id` alone is refused. ACT also refuses a `path` that is not a directory. PPO does not read `dataset.path`, so a missing directory does not use this code. The trainer was not called. |
