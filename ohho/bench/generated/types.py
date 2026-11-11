@@ -29,6 +29,8 @@ __all__ = [
     "Comparison",
     "GateCheck",
     "Gates",
+    "CostInputs",
+    "BenchCost",
     "BatchResult",
     "LlmParetoPoint",
     "LlmPoint",
@@ -296,15 +298,76 @@ class Gates(TypedDict):
     checks: list[GateCheck]
 
 
-class BatchResult(TypedDict):
+class _CostInputsRequired(TypedDict):
+    target_profile: str
+    profile_source: Literal["run", "flag", "default"]
+    pricing: Literal["cloud_gpu_hour", "edge_amortised"]
+    price_source: Literal["built-in", "file", "flag"]
+    control_rate_hz: float
+    watts_source: Literal["measured", "profile_default", "user", "unmeasured"]
+    electricity_usd_per_kwh: float
+    electricity_applied: bool
+    throughput_value: float
+    throughput_unit: str
+    note: str
+
+
+class CostInputs(_CostInputsRequired, total=False):
+    """Price inputs used for one estimate. Edit them and recompute without
+    rerunning the benchmark. Every cost is an estimate, not an invoice.
+
+    Additional properties are allowed.
+    """
+
+    measured_target_profile: str
+    pricing_detail: str
+    watts: float
+    gpu_hour_usd: float
+    hardware_usd: float
+    amortisation_hours: float
+    hardware_usd_per_hour: float
+    electricity_usd_per_hour: float
+    tokens_per_s: float
+    actions_per_s: float
+
+
+class _BenchCostRequired(TypedDict):
+    schema: Literal["ohho.bench.cost/v1"]
+    estimate: Literal[True]
+    label: Literal["estimate"]
+    inputs: CostInputs
+    usd_per_hour: float
+
+
+class BenchCost(_BenchCostRequired, total=False):
+    """Estimated USD from measured throughput and a user-editable price. estimate
+    is always true. label is estimate. These figures are not an invoice, a cloud
+    bill, or a hardware quote.
+
+    Additional properties are allowed.
+    """
+
+    usd_per_1m_output_tokens: float
+    usd_per_1k_actions: float
+    usd_per_robot_hour: float
+    actions_per_watt: float
+    meets_control_rate: bool
+    robots_per_device: float
+
+
+class _BatchResultRequired(TypedDict):
+    batch_size: int
+    latency: LatencyReport
+    throughput: Throughput
+
+
+class BatchResult(_BatchResultRequired, total=False):
     """Latency and throughput for one batch size.
 
     Additional properties are allowed.
     """
 
-    batch_size: int
-    latency: LatencyReport
-    throughput: Throughput
+    cost: BenchCost
 
 
 class _LlmParetoPointRequired(TypedDict):
@@ -326,6 +389,7 @@ class LlmParetoPoint(_LlmParetoPointRequired, total=False):
     prefix_cache: bool
     chunked_prefill: bool
     speculative_decoding: bool
+    cost: BenchCost
 
 
 class _LlmPointRequired(TypedDict):
@@ -360,6 +424,7 @@ class LlmPoint(_LlmPointRequired, total=False):
     chunked_prefill: bool
     speculative_decoding: bool
     pareto: bool
+    cost: BenchCost
 
 
 class _LlmPrecisionRequired(TypedDict):
@@ -383,6 +448,7 @@ class LlmPrecision(_LlmPrecisionRequired, total=False):
     concurrency: int
     prompt_tokens: int
     image_tokens: int
+    cost: BenchCost
 
 
 class _LlmRecommendationRequired(TypedDict):
@@ -406,6 +472,7 @@ class LlmRecommendation(_LlmRecommendationRequired, total=False):
     speculative_decoding: bool
     ttft_p95_ms: float
     tokens_per_s: float
+    cost: BenchCost
 
 
 class LlmSkip(TypedDict):
@@ -546,4 +613,5 @@ class BenchResult(_BenchResultRequired, total=False):
     gates: Gates
     batches: list[BatchResult]
     llm: LlmBench
+    cost: BenchCost
     pipeline: PipelineBench

@@ -4,7 +4,7 @@ The generic exporter calls ``torch.onnx.export`` at opset 17 with a dynamic
 batch axis. ACT-style and MLP policies match first and use the same export
 with their own input and output names. ``register_exporter`` inserts a
 matcher ahead of the generic exporter. Submodule selection accepts a dotted
-path or the roles ``vision``, ``actor``, and ``encoder``.
+path or the roles ``vision``, ``actor``, ``encoder``, and ``lm``.
 """
 
 from __future__ import annotations
@@ -31,6 +31,17 @@ _ROLES = {
     ),
     "actor": ("actor", "model.actor"),
     "encoder": ("encoder", "model.encoder"),
+    "lm": (
+        "model.vlm_with_expert.vlm.model.text_model",
+        "model.vlm_with_expert.vlm.text_model",
+        "model.vlm_with_expert.vlm.language_model",
+        "vlm_with_expert.vlm.model.text_model",
+        "model.text_model",
+        "text_model",
+        "language_model",
+        "model.language_model",
+        "lm",
+    ),
 }
 
 
@@ -108,7 +119,7 @@ def exporter_names() -> tuple[str, ...]:
 
 
 def select_submodule(module, selector: str):
-    """Return a nested module by dotted path or by the vision/actor/encoder role."""
+    """Return a nested module by dotted path or by the vision/actor/encoder/lm role."""
     import torch.nn as nn
 
     candidates = _ROLES.get(selector, (selector,))

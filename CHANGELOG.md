@@ -17,6 +17,24 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **LLM cost model** (OHH-477) — `ohho bench` writes an `ohho.bench.cost/v1`
+  estimate on every inference, generate (`llm`, `vlm`, `vla`), and
+  `ohho bench llm` result, including a serving sweep. Cloud profiles use a
+  configurable USD-per-GPU-hour rate. Edge profiles use amortised hardware
+  plus measured watts times a configurable electricity rate. Derived figures
+  are USD per 1M output tokens, USD per 1k actions at the control rate, and
+  actions per watt. `cost.estimate` is true and `cost.inputs` records the
+  prices and watts that were used. `ohho bench cost` and `--gpu-hour-usd`
+  recompute those fields from the saved throughput and do not rerun the
+  benchmark. The price table is `ohho/targets/cost_prices.json`. The console
+  comparison view is a separate change; `rank_by_cost` is the ordering it
+  can call.
+- **Quantizer plugins (OHH-468)** — `ohho.quantizers` entry points for ORT
+  static INT8 (QDQ on `x86-cpu` and `rpi5-cpu`), TensorRT FP8 (Ada and Hopper
+  only), AWQ and GPTQ INT4, and bitsandbytes NF4. `--precision int4-awq`,
+  `int4-gptq`, `fp8`, and `int8` select them. The older `--quant` flag still
+  works. Each manifest output records the backend name and version. Publish
+  calls `run_parity` so OHH-430 can gate the artifact.
 - **Bench export (OHH-498)** — `ohho bench --export` sends one result through
   optional exporter plugins. A W&B spec records the job spec, manifest,
   latency, accuracy, and energy, and the result stores the run URL. A
