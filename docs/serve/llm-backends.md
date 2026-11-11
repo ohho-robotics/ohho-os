@@ -108,12 +108,47 @@ document = to_bench_result(
 per output token, and tokens/s on a CPU stand-in without launching an
 engine. See [`bench.md`](bench.md).
 
+## Serving sweep
+
+`ohho bench llm --sweep` crosses concurrency with max batch tokens, prefix
+caching, chunked prefill, and speculative decoding, but only on axes the
+adapter can express. Anything else is a skip with a reason, and the run
+still succeeds. The result stays `ohho.bench/v1`. `llm.pareto` is p95 TTFT
+against tokens/s. `--target-p95-ttft` recommends the shared-prefix
+configuration under that TTFT with the best tokens/s. `--chart` writes an
+SVG. Workloads are short commands, a long prompt with an image, and a
+shared system prompt. Details are in [`bench.md`](bench.md).
+
+On CPU the backend is `stand-in`. It does not start a process. A sweep of
+vLLM, SGLang, TensorRT-LLM, or llama.cpp without `--endpoint` exits with an
+error instead of launching the engine. A one-GPU run is not part of this
+command. With `--endpoint`, concurrency and the workloads are measured on
+that server, and launch settings are skipped because the process is not
+restarted.
+
+Flags a launch would pass when the config carries the sweep keys:
+
+| Backend | max batch tokens | prefix cache | chunked prefill | speculative decoding |
+|---|---|---|---|---|
+| `vllm` | `--max-num-batched-tokens` | `--enable-prefix-caching` or `--no-enable-prefix-caching` | `--enable-chunked-prefill` or `--no-enable-chunked-prefill` | `--speculative-config` when `speculative_model` is set |
+| `sglang` | `--max-prefill-tokens` | radix cache is the default; `--disable-radix-cache` turns it off | `--chunked-prefill-size` (`-1` turns it off) | draft flags when `speculative_model` is set |
+| `tensorrt-llm` | `--max_num_tokens` on `trtllm-serve` | engine config file, not a sweep flag | engine config file, not a sweep flag | engine config file, not a sweep flag |
+| `llama-cpp` | `--batch-size` | `--cache-reuse` | no chunked-prefill scheduler | `--model-draft` when `speculative_model` is set |
+
+The Triton launcher reads batch limits from the model repository, so max
+batch tokens is skipped for `launcher=triton`. Speculative decoding is
+skipped until `speculative_model` is set, except on TensorRT-LLM, where it
+stays in the engine config file. The stand-in has no draft model, so
+speculative decoding is skipped there too. Concurrency is the number of
+requests in flight. llama.cpp also receives `--parallel` when a launch
+config sets `concurrency`.
+
 ## What this tree does not measure
 
-CPU tests use a local fake streaming server. They do not start vLLM,
-SGLang, TensorRT-LLM, or llama.cpp, and they do not report GPU latency or
-throughput. A real run needs the engine installed on a machine with the
-matching device:
+CPU tests use a local fake streaming server and the sweep stand-in. They
+do not start vLLM, SGLang, TensorRT-LLM, or llama.cpp, and they do not
+report GPU latency or throughput. A real run needs the engine installed on
+a machine with the matching device:
 
 - vLLM, SGLang, and TensorRT-LLM (`trtllm-serve` or Triton) on a GPU host
 - llama.cpp `llama-server` on a CPU host or on Jetson with `n_gpu_layers`

@@ -104,6 +104,28 @@ def family_source(family_id: str) -> str:
     return slot[1]
 
 
+def family_metadata(family_id: str) -> dict[str, Any]:
+    """Registry record for one family, including the precisions it accepts.
+
+    Missing families return ``{}``. A family with no ``metadata()`` method
+    accepts the shared precision set, so a trainer added later picks the
+    check up without a new field of its own.
+    """
+    ensure_loaded()
+    slot = _REGISTRY.get(family_id)
+    if slot is None:
+        return {}
+    family, source = slot
+    from .precision import supported_precisions
+
+    return {
+        "id": family_id,
+        "source": source,
+        "available": bool(family.available()),
+        "precisions": list(supported_precisions(family)),
+    }
+
+
 def _check_family(family: Any) -> str:
     family_id = getattr(family, "id", None)
     if not isinstance(family_id, str) or family_pattern().fullmatch(family_id) is None:

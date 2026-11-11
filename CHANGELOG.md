@@ -24,6 +24,25 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   after `--export-ttl` minutes) or remote-write. Failures are warnings.
   `export_result` is the same hook an optimize run calls. Docs:
   [`docs/serve/bench.md`](docs/serve/bench.md).
+- **LLM serving sweep** (OHH-476) — `ohho bench llm --sweep` varies
+  concurrency, max batch tokens, prefix caching, chunked prefill, and
+  speculative decoding where the serving adapter supports the option.
+  Workloads are short commands, long-context prompts with an image, and a
+  shared system prompt. The `ohho.bench/v1` result includes a Pareto table
+  of p95 TTFT against tokens/s. `--target-p95-ttft` recommends the
+  highest-throughput configuration at or under that TTFT. Unsupported
+  options are skipped with a reason. The CPU path is a stand-in and does
+  not launch an engine. A one-GPU run is not part of this command.
+- **`ohho parity`** — numerical gate between a reference model and an optimized
+  artifact (`ohho.parity/v1`). Reports mean absolute difference, max absolute
+  difference, RMSE, and cosine similarity per output; action heads also report
+  per-joint and action-chunk error; classifiers and LLMs also report top-1
+  agreement and logit KL. The default fail is mean absolute difference above
+  0.05, configurable per model family and target. Inputs are seeded random, a
+  LeRobot dataset, or a sim-loop episode. `ohho optimize` runs the gate before
+  it writes `manifest.json` and exits 1 without publishing when the gate fails,
+  unless `--allow-parity-fail` is set (recorded in the manifest). Docs:
+  [`docs/serve/parity.md`](docs/serve/parity.md).
 - **Generate-mode bench** (OHH-436) — `ohho bench --mode generate` measures
   TTFT, TPOT (mean, median, p95), end-to-end latency, and tokens/s for an
   autoregressive workload (`llm`, `vlm`, `vla`). The default CPU stand-in
@@ -48,6 +67,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
   quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
   Docs: [`docs/optimize.md`](docs/optimize.md).
+- **INT8 calibration cache (OHH-467)** — TensorRT 10 and newer build explicit
+  Q/DQ; TensorRT 8 and 9 keep the implicit entropy calibrator on
+  `config.int8_calibrator`. `--calib-max-images` caps how many samples are
+  read. The cache sidecar stores the model sha256 and preprocessing config,
+  is reused on the next build, and is invalidated when either changes. INT8
+  without calibration data is refused unless the ONNX graph already has Q/DQ
+  nodes.
 - **`ohho sweep plan`** — `ohho.sweep/v1` search-space schema (package data) and an
   expander that turns it into trial recipes. Each trial is the opaque base
   recipe plus dotted `path=value` overrides (the same form as
@@ -60,6 +86,23 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   proposes trials from completed objectives, stores an
   `ohho.sweep.leaderboard/v1` Pareto set, and resumes from JSON state.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Sweep early stopping** — `early_stopping.rule` `asha` (successive
+  halving at rungs) and `median`, plus the existing `patience` rule.
+  `SweepRun.report` records an intermediate metric and `SweepRun.decide`
+  returns continue or stop. A stopped trial stays `pruned`, keeps its last
+  checkpoint and metrics, and is distinct from `failed`. Resume keeps that
+  status. A 32-trial synthetic ASHA benchmark uses under half the
+  trial-steps of the same sweep with no stopping rule.
+  Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
+  `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
+  `ohho sweep start --backend native` (the default) stores a local run and
+  prints no W&B URL. `--backend wandb` creates the sweep through the W&B
+  API when `WANDB_API_KEY` is set and prints the URL that client returns.
+  Each agent trial runs `python -m ohho.train.sweep_agent`, one OhhO train
+  job. `wandb` is an optional extra and is imported only on that path.
+  Patience-based `early_stopping` is not sent as Hyperband `early_terminate`
+  (OHH-520). Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
   tags (`python examples/serve/run_cpu.py`). A failed example fails the
   release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and

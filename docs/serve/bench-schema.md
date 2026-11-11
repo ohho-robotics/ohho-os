@@ -65,8 +65,13 @@ or retype a v1 field.
 | `llm.tpot` | no | Time per output token. Same fields as `llm.ttft`. |
 | `llm.e2e` | no | End-to-end generate latency for the primary cell. |
 | `llm.tokens_per_request_s` | no | Mean output tokens per second of one request. |
-| `llm.points` | no | One row per precision, prompt length, image size, and concurrency. |
+| `llm.points` | no | One row per precision, prompt length, image size, and concurrency. An `llm --sweep` run stores one row per measured cell. |
 | `llm.precisions` | no | Precision comparison at the primary prompt, image, and concurrency. |
+| `llm.sweep` | no | Grid that was varied. `engine_launched` is false when the command did not start an engine. |
+| `llm.pareto` | no | Non-dominated cells: p95 TTFT against tokens/s, within one workload. |
+| `llm.recommendation` | no | Highest tokens/s at or under `target_p95_ttft_ms` for the shared-prefix workload. `met` is false when none qualify. |
+| `llm.recommendations` | no | The same choice, one row per workload. |
+| `llm.skipped` | no | Options that were not measured, each with a reason. A skip is not a failed run. |
 | `llm.agreement` | no | Top-1 action-token agreement against the FP16 sequence. |
 | `llm.peak_vram_mb` | no | Weight or device memory for the primary precision, in MiB. |
 | `llm.vram_source` | no | How `peak_vram_mb` was obtained. |

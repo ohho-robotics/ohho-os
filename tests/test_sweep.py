@@ -64,6 +64,7 @@ class TestSchemaPackage(unittest.TestCase):
             "constrained.json",
             "tpe.json",
             "multi.json",
+            "asha.json",
         )
         for name in names:
             doc = json.loads((_EXAMPLES / name).read_text(encoding="utf-8"))
@@ -228,7 +229,16 @@ class TestValidator(unittest.TestCase):
         self.assertEqual(spec.dimensions, ())
         self.assertEqual(
             spec.early_stopping,
-            {"metric": "loss", "patience": 1, "min_delta": 0.0, "mode": "min"},
+            {
+                "metric": "loss",
+                "rule": "patience",
+                "rungs": [],
+                "reduction_factor": 4,
+                "grace_period": 0,
+                "patience": 1,
+                "min_delta": 0.0,
+                "mode": "min",
+            },
         )
 
     def test_duplicate_json_key(self) -> None:
@@ -300,6 +310,8 @@ class TestExpander(unittest.TestCase):
         self.assertEqual(plan.estimate_note, ESTIMATE_NOTE)
         self.assertEqual(plan.objectives[0]["name"], "val_loss")
         self.assertEqual(plan.early_stopping["patience"], 5)
+        self.assertEqual(plan.early_stopping["rule"], "patience")
+        self.assertEqual(plan.early_stopping["rungs"], [])
         models = ["small", "large"]
         batches = [8, 16, 32]
         lrs = [

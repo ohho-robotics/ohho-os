@@ -17,6 +17,7 @@ import math
 import sys
 from collections.abc import Sequence
 import time
+from pathlib import Path
 from typing import Any
 
 from ohho.bench.environment import GpuProbe
@@ -26,6 +27,7 @@ from ohho.bench.generate import GenerateConfig, execute_generate
 from ohho.bench.harness import BenchConfig, execute
 from ohho.bench.pipeline import PipelineConfig, execute_pipeline
 from ohho.bench.sensors.base import SensorSource
+from ohho.bench.sweep import SweepConfig, execute_sweep, render_pareto_svg
 from ohho.bench.report import (
     dump_result,
     log_wandb,
@@ -66,6 +68,8 @@ def register_bench(subparsers: Any) -> None:
             "  ohho bench launch --backend vllm --model org/model --dry-run\n"
             "  ohho bench llm --endpoint http://127.0.0.1:8000/v1 "
             "--model org/model --output result.json\n"
+            "  ohho bench llm --sweep --backend stand-in --target-p95-ttft 40ms "
+            "--output result.json --chart pareto.svg\n"
         ),
     )
     bench.add_argument("--artifact", help="path to an ONNX artifact")
@@ -877,18 +881,101 @@ def _register_llm_commands(commands: Any) -> None:
     llm = commands.add_parser(
         "llm",
         help="measure TTFT, inter-token latency, and throughput",
+        description=(
+            "Measure one running OpenAI-compatible server, or sweep "
+            "concurrency, max batch tokens, prefix caching, chunked prefill, "
+            "and speculative decoding. A sweep skips options the backend "
+            "cannot change and records the reason. The CPU sweep uses "
+            "--backend stand-in and does not launch an engine."
+        ),
     )
-    llm.add_argument("--endpoint", required=True, help="OpenAI base URL, .../v1")
-    llm.add_argument("--model", required=True)
+    llm.add_argument(
+        "--sweep",
+        action="store_true",
+        help=(
+            "sweep concurrency, max batch tokens, prefix cache, "
+            "chunked prefill, and speculative decoding"
+        ),
+    )
+    llm.add_argument(
+        "--endpoint",
+        default=None,
+        help="OpenAI base URL, .../v1. Required unless --sweep --backend stand-in",
+    )
+    llm.add_argument(
+        "--model",
+        default=None,
+        help="model id. Defaults to stand-in for a CPU sweep",
+    )
     llm.add_argument("--output", required=True, help="ohho.bench/v1 JSON path")
-    llm.add_argument("--concurrency", type=int, default=1)
+    llm.add_argument(
+        "--backend",
+        default=None,
+        help="sweep backend: stand-in, vllm, sglang, tensorrt-llm, or llama-cpp",
+    )
+    llm.add_argument(
+        "--concurrency",
+        default=None,
+        help="in-flight requests. A sweep accepts a comma list (default 1,2,4,8)",
+    )
     llm.add_argument("--requests", type=int, default=4)
     llm.add_argument("--max-tokens", type=int, default=8)
     llm.add_argument("--prompt", default="ping")
-    llm.add_argument("--precision", default="auto")
+    llm.add_argument("--precision", default=None)
     llm.add_argument("--backend-name", default="openai-compatible")
-    llm.add_argument("--backend-version", default="unknown")
+    llm.add_argument("--backend-version", default=None)
     llm.add_argument("--timeout", type=float, default=30.0)
+    llm.add_argument(
+        "--max-batch-tokens",
+        dest="max_batch_tokens",
+        default=None,
+        help="comma-separated prefill budgets (sweep default 512,2048)",
+    )
+    llm.add_argument(
+        "--prefix-cache",
+        dest="prefix_cache",
+        default=None,
+        help="on, off, or on,off (sweep default on,off)",
+    )
+    llm.add_argument(
+        "--chunked-prefill",
+        dest="chunked_prefill",
+        default=None,
+        help="on, off, or on,off (sweep default on,off)",
+    )
+    llm.add_argument(
+        "--speculative",
+        default=None,
+        help="on, off, or on,off. Skipped when the backend has no draft model",
+    )
+    llm.add_argument(
+        "--speculative-model",
+        dest="speculative_model",
+        default="",
+        help="draft model id. Required before speculative decoding is measured",
+    )
+    llm.add_argument(
+        "--workloads",
+        default=None,
+        help="comma list: short, long-context, shared-prefix",
+    )
+    llm.add_argument(
+        "--target-p95-ttft",
+        dest="target_p95_ttft",
+        default=None,
+        help="recommend the fastest cell at or under this p95 TTFT (ms, or 40ms)",
+    )
+    llm.add_argument(
+        "--chart",
+        default=None,
+        help="write an SVG of p95 TTFT against tokens/s",
+    )
+    llm.add_argument(
+        "--launcher",
+        default=None,
+        choices=("trtllm-serve", "triton"),
+        help="tensorrt-llm launcher. The triton launcher has no batch sweep flag",
+    )
     llm.set_defaults(func=run_bench_llm)
 
 
@@ -974,18 +1061,29 @@ def run_bench_launch(args: argparse.Namespace) -> int:
 
 
 def run_bench_llm(args: argparse.Namespace) -> int:
-    """``ohho bench llm`` measures a running OpenAI-compatible server."""
-    from pathlib import Path
-
+    """``ohho bench llm`` measures a server, or sweeps serving options."""
+    if getattr(args, "sweep", False):
+        return _run_llm_sweep(args)
     from ohho.bench.schema import BenchValidationError
     from ohho.serve.loadgen import LoadGenError, LoadSpec, run_load, to_bench_result
 
+    if not getattr(args, "endpoint", None):
+        print("error: --endpoint is required", file=sys.stderr)
+        return 2
+    if not getattr(args, "model", None):
+        print("error: --model is required", file=sys.stderr)
+        return 2
+    try:
+        concurrency = _one_int(args.concurrency, "--concurrency", default=1)
+    except BenchHarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
     spec = LoadSpec(
         endpoint_url=args.endpoint,
         model=args.model,
         prompt=args.prompt,
         max_tokens=args.max_tokens,
-        concurrency=args.concurrency,
+        concurrency=concurrency,
         requests=args.requests,
         timeout_s=args.timeout,
     )
@@ -994,8 +1092,8 @@ def run_bench_llm(args: argparse.Namespace) -> int:
         document = to_bench_result(
             result,
             backend=args.backend_name,
-            backend_version=args.backend_version,
-            precision=args.precision,
+            backend_version=args.backend_version or "unknown",
+            precision=args.precision or "auto",
         )
     except (LoadGenError, BenchValidationError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -1004,3 +1102,125 @@ def run_bench_llm(args: argparse.Namespace) -> int:
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {path}")
     return 0
+
+
+def _run_llm_sweep(args: argparse.Namespace) -> int:
+    """``ohho bench llm --sweep``."""
+    try:
+        config = _sweep_config(args)
+        document = execute_sweep(config)
+        payload = dump_result(document)
+        chart = render_pareto_svg(document) if config.chart else ""
+        write_text(args.output, payload)
+        print(f"wrote {args.output}")
+        if config.chart:
+            write_text(config.chart, chart)
+            print(f"wrote {config.chart}")
+        _print_sweep(document)
+    except BenchHarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    return 0
+
+
+def _sweep_config(args: argparse.Namespace) -> SweepConfig:
+    backend = args.backend or "stand-in"
+    model = args.model or ("stand-in" if backend in {"stand-in", "standin"} else "")
+    return SweepConfig(
+        backend=backend,
+        model=model,
+        endpoint=args.endpoint or "",
+        precision=args.precision or ("fp16" if args.sweep else "auto"),
+        concurrencies=_int_list(
+            args.concurrency, "--concurrency", (1, 2, 4, 8), minimum=1
+        ),
+        max_batch_tokens=_int_list(
+            args.max_batch_tokens, "--max-batch-tokens", (512, 2048), minimum=1
+        ),
+        prefix_cache=_bool_list(args.prefix_cache, "--prefix-cache"),
+        chunked_prefill=_bool_list(args.chunked_prefill, "--chunked-prefill"),
+        speculative=_bool_list(args.speculative, "--speculative"),
+        workloads=_workload_list(args.workloads),
+        max_tokens=args.max_tokens,
+        requests=args.requests,
+        timeout_s=args.timeout,
+        target_p95_ttft_ms=_ttft_target(args.target_p95_ttft),
+        speculative_model=args.speculative_model or "",
+        launcher=args.launcher or "",
+        backend_version=args.backend_version or "",
+        chart=args.chart or "",
+    )
+
+
+def _one_int(text: str | None, flag: str, *, default: int) -> int:
+    values = _int_list(text, flag, (default,), minimum=1)
+    if len(values) != 1:
+        raise BenchHarnessError(f"{flag} must be one integer unless --sweep is set")
+    return values[0]
+
+
+def _bool_list(text: str | None, flag: str) -> tuple[bool, ...]:
+    if text is None or not str(text).strip():
+        return (False, True)
+    values: list[bool] = []
+    for part in str(text).split(","):
+        key = part.strip().lower()
+        if key in {"on", "true", "1", "yes"}:
+            values.append(True)
+        elif key in {"off", "false", "0", "no"}:
+            values.append(False)
+        else:
+            raise BenchHarnessError(f"{flag} values must be on or off (got {text!r})")
+    if not values:
+        raise BenchHarnessError(f"{flag} needs at least one of on or off")
+    return tuple(values)
+
+
+def _workload_list(text: str | None) -> tuple[str, ...]:
+    if text is None or not str(text).strip():
+        return ("short", "long-context", "shared-prefix")
+    return tuple(part.strip() for part in str(text).split(",") if part.strip())
+
+
+def _ttft_target(text: str | None) -> float | None:
+    if text is None or not str(text).strip():
+        return None
+    raw = str(text).strip().lower()
+    scale = 1.0
+    if raw.endswith("ms"):
+        raw = raw[:-2].strip()
+    elif raw.endswith("s"):
+        raw = raw[:-1].strip()
+        scale = 1000.0
+    try:
+        value = float(raw) * scale
+    except ValueError as exc:
+        raise BenchHarnessError(
+            f"--target-p95-ttft must be a number of milliseconds (got {text!r})"
+        ) from exc
+    if value < 0:
+        raise BenchHarnessError("--target-p95-ttft must be non-negative")
+    return value
+
+
+def _print_sweep(document: dict[str, Any]) -> None:
+    llm = document["llm"]
+    recommendation = llm.get("recommendation")
+    if isinstance(recommendation, dict):
+        if recommendation.get("met"):
+            print(
+                "recommend "
+                f"workload={recommendation['workload']} "
+                f"concurrency={recommendation['concurrency']} "
+                f"prefix_cache={recommendation.get('prefix_cache')} "
+                f"max_batch_tokens={recommendation.get('max_batch_tokens')} "
+                f"chunked_prefill={recommendation.get('chunked_prefill')} "
+                f"ttft_p95_ms={recommendation['ttft_p95_ms']:.2f} "
+                f"tokens_per_s={recommendation['tokens_per_s']:.2f}"
+            )
+        else:
+            print(recommendation["reason"])
+    pareto = llm.get("pareto") or []
+    print(f"pareto rows: {len(pareto)}")
+    for row in llm.get("skipped") or []:
+        print(f"skipped {row['option']}: {row['reason']}")

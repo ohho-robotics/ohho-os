@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/ohho.sweep.run.v1.json",
   "title": "ohho.sweep.run/v1",
-  "description": "Persisted OhhO training sweep. sampler is ohho.sweep.sampler/v1. trials is the trial table. Each trial seed is the training seed derived from the sweep seed and the trial index. values null means the trial was proposed and not told. Restoring this document continues the sampler from the saved generator without repeating a trial index.",
+  "description": "Persisted OhhO training sweep. sampler is ohho.sweep.sampler/v1. trials is the trial table. Each trial seed is the training seed derived from the sweep seed and the trial index. values null means the trial was proposed and not told. status pruned means early stopping stopped the trial; that is distinct from failed. A pruned or failed trial keeps checkpoint and metrics. Restoring this document continues the sampler from the saved generator without repeating a trial index and keeps pruned and failed status.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "id", "sampler_seed", "sampler", "trials"],
@@ -51,6 +51,52 @@
             {"type": "null"},
             {"type": "object", "additionalProperties": {"type": "number"}}
           ]
+        },
+        "status": {
+          "enum": ["pending", "running", "completed", "pruned", "failed"],
+          "description": "pending has no intermediate report. running has a report and has not stopped. completed was told final objectives. pruned was stopped by early stopping. failed is a trainer failure and is not pruned."
+        },
+        "checkpoint": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ],
+          "description": "Last checkpoint path reported by the trial runner. Kept when the trial is pruned or failed."
+        },
+        "metrics": {
+          "type": "array",
+          "description": "Intermediate reports for early_stopping.metric, in increasing step order. Kept when the trial is pruned or failed.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step", "value"],
+            "properties": {
+              "step": {"type": "integer", "minimum": 1},
+              "value": {"type": "number"}
+            }
+          }
+        },
+        "decision": {
+          "description": "Frozen continue decision for the latest step. stop is recorded by status pruned.",
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["step", "action"],
+              "properties": {
+                "step": {"type": "integer", "minimum": 1},
+                "action": {"enum": ["continue", "stop"]}
+              }
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1}
+          ],
+          "description": "Failure reason when status is failed. Null when the trial is pruned."
         }
       }
     }

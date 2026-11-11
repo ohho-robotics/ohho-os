@@ -12,6 +12,10 @@ model.
 
 :func:`execute_pipeline` is the camera-to-action bench. It writes the same
 ``ohho.bench/v1`` document plus a ``pipeline`` block.
+
+``execute_sweep`` measures a serving sweep (concurrency, batch tokens, prefix
+cache, chunked prefill, speculative decoding) and writes a Pareto table on
+the same document.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from __future__ import annotations
 from ohho.bench.errors import BenchHarnessError
 from ohho.bench.exports import export_result
 from ohho.bench.generate import GenerateConfig, execute_generate
+from ohho.bench.sweep import SweepConfig, execute_sweep
 from ohho.bench.harness import BenchConfig, execute, finalize_result, run_benchmark
 from ohho.bench.pipeline import (
     PIPELINE_SCHEMA_ID,
@@ -50,12 +55,14 @@ __all__ = [
     "BenchHarnessError",
     "BenchValidationError",
     "GenerateConfig",
+    "SweepConfig",
     "StageRunner",
     "ValidationIssue",
     "convert",
     "execute",
     "execute_generate",
     "execute_pipeline",
+    "execute_sweep",
     "export_result",
     "finalize_result",
     "load_schema",
