@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ohho.optimize.calibrator import (
+    CalibrationCache,
     EmptyBatchSource,
     cuda_copy,
+    declared_calib_shape,
+    entropy_scale,
     load_calibration_source,
     make_entropy_calibrator,
+    preprocessing_config_from_dir,
+    read_all_samples,
+    sha256_path,
 )
 from ohho.optimize.errors import OptimizeCapabilityError, OptimizeError
 from ohho.optimize.exporters import (
@@ -30,9 +38,12 @@ from ohho.optimize.manifest import (
 from ohho.optimize.models import load_model
 from ohho.optimize.ort_session import build_session
 from ohho.optimize.plan import OptimizePlan, OptimizeRequest, build_plan
+from ohho.optimize.qdq import MISSING_CALIBRATION, onnx_has_qdq, quantization_mode
 from ohho.optimize.quant import probe_quant, quantize
 from ohho.optimize.tensorrt import build_engine, cuda_device_available, probe_tensorrt
 from ohho.targets.providers import installed_execution_providers
+
+logger = logging.getLogger("ohho.optimize")
 
 _ONNX_EXTRA = (
     "ONNX export needs torch and the onnx package: pip install 'ohho-os[optimize]'."
@@ -91,16 +102,21 @@ def optimize(
             export_torchscript(loaded, ts_path)
             outputs.append(file_record(ts_path, "torchscript", out))
 
+    quantization: str | None = None
     if plan.build_tensorrt:
         if not wrote_onnx:
             raise OptimizeError("TensorRT needs an ONNX graph to parse.")
         engine_path = out / "model.engine"
         trt_module = standins.trt_module
         calibrator = None
+        activation_scale = None
         if plan.precision == "INT8":
             if trt_module is None:
                 trt_module = _load_tensorrt()
-            calibrator = _calibrator(plan, loaded, trt_module, standins)
+            quantization = quantization_mode(trt_module)
+            calibrator, activation_scale = _int8_inputs(
+                plan, loaded, onnx_path, trt_module, standins, quantization
+            )
         build_engine(
             onnx_path,
             engine_path,
@@ -110,6 +126,7 @@ def optimize(
             dynamic_batch=request.dynamic_batch,
             calibrator=calibrator,
             trt_module=trt_module,
+            activation_scale=activation_scale,
         )
         outputs.append(file_record(engine_path, "engine", out))
 
@@ -134,6 +151,7 @@ def optimize(
         session_providers,
         standins,
         wrote_onnx=wrote_onnx,
+        quantization=quantization,
     )
 
 
@@ -147,6 +165,7 @@ def _gate_and_publish(
     standins: OptimizeBackends,
     *,
     wrote_onnx: bool,
+    quantization: str | None = None,
 ) -> dict[str, Any]:
     """Run the parity gate, then write the manifest or discard the export.
 
@@ -212,6 +231,8 @@ def _gate_and_publish(
             "max_batch": request.max_batch,
             "dynamic_batch": request.dynamic_batch,
             "calib_batch": plan.calib_batch,
+            "calib_max_images": request.calib_max_images,
+            "quantization": quantization,
             "opset": ONNX_OPSET if wrote_onnx else None,
             "submodule": request.submodule,
             "allow_parity_fail": bool(request.allow_parity_fail),
@@ -230,6 +251,7 @@ def _gate_and_publish(
             "calib_data": request.calib_data,
             "calib_cache": request.calib_cache,
             "calib_batch": request.calib_batch,
+            "calib_max_images": request.calib_max_images,
             "submodule": request.submodule,
             "allow_parity_fail": bool(request.allow_parity_fail),
         },
@@ -315,22 +337,33 @@ def _assert_export_runtime(loaded) -> None:
         raise OptimizeCapabilityError(_ONNX_EXTRA)
 
 
-def _calibrator(plan: OptimizePlan, loaded, trt_module, standins: OptimizeBackends):
-    batch = plan.calib_batch or 1
-    if plan.request.calib_data:
-        spec = describe_export(loaded)
-        if len(spec.inputs) != 1:
-            raise OptimizeError(
-                f"INT8 calibration feeds one input. This model has {len(spec.inputs)}."
-            )
-        sample_shape = tuple(spec.inputs[0].shape[1:])
-        source = load_calibration_source(
-            plan.request.calib_data,
-            batch_size=batch,
-            sample_shape=sample_shape,
+def _int8_inputs(
+    plan: OptimizePlan,
+    loaded,
+    onnx_path: Path,
+    trt_module,
+    standins: OptimizeBackends,
+    quantization: str,
+):
+    """Return ``(calibrator, activation_scale)`` for one INT8 engine build."""
+    if onnx_has_qdq(onnx_path.read_bytes()):
+        logger.info(
+            "ONNX model already contains Q/DQ nodes; INT8 calibration data is not required."
         )
-    else:
-        source = EmptyBatchSource()
+        return None, None
+    if quantization == "explicit":
+        return None, _explicit_activation_scale(plan, loaded, onnx_path)
+    return _calibrator(plan, loaded, trt_module, standins, onnx_path), None
+
+
+def _calibrator(
+    plan: OptimizePlan, loaded, trt_module, standins: OptimizeBackends, onnx_path: Path
+):
+    batch = plan.calib_batch or 1
+    shape, preprocessing, cache = _calibration_context(
+        plan, loaded, onnx_path, "implicit"
+    )
+    source = _batch_source(plan, shape, cache, batch)
     copy = None
     cuda = standins.cuda if standins.cuda is not None else cuda_device_available()
     if standins.trt_module is None and cuda:
@@ -341,4 +374,110 @@ def _calibrator(plan: OptimizePlan, loaded, trt_module, standins: OptimizeBacken
         cache_path=plan.request.calib_cache,
         trt_module=trt_module,
         copy_to_device=copy,
+        model_sha256=None if cache is None else cache.model_sha256,
+        preprocessing=None if cache is None else preprocessing,
+        quantization="implicit",
     )
+
+
+def _explicit_activation_scale(plan: OptimizePlan, loaded, onnx_path: Path) -> float:
+    """Entropy scale for Q/DQ insertion. A matching sidecar skips the samples."""
+    batch = plan.calib_batch or 1
+    shape, _preprocessing, cache = _calibration_context(
+        plan, loaded, onnx_path, "explicit"
+    )
+    if cache is not None:
+        reused = cache.read()
+        if reused is not None:
+            scale = cache.activation_scale()
+            if scale is None:
+                raise OptimizeError(
+                    f"INT8 calibration cache {cache.path} has no activation scale. "
+                    "Pass --calib-data DIR to calibrate again."
+                )
+            return scale
+        if not plan.request.calib_data:
+            detail = cache.reason or "the cache cannot be reused"
+            raise OptimizeError(
+                f"INT8 calibration cache {cache.path} invalidated: {detail}. "
+                "Pass --calib-data DIR to calibrate again."
+            )
+    source = load_calibration_source(
+        plan.request.calib_data,
+        batch_size=batch,
+        sample_shape=shape,
+        max_images=plan.request.calib_max_images,
+    )
+    scale = entropy_scale(read_all_samples(source))
+    if cache is not None:
+        cache.write(b"explicit-qdq", activation_scale=scale)
+    return scale
+
+
+def _calibration_context(
+    plan: OptimizePlan, loaded, onnx_path: Path, quantization: str
+):
+    shape = _sample_shape(loaded, plan.request.calib_data)
+    preprocessing = preprocessing_config_from_dir(
+        plan.request.calib_data,
+        shape=shape,
+        max_images=plan.request.calib_max_images,
+        submodule=plan.request.submodule,
+    )
+    cache = None
+    if plan.request.calib_cache:
+        cache = CalibrationCache(
+            plan.request.calib_cache,
+            model_sha256=_model_sha256(loaded, onnx_path),
+            preprocessing=preprocessing,
+            quantization=quantization,
+        )
+    return shape, preprocessing, cache
+
+
+def _batch_source(
+    plan: OptimizePlan, shape, cache: CalibrationCache | None, batch: int
+):
+    if plan.request.calib_data:
+        return load_calibration_source(
+            plan.request.calib_data,
+            batch_size=batch,
+            sample_shape=shape,
+            max_images=plan.request.calib_max_images,
+        )
+    status = "missing" if cache is None else cache.evaluate()
+    if status == "reusable":
+        return EmptyBatchSource()
+    if status == "invalid" and cache is not None:
+        raise OptimizeError(
+            f"INT8 calibration cache {cache.path} invalidated: {cache.reason}. "
+            "Pass --calib-data DIR to calibrate again."
+        )
+    raise OptimizeError(MISSING_CALIBRATION)
+
+
+def _sample_shape(loaded, calib_data: str | None) -> tuple[int, ...]:
+    if loaded.module is not None:
+        spec = describe_export(loaded)
+        if len(spec.inputs) != 1:
+            raise OptimizeError(
+                f"INT8 calibration feeds one input. This model has {len(spec.inputs)}."
+            )
+        return tuple(int(dim) for dim in spec.inputs[0].shape[1:])
+    if loaded.inputs:
+        if len(loaded.inputs) != 1:
+            raise OptimizeError(
+                f"INT8 calibration feeds one input. This model has {len(loaded.inputs)}."
+            )
+        return tuple(int(dim) for dim in loaded.inputs[0].shape[1:])
+    if calib_data:
+        return declared_calib_shape(calib_data)
+    raise OptimizeError(
+        "INT8 calibration needs one input shape. Add model.json inputs or calib.json."
+    )
+
+
+def _model_sha256(loaded, onnx_path: Path) -> str:
+    if loaded.path is not None and loaded.path.exists():
+        return sha256_path(loaded.path)
+    return hashlib.sha256(onnx_path.read_bytes()).hexdigest()
