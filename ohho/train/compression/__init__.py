@@ -1,5 +1,6 @@
-"""Optional train-time compression methods.
+"""Optional training compression methods.
 
-Each method is a separate module. Recipe blocks and manifest fields stay
-optional so methods can land independently.
+Each method is its own module and adds one optional recipe block plus the
+manifest fields it owns, so methods can land independently. Knowledge
+distillation lives in :mod:`ohho.train.compression.distillation`.
 """

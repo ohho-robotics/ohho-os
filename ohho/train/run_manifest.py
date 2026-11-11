@@ -231,6 +231,7 @@ class RunManifest:
     precision_metrics: dict[str, Any]
     pruning: dict[str, Any] | None = None
     qat: dict[str, Any] | None = None
+    lineage: dict[str, Any] | None = None
     cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -270,6 +271,8 @@ class RunManifest:
             "pruning": _copy_pruning(self.pruning),
             "qat": _copy_qat(self.qat),
         }
+        if self.lineage is not None:
+            document["lineage"] = json.loads(json.dumps(self.lineage))
         if self.cloned_from is not None:
             document["cloned_from"] = self.cloned_from.to_dict()
         return document
@@ -346,6 +349,7 @@ class RunManifest:
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
             pruning=_copy_pruning(document.get("pruning")),
             qat=_copy_qat(document.get("qat")),
+            lineage=_copy_lineage(document.get("lineage")),
             cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
@@ -375,6 +379,7 @@ class RunCapture:
     declared_hooks: dict[str, list[str]]
     pruning: dict[str, Any] | None = None
     qat: dict[str, Any] | None = None
+    lineage: dict[str, Any] | None = None
 
 
 def schema_path() -> Path:
@@ -417,6 +422,54 @@ def validate_run_manifest(document: Any) -> list[str]:
             errors.append("$.error: is required when the run failed or was interrupted")
     errors.extend(_precision_errors(document))
     return errors
+
+
+_LINEAGE_CONTRIBUTORS: list[
+    Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
+] = []
+
+
+def register_lineage_contributor(
+    contributor: Callable[[Mapping[str, Any]], Mapping[str, Any] | None],
+) -> None:
+    """Register a function that adds keys to a run's optional ``lineage``.
+
+    Each compression method registers its own contributor and returns only
+    the keys it owns, or ``None`` when the recipe does not use that method.
+    Contributors run in registration order. The manifest omits ``lineage``
+    when every contributor returns nothing.
+    """
+    if contributor not in _LINEAGE_CONTRIBUTORS:
+        _LINEAGE_CONTRIBUTORS.append(contributor)
+
+
+def _collect_lineage(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    for contributor in _LINEAGE_CONTRIBUTORS:
+        part = contributor(recipe)
+        if not isinstance(part, Mapping) or not part:
+            continue
+        for key, value in part.items():
+            merged[str(key)] = value
+    if not merged:
+        return None
+    return json.loads(json.dumps(merged))
+
+
+def _copy_lineage(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or not value:
+        return None
+    return json.loads(json.dumps(value))
+
+
+def _lineage_line(document: Mapping[str, Any]) -> str | None:
+    lineage = document.get("lineage")
+    if not isinstance(lineage, Mapping):
+        return None
+    teacher = lineage.get("teacher")
+    if not isinstance(teacher, Mapping) or "version" not in teacher:
+        return None
+    return f"lineage.teacher.version: {_format_value(teacher.get('version'))}"
 
 
 def set_run_store(store: RunStore | Callable[[Mapping[str, Any]], None] | None) -> None:
@@ -619,6 +672,7 @@ def capture_run(
         declared_hooks=declared_hooks(recipe),
         pruning=_capture_pruning(recipe),
         qat=_qat_from_recipe(recipe),
+        lineage=_collect_lineage(recipe),
     )
 
 
@@ -699,6 +753,7 @@ def manifest_from_capture(
         if pruning_from_metrics
         else _copy_pruning(capture.pruning),
         qat=_copy_qat(capture.qat),
+        lineage=_copy_lineage(capture.lineage),
     )
 
 
@@ -810,6 +865,13 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"base_weights.revision: {_format_value(weights.get('revision'))}",
             f"base_weights.hash: {_format_value(weights.get('hash'))}",
             f"base_weights.loaded: {_format_value(weights.get('loaded'))}",
+        ]
+    )
+    lineage_line = _lineage_line(document)
+    if lineage_line is not None:
+        lines.append(lineage_line)
+    lines.extend(
+        [
             "container_image_digest: "
             + _format_value(document.get("container_image_digest")),
             "library_versions: "

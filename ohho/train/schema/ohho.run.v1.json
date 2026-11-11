@@ -210,6 +210,37 @@
         "eval_hooks": {"type": "array", "items": {"type": "string"}}
       }
     },
+    "lineage": {
+      "description": "Parents of this run. Omitted when the run has none. Knowledge distillation sets teacher.version. Other compression methods may add their own keys.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "teacher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "source", "model", "checkpoint"],
+          "properties": {
+            "version": {
+              "description": "Teacher version. A registry model version, an explicit checkpoint version, or sha256: plus the sha256 of policy.pt.",
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "enum": ["checkpoint", "registry"]
+            },
+            "model": {
+              "description": "Registry model id. Null for a local checkpoint reference.",
+              "type": ["string", "null"]
+            },
+            "checkpoint": {
+              "description": "Local teacher checkpoint directory that was resolved. Null when the path is not known.",
+              "type": ["string", "null"]
+            }
+          }
+        }
+      }
+    },
     "pruning": {
       "description": "Pruning report. Null when the recipe has no pruning block. Absent is treated the same as null so an older manifest still validates. Per-layer sparsity is under layers. Structured runs also record parameter counts and exported file sizes before and after the shrink.",
       "oneOf": [
