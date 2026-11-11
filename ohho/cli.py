@@ -1178,6 +1178,16 @@ def _cmd_run(args) -> int:
     return show_run(args.run_dir, as_json=bool(getattr(args, "json", False)))
 
 
+def _cmd_run_rerun(args) -> int:
+    from .train.rerun import rerun_cli
+
+    return rerun_cli(
+        args.id,
+        output_dir=getattr(args, "output", None),
+        as_json=bool(getattr(args, "json", False)),
+    )
+
+
 def _cmd_run_clone(args) -> int:
     from .train.run_clone import clone_command
 
@@ -2102,7 +2112,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser(
         "run",
-        help="show, clone, diff, or manage storage for an ohho.run/v1 training run",
+        help="show, re-run, clone, diff, or manage storage for an ohho.run/v1 training run",
     )
     run_sub = run.add_subparsers(dest="run_command", required=True)
     show = run_sub.add_parser(
@@ -2119,6 +2129,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the manifest as JSON",
     )
     show.set_defaults(func=_cmd_run)
+    rerun = run_sub.add_parser(
+        "rerun",
+        help="re-run a run from its manifest and compare final metrics",
+    )
+    rerun.add_argument(
+        "id",
+        metavar="id",
+        help="run directory or run_manifest.json from ohho run show",
+    )
+    rerun.add_argument(
+        "--output",
+        default=None,
+        metavar="DIR",
+        help="directory for the re-run (default: a sibling of the original)",
+    )
+    rerun.add_argument(
+        "--json",
+        action="store_true",
+        help="print the comparison as JSON",
+    )
+    rerun.set_defaults(func=_cmd_run_rerun)
     clone = run_sub.add_parser(
         "clone",
         help="tweak a run's resolved config and record cloned_from",

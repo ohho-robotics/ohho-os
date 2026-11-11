@@ -9,7 +9,11 @@ Its `$id` is `https://ohho-robotics.com/schemas/ohho.run/v1.json` and its title 
 ```bash
 ohho run show checkpoints/act
 ohho run show checkpoints/act --json
+ohho run rerun checkpoints/act
+ohho run rerun checkpoints/act --json
 ```
+
+`ohho run rerun <id>` trains `resolved_config` again and compares final metrics with the original. `<id>` is the run directory or `run_manifest.json`. The original directory is not modified. The comparison, the published variance, and the within-noise tolerance are in [`determinism.md`](determinism.md).
 
 The human command prints the console summary. `--json` prints the whole document. Exit `0` when the file is valid, `1` when it is missing or invalid, and `2` when the command line is wrong. A path to `run_manifest.json` itself is accepted as well as the directory that contains it.
 
