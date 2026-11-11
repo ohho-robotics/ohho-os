@@ -35,6 +35,7 @@ def finetune(
     num_epochs: int = 100,
     batch_size: int = 8,
     lr: float = 1e-4,
+    precision: str = "fp32",
     mock: bool = False,
     **kwargs: Any,
 ) -> str:
@@ -47,6 +48,8 @@ def finetune(
         checkpoint: HF hub id or local path to the base model.
         output_dir: where to save checkpoints.
         num_epochs, batch_size, lr: training hyperparameters.
+        precision: ``fp32``, ``fp16``, ``bf16``, or ``fp8``. Applied to the
+            ACT trainer. The lerobot delegate in this build does not use it.
         mock: if True, skip real training and write a dummy checkpoint
             (for the record→train→serve loop on sim, no GPU needed).
 
@@ -72,6 +75,7 @@ def finetune(
 
             act_kwargs = dict(kwargs)
             act_train_steps = act_kwargs.pop("train_steps", num_epochs * 2)
+            act_kwargs.pop("precision", None)
             return train_act(
                 dataset=dataset,
                 output_dir=str(out),
@@ -79,6 +83,7 @@ def finetune(
                 train_steps=act_train_steps,
                 batch_size=batch_size,
                 lr=lr,
+                precision=precision,
                 mock=True,
                 **act_kwargs,
             )
@@ -102,6 +107,7 @@ def finetune(
 
             act_kwargs = dict(kwargs)
             act_train_steps = act_kwargs.pop("train_steps", num_epochs * 2)
+            act_kwargs.pop("precision", None)
             return train_act(
                 dataset=dataset,
                 output_dir=str(out),
@@ -109,6 +115,7 @@ def finetune(
                 train_steps=act_train_steps,
                 batch_size=batch_size,
                 lr=lr,
+                precision=precision,
                 mock=False,
                 **act_kwargs,
             )

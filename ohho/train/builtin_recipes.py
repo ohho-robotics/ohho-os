@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .precision import PRECISIONS, prepare_precision
 from .recipe_registry import Emit, TrainResult, register
 from .recipe_schema import (
     DatasetUnavailable,
@@ -60,20 +61,24 @@ class ActRecipe:
     def available(self) -> bool:
         return True
 
+    def metadata(self) -> dict[str, Any]:
+        """Precisions the shared runner may select for ACT."""
+        return {"precisions": list(PRECISIONS)}
+
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
-        _check_precision(recipe)
+        plan = prepare_precision(recipe, family=self)
         kwargs = _act_kwargs(recipe)
         dataset_path = _dataset_dir(recipe)
-        device = _resolve_device(str(recipe.get("device", "cpu")))
         torch = _load_torch()
         _emit_declared(recipe, emit)
-        _apply_seed(torch, recipe, device)
+        _apply_seed(torch, recipe, plan.device)
         train_steps = int(kwargs.get("train_steps", 200))
         emit(
             {
                 "event": "train_start",
                 "family": self.id,
-                "device": device,
+                "device": plan.device,
+                "precision": plan.precision,
                 "train_steps": train_steps,
             }
         )
@@ -83,7 +88,8 @@ class ActRecipe:
             checkpoint = train_act(
                 dataset=str(dataset_path),
                 output_dir=str(Path(recipe["output"]["dir"]).expanduser()),
-                device=device,
+                device=plan.device,
+                precision=plan.precision,
                 mock=False,
                 **kwargs,
             )
@@ -95,7 +101,7 @@ class ActRecipe:
         return TrainResult(
             checkpoint_dir=str(Path(checkpoint)),
             metrics_path=str(metrics),
-            device=device,
+            device=plan.device,
             base_weights_loaded=False,
         )
 
@@ -108,6 +114,10 @@ class UnavailableRecipe:
 
     def available(self) -> bool:
         return False
+
+    def metadata(self) -> dict[str, Any]:
+        """The shared precision set. A later trainer picks it up unchanged."""
+        return {"precisions": list(PRECISIONS)}
 
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         del recipe, emit
@@ -128,14 +138,6 @@ def register_builtins() -> None:
     register(SMOLVLA, source="builtin:ohho.train.builtin_recipes")
     register(OPENVLA, source="builtin:ohho.train.builtin_recipes")
     register(PPO, source="builtin:ohho.train.builtin_recipes")
-
-
-def _check_precision(recipe: dict[str, Any]) -> None:
-    precision = recipe.get("precision", "fp32")
-    if precision != "fp32":
-        raise RecipeConfigError(
-            f"precision {precision!r} is not available for family 'act' in this build"
-        )
 
 
 def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -180,26 +182,6 @@ def _dataset_dir(recipe: dict[str, Any]) -> Path:
     return path
 
 
-def _resolve_device(requested: str) -> str:
-    if requested == "cpu":
-        return "cpu"
-    if requested == "auto":
-        from ohho.hardware import resolve_device
-
-        return resolve_device("auto")
-    torch = _load_torch()
-    if requested == "cuda":
-        if not torch.cuda.is_available():
-            raise RecipeConfigError("device 'cuda' is not available on this machine")
-        return "cuda"
-    if requested == "mps":
-        mps = getattr(torch.backends, "mps", None)
-        if mps is None or not mps.is_available():
-            raise RecipeConfigError("device 'mps' is not available on this machine")
-        return "mps"
-    raise RecipeConfigError(f"device {requested!r} is not available in this build")
-
-
 def _import_torch() -> Any:
     """Import torch. Tests patch this to simulate a build without the extra."""
     import torch
@@ -222,8 +204,10 @@ def _apply_seed(torch: Any, recipe: dict[str, Any], device: str) -> None:
         return
     seed = int(hyperparameters["seed"])
     torch.manual_seed(seed)
-    if device == "cuda" and hasattr(torch, "cuda"):
-        torch.cuda.manual_seed_all(seed)
+    if device == "cuda" or device.startswith("cuda:"):
+        cuda = getattr(torch, "cuda", None)
+        if cuda is not None and hasattr(cuda, "manual_seed_all"):
+            cuda.manual_seed_all(seed)
 
 
 def _emit_declared(recipe: dict[str, Any], emit: Emit) -> None:
