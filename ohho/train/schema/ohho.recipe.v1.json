@@ -148,6 +148,50 @@
       "type": "array",
       "items": {"$ref": "#/$defs/hook"}
     },
+    "distillation": {
+      "description": "Optional knowledge distillation. The recipe family is the student imitation-learning recipe. The teacher is a registry model version or a local checkpoint. Absent means ordinary training.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["teacher"],
+      "properties": {
+        "teacher": {"$ref": "#/$defs/teacher_ref"},
+        "loss": {
+          "description": "action_regression is mean squared error against teacher actions. kl is temperature-scaled KL on teacher outputs.",
+          "type": "string",
+          "enum": ["action_regression", "kl"],
+          "default": "action_regression"
+        },
+        "feature_matching": {
+          "description": "Add mean squared error between student and teacher features.",
+          "type": "boolean",
+          "default": false
+        },
+        "feature_weight": {
+          "description": "Multiplier on the feature-matching term.",
+          "type": "number",
+          "minimum": 0,
+          "default": 1
+        },
+        "mix_weight": {
+          "description": "Weight on the teacher loss. The supervised imitation loss keeps 1 - mix_weight.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5
+        },
+        "temperature": {
+          "description": "Softmax temperature for KL on teacher outputs. Must be greater than 0. Action regression records it and does not apply it.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1
+        },
+        "cache_dir": {
+          "description": "Directory for the teacher-output cache, shared across trials. The default is ~/.ohho/cache/teacher-outputs.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "output": {
       "type": "object",
       "additionalProperties": false,
@@ -169,6 +213,48 @@
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "params": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "teacher_ref": {
+      "description": "A local checkpoint or a registry model version. Set exactly one.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["checkpoint"],
+          "not": {"required": ["registry"]},
+          "properties": {
+            "checkpoint": {
+              "description": "Local tiny-teacher directory, or its policy.pt file.",
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "description": "Teacher version recorded in the student lineage and the output cache. When omitted, the version is sha256: plus the sha256 of policy.pt.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registry"],
+          "not": {"required": ["checkpoint"]},
+          "properties": {
+            "registry": {"$ref": "#/$defs/teacher_registry"}
+          }
+        }
+      ]
+    },
+    "teacher_registry": {
+      "description": "Registry model version. A ModelRegistry client resolves it to a local checkpoint. This build does not download weights.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "version"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
       }
     }
   }
