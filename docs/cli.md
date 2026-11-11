@@ -73,6 +73,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho sweep start <file> [--id ID] [--backend native\|wandb\|auto]` | Native (the default) persists a run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` and prints no W&B URL. `wandb` creates a sweep through the W&B API when `WANDB_API_KEY` is set and prints the URL that client returns. `auto` uses W&B only when that key is set |
 | `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
+| `ohho sweep group <id>` | Group that run's trial table by dataset version id ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 
