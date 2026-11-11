@@ -54,7 +54,11 @@ from ohho.train.run_cli import (
     UNAVAILABLE_MESSAGE,
     execute,
 )
-from ohho.train.yaml_subset import YamlError, loads
+from ohho.train.yaml_subset import UnsupportedYaml, YamlError, loads
+
+
+def _has_torch() -> bool:
+    return importlib.util.find_spec("torch") is not None
 
 
 def _run(path: str | Path, overrides: list[str] | None = None):
@@ -107,6 +111,54 @@ class TestYamlSubset(unittest.TestCase):
             loads("a: 1\na: 2\n")
         with self.assertRaises(YamlError):
             loads("\ta: 1\n")
+
+    def test_unquoted_hash_in_tokens(self) -> None:
+        doc = "\n".join(
+            [
+                "repo: https://example.com/model#rev",
+                "dataset: datasets/run#2",
+                "with_comment: https://example.com/model#rev # pinned commit",
+            ]
+        )
+        loaded = loads(doc)
+        self.assertEqual(loaded["repo"], "https://example.com/model#rev")
+        self.assertEqual(loaded["dataset"], "datasets/run#2")
+        self.assertEqual(loaded["with_comment"], "https://example.com/model#rev")
+
+    def test_pyyaml_fallback_leading_document_separator_and_dash_only_items(
+        self,
+    ) -> None:
+        doc_sep = "\n".join(
+            [
+                "---",
+                "schema: ohho.recipe/v1",
+                "family: act",
+            ]
+        )
+        loaded_sep = loads(doc_sep)
+        self.assertEqual(loaded_sep["schema"], "ohho.recipe/v1")
+        self.assertEqual(loaded_sep["family"], "act")
+
+        doc_dash = "\n".join(
+            [
+                "items:",
+                "  -",
+                "    name: first",
+                "  -",
+                "    name: second",
+            ]
+        )
+        loaded_dash = loads(doc_dash)
+        self.assertEqual(
+            loaded_dash["items"],
+            [{"name": "first"}, {"name": "second"}],
+        )
+
+    def test_pyyaml_fallback_missing_pyyaml(self) -> None:
+        with patch.dict("sys.modules", {"yaml": None}):
+            with self.assertRaises(UnsupportedYaml) as caught:
+                loads("multi: |\n  act\n")
+            self.assertIn("ohho-os[yaml]", str(caught.exception))
 
 
 class TestRecipeSchema(unittest.TestCase):
@@ -356,7 +408,7 @@ class TestTrainCommand(unittest.TestCase):
                 (example_path("ppo"), ["hyperparameters.gamma=1.5"], "gamma"),
                 (
                     example_path("act"),
-                    ["precision=bf16", f"output.dir={out}"],
+                    ["precision=fp8", f"output.dir={out}"],
                     "precision",
                 ),
                 (
@@ -503,10 +555,7 @@ class TestActRun(unittest.TestCase):
             self.assertIn("boom", manifest["error"])
             self.assertIsNotNone(manifest["finished_at"])
 
-    @unittest.skipUnless(
-        importlib.util.find_spec("torch") is not None,
-        "needs torch (pip install 'ohho-os[train]')",
-    )
+    @unittest.skipUnless(_has_torch(), "needs torch (pip install 'ohho-os[train]')")
     def test_tiny_act_recipe_on_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
@@ -547,6 +596,24 @@ class TestActRun(unittest.TestCase):
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["family"], "act")
             self.assertEqual(manifest["device"], "cpu")
+            self.assertEqual(manifest["precision"], "fp32")
+            self.assertIs(manifest["loss_scaling"], False)
+            self.assertEqual(manifest["precision_backend"], "fp32")
+            fp32_metrics = manifest["precision_metrics"]["fp32"]
+            self.assertEqual(
+                fp32_metrics["throughput_steps_per_s"],
+                metrics["throughput_steps_per_s"],
+            )
+            self.assertEqual(
+                fp32_metrics["peak_memory_bytes"], metrics["peak_memory_bytes"]
+            )
+            self.assertGreater(fp32_metrics["throughput_steps_per_s"], 0)
+            self.assertIsInstance(fp32_metrics["peak_memory_bytes"], int)
+            self.assertGreaterEqual(fp32_metrics["peak_memory_bytes"], 0)
+            self.assertIsNone(manifest["precision_metrics"]["fp16"])
+            self.assertIsNone(manifest["precision_metrics"]["bf16"])
+            self.assertIsNone(manifest["precision_metrics"]["fp8"])
+            self.assertEqual(_events_of(events, "train_start")[0]["precision"], "fp32")
             self.assertFalse(manifest["base_weights"]["loaded"])
             self.assertIsNone(manifest["base_weights"]["hash"])
             self.assertEqual(manifest["base_weights"]["uri"], "local:act-init")

@@ -1,0 +1,16 @@
+# Drop this job into .github/workflows/release.yml and set the publish job to
+# `needs: [serve-examples]`. A non-zero example then fails the release.
+# The job checks out the tag and runs the examples from that tree, before publish.
+jobs:
+  serve-examples:
+    name: CPU serve examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e .
+      - name: Run CPU serve examples
+        run: python examples/serve/run_cpu.py

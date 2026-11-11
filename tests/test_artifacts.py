@@ -47,6 +47,15 @@ def _manifest() -> dict:
         "finished_at": "2026-01-01T01:00:00Z",
         "family": "act",
         "device": "cpu",
+        "precision": "fp32",
+        "loss_scaling": False,
+        "precision_backend": "fp32",
+        "precision_metrics": {
+            "fp32": {"throughput_steps_per_s": 10.0, "peak_memory_bytes": 1024},
+            "fp16": None,
+            "bf16": None,
+            "fp8": None,
+        },
         "resolved_config": {"family": "act"},
         "seeds": {
             "recipe": 1,

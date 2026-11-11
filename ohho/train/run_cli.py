@@ -32,6 +32,7 @@ from .recipe_schema import (
     TrainFailed,
     load_recipe_file,
 )
+from .precision import prepare_precision
 from .run_manifest import (
     MANIFEST_NAME,
     RunCapture,
@@ -110,7 +111,7 @@ class _RunSession:
         metrics_path = Path(result.metrics_path).expanduser()
         if not metrics_path.is_file():
             raise TrainFailed(f"trainer did not write a metrics file: {metrics_path}")
-        final_loss = _read_final_loss(metrics_path)
+        final_loss, throughput, peak = _read_metric_fields(metrics_path)
         if self.capture is None:
             self.begin(result.device)
         if self.capture is None:
@@ -125,6 +126,8 @@ class _RunSession:
             final_loss=final_loss,
             base_weights_loaded=result.base_weights_loaded,
             device=result.device,
+            throughput_steps_per_s=throughput,
+            peak_memory_bytes=peak,
         )
         path = write_run_manifest(checkpoint_dir / MANIFEST_NAME, manifest)
         if self.path is not None and self.path.resolve() != path.resolve():
@@ -176,11 +179,14 @@ def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
         if family is None or not family.available():
             return _unavailable(family_id)
         run.bind(recipe_path=recipe, overrides=list(overrides or []), recipe=loaded)
+        prepare_precision(loaded, family=family)
 
         def emit(event: dict[str, Any]) -> None:
             if event.get("event") == "train_start" and not run.started:
                 device = event.get("device")
                 run.begin(device if isinstance(device, str) else "")
+                event = dict(event)
+                event.setdefault("precision", loaded.get("precision", "fp32"))
                 _emit(event)
                 if run.path is not None:
                     _emit(
@@ -286,14 +292,18 @@ def _emit_success(result: TrainResult, manifest_path: Path, final_loss: Any) -> 
     )
 
 
-def _read_final_loss(metrics_path: Path) -> Any:
+def _read_metric_fields(metrics_path: Path) -> tuple[Any, Any, Any]:
     try:
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise TrainFailed(f"could not read metrics {metrics_path}: {exc}") from exc
-    if isinstance(metrics, dict):
-        return metrics.get("final_loss")
-    return None
+    if not isinstance(metrics, dict):
+        return None, None, None
+    return (
+        metrics.get("final_loss"),
+        metrics.get("throughput_steps_per_s"),
+        metrics.get("peak_memory_bytes"),
+    )
 
 
 def _fail(code: int, message: str, **fields: Any) -> int:

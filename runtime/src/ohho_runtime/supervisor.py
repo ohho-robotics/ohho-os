@@ -20,11 +20,16 @@ inside the window is not restarted. With ``max_restarts=3`` and
 A critical service that hits that cap latches do-not-operate. The
 supervisor holds the class safe action and refuses motion until
 :meth:`Supervisor.clear_do_not_operate`. The hook is the extension point
-for a later policy. This module does not command the robot and does not
-change the safety gate.
+for a later policy. This module does not arm the robot.
 
-A ``never`` restart policy is not restarted and does not latch
-do-not-operate. Dependents of a terminal failure are not started.
+An optional :class:`~ohho_runtime.degradation.Degradation` is what calls
+the class safety policy through the gate when a service fails or goes
+stale. Without one, the supervisor does not touch the gate.
+
+A ``never`` restart policy is not restarted. That path does not itself
+latch do-not-operate. A bound degradation treats the terminal critical
+failure as do-not-operate and calls the class policy. Dependents of a
+terminal failure are not started.
 
 A non-zero exit, an unhandled exception, a heartbeat timeout that
 schedules a restart, or a restart limit writes one crash bundle.
@@ -45,6 +50,7 @@ from ohho.registry import RobotSpec
 from ohho.robot_spec import RobotClass
 
 from ohho_runtime.backoff import ExponentialBackoff
+from ohho_runtime.degradation import Degradation
 from ohho_runtime.crash import (
     DEFAULT_LOG_LIMIT,
     LogHistory,
@@ -421,6 +427,7 @@ class Supervisor:
         metrics_host: str | None = None,
         metrics_port: int | None = None,
         crash_dir: str | None = None,
+        degradation: Degradation | None = None,
     ) -> None:
         if mode not in ("dev", "process"):
             raise SupervisorError(
@@ -491,8 +498,15 @@ class Supervisor:
             record=self._record_scheduling,
         )
         factory = DevServiceFactory() if service_factory is None else service_factory
+        if degradation is not None and not isinstance(degradation, Degradation):
+            raise SupervisorError("degradation must be a Degradation")
+        self._degradation = degradation
+        if degradation is not None:
+            degradation.bind(self)
         self._runs: dict[str, _Run] = {}
         for spec in manifest.services:
+            if degradation is not None:
+                degradation.watch(spec)
             backoff = None
             if spec.restart.kind is RestartKind.ON_FAILURE:
                 backoff = ExponentialBackoff(spec.restart.backoff_s)
@@ -628,6 +642,11 @@ class Supervisor:
             raise SupervisorError("disarmed must be a bool")
         self._disarmed = disarmed
 
+    @property
+    def degradation(self) -> Degradation | None:
+        """Safety degradation bound to this supervisor, if one was given."""
+        return self._degradation
+
     def service(self, role: str) -> ServiceBase:
         """Return the live service for ``role``."""
         return self._run(role).service
@@ -684,6 +703,7 @@ class Supervisor:
         self._observe()
         self._restart_due()
         self._launch_ready()
+        self._observe_degradation()
         self._refresh_state()
         self._collect_scheduling()
 
@@ -763,6 +783,22 @@ class Supervisor:
                 if self._initial_up
                 else SupervisorState.STARTING
             )
+
+    def escalate_do_not_operate(self, role: str, reason: str) -> None:
+        """Latch do-not-operate from a critical service failure.
+
+        Does not arm, does not clear an e-stop, and does not restart the
+        service. A second latch while one is already set is a no-op.
+        """
+        if self._state in (
+            SupervisorState.IDLE,
+            SupervisorState.STOPPING,
+            SupervisorState.STOPPED,
+        ):
+            return
+        self._run(role)
+        why = reason or "critical service failed"
+        self._enter_dno(role, why)
 
     def restart(self, role: str) -> None:
         """Restart one service on the supervisor boot path.
@@ -1000,6 +1036,9 @@ class Supervisor:
         service = run.service
         role = run.spec.role
         if restart:
+            degradation = self._degradation
+            if degradation is not None:
+                degradation.on_service_restart(role, at=self._now())
             try:
                 if service.state is not LifecycleState.STOPPED:
                     service.stop()
@@ -1066,6 +1105,29 @@ class Supervisor:
         self._note("service_failed", role, reason)
         outcome = self._apply_restart_policy(run, role)
         self._write_crash_bundle(run, reason, exc=exc, outcome=outcome)
+        self._notify_failure(run, reason)
+
+    def _service_states(self) -> dict[str, LifecycleState]:
+        return {role: run.service.state for role, run in self._runs.items()}
+
+    def _observe_degradation(self) -> None:
+        degradation = self._degradation
+        if degradation is None:
+            return
+        degradation.observe(self._now(), self._service_states())
+
+    def _notify_failure(self, run: _Run, reason: str) -> None:
+        degradation = self._degradation
+        if degradation is None:
+            return
+        degradation.on_service_failed(
+            run.spec.role,
+            reason,
+            criticality=run.spec.criticality,
+            terminal=run.terminal,
+            states=self._service_states(),
+            at=self._now(),
+        )
 
     def _apply_restart_policy(self, run: _Run, role: str) -> str:
         """Apply the manifest restart policy. Returns the outcome token."""

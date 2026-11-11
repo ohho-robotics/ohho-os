@@ -1,0 +1,14 @@
+{
+  "schema": "ohho.sweep/v1",
+  "strategy": "tpe",
+  "seed": 0,
+  "budget": {"max_trials": 40},
+  "sampler": {"startup_trials": 10, "gamma": 0.25, "candidates": 64},
+  "objectives": [
+    {"name": "loss", "direction": "minimize", "primary": true}
+  ],
+  "dimensions": [
+    {"name": "x", "type": "float", "low": 0, "high": 1},
+    {"name": "y", "type": "float", "low": 0, "high": 1}
+  ]
+}
