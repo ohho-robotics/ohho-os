@@ -2,7 +2,7 @@
 
 `ohho train` reads one recipe file and runs it on this machine. The same document is what a UI, a sweep, or a job worker submits. Families that do not have a trainer in this build are still valid recipes. Their run stops before training and does not invent a result.
 
-Every run that reaches `train_start` writes an [`ohho.run/v1`](run-manifest.md) manifest next to its artifacts. `ohho run show <run-dir>` prints it.
+Every run that reaches `train_start` writes an [`ohho.run/v1`](run-manifest.md) manifest next to its artifacts. `ohho run show <run-dir>` prints it. Artifact layout and retention are [`ohho run retain`](artifacts.md).
 
 The schema file is package data:
 
@@ -13,17 +13,17 @@ Its `$id` is `https://ohho-robotics.com/schemas/ohho.recipe/v1.json` and its tit
 | File | Family | Trainer in this build |
 | --- | --- | --- |
 | `act.yaml` | `act` | Yes. Calls `ohho.train.act.train_act` on CPU or GPU. |
-| `diffusion.yaml` | `diffusion` | No. |
+| `diffusion.yaml` | `diffusion` | Yes. Calls `ohho.train.il.diffusion_policy.train_diffusion`. |
 | `smolvla.yaml` | `smolvla` | No. |
 | `openvla.yaml` | `openvla` | No. |
 | `ppo.yaml` | `ppo` | No. |
 
 ```bash
-ohho train ohho/train/examples/act.yaml --set dataset.path=/path/to/dataset --set output.dir=/path/to/run
-ohho train ohho/train/examples/diffusion.yaml
+ohho train ohho/train/examples/il/act-tiny-cpu.yaml --set dataset.path=/path/to/dataset --set output.dir=/path/to/run
+ohho train ohho/train/examples/il/diffusion-tiny-cpu.yaml --set dataset.path=/path/to/dataset --set output.dir=/path/to/run
 ```
 
-The diffusion command is schema-valid and exits `3`. It does not train.
+ACT and Diffusion Policy parameters, defaults, ranges, validation events, and the checkpoint layout serve loads are in [`il-recipes.md`](il-recipes.md). Tiny CPU configs and single-GPU examples live in `ohho/train/examples/il/`. The files in `ohho/train/examples/*.yaml` are one schema example per family. Running `diffusion.yaml` as shipped exits `4` until `dataset.path` is a real directory or an `hf://` hub id. `smolvla`, `openvla`, and `ppo` are schema-valid and exit `3`. They do not train.
 
 ## Document
 
@@ -55,7 +55,7 @@ Relative paths are resolved from the process working directory.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
 5. Shared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision.
-6. Family preflight (for ACT: the same precision check, hyperparameters, local dataset, torch).
+6. Family preflight (for ACT and diffusion: precision, hyperparameters, dataset, device, torch).
 7. On `train_start`, write `run_manifest.json` with `status: running`. The progress event includes `precision` (the runner fills it when the family omits it).
 8. Call the trainer.
 9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
@@ -88,7 +88,7 @@ Parsing rules for the value:
 
 `--set dataset.path=null --set dataset.version_id=dv_123` switches the dataset field from a path to a version id. A numeric path segment indexes a list that already exists (`eval_hooks.0.params.episodes=9`). Unknown fields and wrong types fail schema validation and exit `1` before training.
 
-ACT hyperparameters that are passed through to `train_act` are `train_steps`, `batch_size`, `lr`, `chunk_size`, `d_model`, `nhead`, `num_encoder_layers`, `num_decoder_layers`, `dim_feedforward`, `latent_dim`, `kl_weight`, and `log_every`. `seed` is applied with `torch.manual_seed` and is not forwarded. When `train_steps` is omitted and `num_epochs` is set, the step count is `num_epochs * 2`. When both are set, `train_steps` is used. When neither is set, ACT uses `200` steps. `d_model` must be divisible by `nhead` (defaults `64` and `2` when omitted). `hyperparameters.mock` is rejected. ACT does not run a fake trainer.
+ACT and diffusion hyperparameters, their defaults, and their ranges are listed in [`il-recipes.md`](il-recipes.md). The family checks them before training. `hyperparameters.mock` is rejected. When `train_steps` is omitted and `num_epochs` is set, the step count is `num_epochs * 2`. When both are set, `train_steps` is used. When neither is set, the step count is 200. For ACT, `d_model` must be divisible by `nhead` (defaults `64` and `2` when omitted). `seed` is applied with `torch.manual_seed` and is not forwarded to the optimizer constructor. ACT and diffusion do not run a fake trainer.
 
 ## What a successful ACT run writes
 
@@ -105,7 +105,9 @@ Stdout is one JSON object per line and nothing else. Every object includes `"str
 | `error` | The process is failing. Fields: `exit_code`, `message`, and when relevant `family` and `errors` (a list of strings). |
 | `base_weights` | ACT, after preflight, when `base_weights` is set. `status` is `not_loaded`. |
 | `hook` | ACT, one object per declared hook, before training. `status` is `skipped`. |
-| `train_start` | Immediately before the trainer. Fields: `family`, `device`, `train_steps`, `precision`. |
+| `train_start` | Immediately before the trainer. Fields: `family`, `device`, `train_steps`, `precision`, and `val_every` for ACT and diffusion. |
+| `validation` | During ACT or diffusion training, after every `val_every` optimizer step and after the final step. Fields: `family`, `step` (completed updates, starting at 1), `validation_loss`, `best_validation_loss`, `train_loss`. |
+| `early_stop` | Patience stopped ACT or diffusion before `train_steps`. Fields: `family`, `step`, `validation_loss`, `best_validation_loss`, `patience`. The process still exits 0 when the checkpoint is written. |
 | `metrics` | After a successful train. Fields: `path`, `final_loss`. |
 | `checkpoint` | Checkpoint directory. |
 | `manifest` | `run_manifest.json` path. `status` is `running` at start and `succeeded`, `failed`, or `interrupted` when the file is finalised. |
@@ -114,7 +116,7 @@ Stdout is one JSON object per line and nothing else. Every object includes `"str
 A run that never starts training emits a single `error` line and no `train_start`. A trainer that raises after `train_start` emits `error` with exit code `5`, does not emit `done`, and leaves `run_manifest.json` with `status: failed`. An interrupt leaves `status: interrupted` and then propagates. A missing `run_manifest.json` means the run never started. Argparse usage errors (for example, no recipe path) write no JSON line.
 
 ```json
-{"stream": "ohho.train.progress/v1", "event": "error", "exit_code": 3, "message": "family not available in this build", "family": "diffusion"}
+{"stream": "ohho.train.progress/v1", "event": "error", "exit_code": 3, "message": "family not available in this build", "family": "smolvla"}
 ```
 
 ## Exit codes
@@ -122,7 +124,7 @@ A run that never starts training emits a single `error` line and no `train_start
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | ok | Checkpoint, metrics, and a final `run_manifest.json` (`status: succeeded`) were written. |
-| 1 | invalid | Parse error, `--set` error, schema error, or preflight refusal (unsupported precision, precision the family metadata does not accept, unknown hyperparameter, `d_model` not divisible by `nhead`, device not available, torch missing). The trainer was not called. |
+| 1 | invalid | Parse error, `--set` error, schema error, or ACT/diffusion preflight refusal (unsupported precision, precision the family metadata does not accept, unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, torch missing). The trainer was not called. |
 | 2 | usage | The process was invoked incorrectly. This is argparse (the recipe path was missing). No JSON line. |
 | 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build. `message` is `family not available in this build`. The trainer was not called. |
 | 4 | dataset | The family can train, but the dataset is not a local directory (`version_id` only, or `path` is not a directory). The trainer was not called. |

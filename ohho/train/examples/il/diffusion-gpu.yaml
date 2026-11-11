@@ -1,0 +1,25 @@
+schema: ohho.recipe/v1
+name: diffusion-single-gpu
+family: diffusion
+dataset:
+  path: hf://lerobot/pusht
+hyperparameters:
+  train_steps: 100000
+  batch_size: 64
+  lr: 0.0001
+  chunk_size: 16
+  horizon: 16
+  vision_backbone: resnet18
+  diffusion_steps: 100
+  scheduler: ddim
+  num_inference_steps: 10
+  val_every: 1000
+  val_fraction: 0.2
+  early_stop_patience: 10
+  early_stop_min_delta: 0.0001
+  seed: 0
+  d_model: 256
+precision: fp32
+device: cuda
+output:
+  dir: checkpoints/diffusion-single-gpu
