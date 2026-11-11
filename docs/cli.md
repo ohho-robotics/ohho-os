@@ -94,6 +94,8 @@ benchmark numbers.
 | `ohho bench version --backend llama-cpp` | Print the engine version, or a clear error when it is not installed |
 | `ohho bench llm --endpoint URL --model ID --output FILE` | Measure TTFT, inter-token latency, tokens/s, and request throughput |
 | `ohho bench --mode generate --target PROFILE` | TTFT, TPOT, tokens/s, concurrency, and 4-bit vs FP16 |
+| `ohho bench cost FILE [--gpu-hour-usd N] [--output FILE]` | Recompute cost estimates from measured throughput. Does not rerun the benchmark. |
+| `ohho bench prices` | Print the user-editable price table. Every figure is an estimate. |
 
 Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
 external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
