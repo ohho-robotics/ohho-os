@@ -1,0 +1,26 @@
+{
+  "schema": "ohho.target_profile.v1",
+  "id": "cloud-a10g",
+  "arch": "x86_64",
+  "accelerator": "dgpu",
+  "precisions": ["FP32", "FP16", "INT8"],
+  "execution_providers": [
+    "TensorrtExecutionProvider",
+    "CUDAExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "tensorrt": {
+    "min_version": "8.5.0",
+    "before_version": "12.0.0",
+    "excluded": []
+  },
+  "memory_budget_mib": 20480,
+  "workspace_size_mib": 4096,
+  "slos_p95_ms": {
+    "act": 10,
+    "smolvla": 35,
+    "diffusion": 20,
+    "openvla": 100
+  },
+  "summary": "NVIDIA A10G, Ampere, 24GB. FP32, FP16 and INT8. No FP8. TensorRT, then CUDA, then CPU."
+}

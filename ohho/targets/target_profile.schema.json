@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/target-profile.v1.json",
+  "title": "TargetProfile",
+  "description": "Hardware target for optimisation and benchmarking. slos_p95_ms values are default budgets in milliseconds, not measurements. memory_budget_mib is the memory an optimiser may plan to use. Cross-field rules, including FP8 on Orin and TensorRT on a CPU target, are enforced by ohho.targets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "arch",
+    "accelerator",
+    "precisions",
+    "execution_providers",
+    "tensorrt",
+    "memory_budget_mib",
+    "workspace_size_mib",
+    "slos_p95_ms",
+    "summary"
+  ],
+  "properties": {
+    "schema": {"const": "ohho.target_profile.v1"},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "description": "Stable target id used by the console picker."
+    },
+    "arch": {"enum": ["aarch64", "x86_64"]},
+    "accelerator": {
+      "enum": ["none", "orin_gpu", "dgpu", "npu"],
+      "description": "none, Orin GPU, discrete GPU, or the NPU placeholder."
+    },
+    "precisions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["FP32", "FP16", "INT8", "FP8", "INT4"]}
+    },
+    "execution_providers": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "TensorrtExecutionProvider",
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ]
+      },
+      "description": "ONNX Runtime execution providers, best first. CPUExecutionProvider is last."
+    },
+    "tensorrt": {
+      "description": "Allowed TensorRT versions, or null when TensorRT is not used.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min_version", "before_version", "excluded"],
+          "properties": {
+            "min_version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
+            "before_version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
+            "excluded": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["min_version", "before_version"],
+                "properties": {
+                  "min_version": {
+                    "type": "string",
+                    "pattern": "^\\d+\\.\\d+\\.\\d+$"
+                  },
+                  "before_version": {
+                    "type": "string",
+                    "pattern": "^\\d+\\.\\d+\\.\\d+$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "memory_budget_mib": {"type": "integer", "minimum": 1, "maximum": 1048576},
+    "workspace_size_mib": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Default TensorRT workspace. 0 when TensorRT is not used."
+    },
+    "slos_p95_ms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["act", "smolvla", "diffusion", "openvla"],
+      "properties": {
+        "act": {"type": "number", "exclusiveMinimum": 0},
+        "smolvla": {"type": "number", "exclusiveMinimum": 0},
+        "diffusion": {"type": "number", "exclusiveMinimum": 0},
+        "openvla": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 400}
+  }
+}
