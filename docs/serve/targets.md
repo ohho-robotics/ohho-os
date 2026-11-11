@@ -129,5 +129,9 @@ not Nano, NX or AGX Orin produce `detected: none` plus a note. CUDA and
 TensorRT are still reported.
 
 `ohho optimize` compiles a model for one of these profiles. See
+
+`ohho targets verify` checks the running process against a pinned
+`ohho-serve-worker` image. The version matrix is
+[worker-images.md](worker-images.md).
 [optimize.md](../optimize.md). The parity report for that compile is
 [parity.md](parity.md).

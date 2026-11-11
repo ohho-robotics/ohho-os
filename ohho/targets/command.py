@@ -70,11 +70,37 @@ def register_targets(subparsers: Any) -> None:
         help="dotted TensorRT version to check against the profile",
     )
     check.set_defaults(action="check")
+
+    verify = commands.add_parser(
+        "verify",
+        help="check this process against a pinned serve worker image",
+    )
+    verify.add_argument(
+        "--variant",
+        choices=["cpu", "cuda", "jetson"],
+        default="",
+        help="require this worker variant",
+    )
+    verify.add_argument(
+        "--image",
+        default="",
+        help="worker image tag (default: OHHO_WORKER_IMAGE or the image stamp)",
+    )
+    verify.add_argument("--json", action="store_true", help="print the report as JSON")
+    verify.add_argument(
+        "--require-stack",
+        action="store_true",
+        help="require the pinned torch, ORT, and TensorRT packages to be installed",
+    )
+    verify.set_defaults(action="verify")
     parser.set_defaults(func=run_targets)
 
 
 def run_targets(args: argparse.Namespace) -> int:
-    """Run ``list``, ``show``, ``detect`` or ``check``. Unknown actions return 1."""
+    """Run ``list``, ``show``, ``detect``, ``check`` or ``verify``.
+
+    Unknown actions return 1.
+    """
     action = getattr(args, "action", None)
     try:
         if action == "list":
@@ -85,10 +111,12 @@ def run_targets(args: argparse.Namespace) -> int:
             return _detect(bool(getattr(args, "json", False)))
         if action == "check":
             return _check(args)
+        if action == "verify":
+            return _verify(args)
     except TargetProfileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print("usage: ohho targets [list|show|detect|check]", file=sys.stderr)
+    print("usage: ohho targets [list|show|detect|check|verify]", file=sys.stderr)
     return 1
 
 
@@ -138,6 +166,28 @@ def _detect(as_json: bool) -> int:
         _dump(found.to_dict())
     else:
         print(found.text())
+    return 0
+
+
+def _verify(args: argparse.Namespace) -> int:
+    from ohho.worker_images.errors import WorkerImageError
+    from ohho.worker_images.verify import verify_worker
+
+    try:
+        report = verify_worker(
+            image=getattr(args, "image", "") or None,
+            variant=getattr(args, "variant", "") or None,
+            require_stack=bool(getattr(args, "require_stack", False)),
+        )
+    except WorkerImageError as exc:
+        if bool(getattr(args, "json", False)):
+            _dump({"schema": "ohho.worker_verify.v1", "ok": False, "error": str(exc)})
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if bool(getattr(args, "json", False)):
+        _dump(report.to_dict())
+    else:
+        print(report.text())
     return 0
 
 
