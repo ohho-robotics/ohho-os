@@ -14,7 +14,7 @@ from unittest.mock import patch
 from ohho import __version__
 from ohho.cli import main as cli_main
 from ohho.sim_loop import record_sim_episodes
-from ohho.train.builtin_recipes import ACT
+from ohho.train.builtin_recipes import ACT, DIFFUSION, PPO
 from ohho.train.recipe_registry import (
     RecipeRegistryError,
     TrainResult,
@@ -282,9 +282,13 @@ class TestRegistry(unittest.TestCase):
             {"act", "diffusion", "smolvla", "openvla", "ppo"} <= set(family_ids())
         )
         self.assertTrue(get_family("act").available())
-        for family in ("diffusion", "smolvla", "openvla", "ppo"):
-            self.assertFalse(get_family(family).available())
+        self.assertTrue(get_family("diffusion").available())
+        self.assertTrue(get_family("ppo").available())
         self.assertIs(get_family("act"), ACT)
+        self.assertIs(get_family("diffusion"), DIFFUSION)
+        self.assertIs(get_family("ppo"), PPO)
+        for family in ("smolvla", "openvla"):
+            self.assertFalse(get_family(family).available())
         register(ACT, source="again")
 
         class Other:
@@ -369,7 +373,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(caught.exception.code, EXIT_USAGE)
 
     def test_unavailable_families_do_not_train(self) -> None:
-        for family in ("diffusion", "smolvla", "openvla", "ppo"):
+        for family in ("smolvla", "openvla"):
             with self.subTest(family=family):
                 code, events, err = _run(example_path(family))
                 self.assertEqual(code, EXIT_UNAVAILABLE, err)
@@ -388,7 +392,7 @@ class TestTrainCommand(unittest.TestCase):
                     "train",
                     str(example_path("act")),
                     "--set",
-                    "family=diffusion",
+                    "family=smolvla",
                     "--set",
                     "dataset.path=null",
                     "--set",
@@ -398,7 +402,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(code, EXIT_UNAVAILABLE, stderr.getvalue())
         event = json.loads(stdout.getvalue().strip().splitlines()[-1])
         self.assertEqual(event["message"], UNAVAILABLE_MESSAGE)
-        self.assertEqual(event["family"], "diffusion")
+        self.assertEqual(event["family"], "smolvla")
 
     def test_invalid_config_fails_before_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -408,7 +412,7 @@ class TestTrainCommand(unittest.TestCase):
                 (example_path("ppo"), ["hyperparameters.gamma=1.5"], "gamma"),
                 (
                     example_path("act"),
-                    ["precision=bf16", f"output.dir={out}"],
+                    ["precision=fp8", f"output.dir={out}"],
                     "precision",
                 ),
                 (
@@ -596,6 +600,24 @@ class TestActRun(unittest.TestCase):
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["family"], "act")
             self.assertEqual(manifest["device"], "cpu")
+            self.assertEqual(manifest["precision"], "fp32")
+            self.assertIs(manifest["loss_scaling"], False)
+            self.assertEqual(manifest["precision_backend"], "fp32")
+            fp32_metrics = manifest["precision_metrics"]["fp32"]
+            self.assertEqual(
+                fp32_metrics["throughput_steps_per_s"],
+                metrics["throughput_steps_per_s"],
+            )
+            self.assertEqual(
+                fp32_metrics["peak_memory_bytes"], metrics["peak_memory_bytes"]
+            )
+            self.assertGreater(fp32_metrics["throughput_steps_per_s"], 0)
+            self.assertIsInstance(fp32_metrics["peak_memory_bytes"], int)
+            self.assertGreaterEqual(fp32_metrics["peak_memory_bytes"], 0)
+            self.assertIsNone(manifest["precision_metrics"]["fp16"])
+            self.assertIsNone(manifest["precision_metrics"]["bf16"])
+            self.assertIsNone(manifest["precision_metrics"]["fp8"])
+            self.assertEqual(_events_of(events, "train_start")[0]["precision"], "fp32")
             self.assertFalse(manifest["base_weights"]["loaded"])
             self.assertIsNone(manifest["base_weights"]["hash"])
             self.assertEqual(manifest["base_weights"]["uri"], "local:act-init")

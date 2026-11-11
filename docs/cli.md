@@ -70,7 +70,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
-| `ohho sweep start <file> [--id ID]` | Persist a new sweep run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` |
+| `ohho sweep start <file> [--id ID] [--backend native\|wandb\|auto]` | Native (the default) persists a run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` and prints no W&B URL. `wandb` creates a sweep through the W&B API when `WANDB_API_KEY` is set and prints the URL that client returns. `auto` uses W&B only when that key is set |
 | `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
@@ -102,8 +102,10 @@ external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
 | `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
+| `ohho run retain <path> [--dry-run] [--days N] [--experiment ID] [--json]` | Delete intermediate checkpoints of pruned trials older than N days (default 14). Keeps best, last, logs, eval reports, and pinned or promoted versions. `--dry-run` does not delete. See [`train/artifacts.md`](train/artifacts.md). |
+| `ohho run storage <path> [--experiment ID] [--json]` | Print bytes used by one run or by each run under a directory. |
 
 ## Simulation services
 

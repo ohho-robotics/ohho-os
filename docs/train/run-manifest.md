@@ -37,6 +37,9 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `finished_at` | Finished | `finished_at` |
 | `family` | Family | `family` |
 | `device` | Device | `device` |
+| `precision` | Precision | `precision` |
+| `loss_scaling` | Loss scaling | `loss_scaling` |
+| `precision_backend` | Precision backend | `precision_backend` |
 | `seeds.recipe` | Seed | `seeds.recipe` |
 | `seeds.python` | Python seed | `seeds.python` |
 | `seeds.numpy` | NumPy seed | `seeds.numpy` |
@@ -56,6 +59,7 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `library_versions` | Libraries | `library_versions` |
 | `gpu` | GPU | `gpu` |
 | `final_loss` | Final loss | `final_loss` |
+| `precision_metrics` | Precision metrics | `precision_metrics` |
 | `error` | Error | `error` |
 | `resolved_config` | Resolved config | `resolved_config` |
 
@@ -66,6 +70,8 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 `git` describes the checkout that contains the recipe file. `commit` is null when that directory is not a git checkout or the checkout has no commit yet. `dirty` is true when `git status --porcelain` shows any change, including untracked files. When git cannot read the status of a checkout that does exist, `dirty` is true.
 
 `library_versions` always includes `python` and `ohho` (the `ohho-os` version). `torch`, `numpy`, and `lerobot` are included when those distributions are installed. The version lookup uses package metadata.
+
+`precision` is the recipe value the device check accepted (`fp32`, `fp16`, `bf16`, or `fp8`). `loss_scaling` is true only for fp16, where the step uses GradScaler. `precision_backend` is `fp32`, `torch.amp` (fp16 and bf16), or `transformer_engine` (fp8). `precision_metrics` has one key per precision. The precision that ran holds `throughput_steps_per_s` and `peak_memory_bytes`. The others are null. While the run is still going, and when the trainer did not write those keys, the numbers are null. Throughput is training steps per second over the step loop. On CUDA, peak memory is `max_memory_allocated` in bytes after the loop starts. On CPU and MPS it is the process resident set sampled during the loop, which includes the interpreter. Details are in [Mixed precision](precision.md).
 
 The JSON document also carries `recipe_path`, `overrides`, `checkpoint_dir`, `metrics_path`, `declared_hooks`, and `git.root`. Those are available to a details panel. They are not summary fields. `--json` prints them with the summary.
 
@@ -94,3 +100,7 @@ Outside a container, `container_image_digest` is null. Inside a container (`/.do
 3. the first line of `/.ohho-image-digest`
 
 When none of those is set, the field stays null. `OHHO_IMAGE_DIGEST` on a host that is not a container is ignored.
+
+## Artifact retention
+
+Retention does not rewrite this file or `metrics.json`. Checkpoint deletion is recorded in `artifact_index.json` beside the manifest. See [artifacts.md](artifacts.md).

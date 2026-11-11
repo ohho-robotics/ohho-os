@@ -1184,7 +1184,6 @@ def _cmd_sweep(args) -> int:
         format_start,
         resume_as_dict,
         resume_sweep,
-        start_sweep,
     )
 
     command = getattr(args, "sweep_command", "plan")
@@ -1192,12 +1191,37 @@ def _cmd_sweep(args) -> int:
         if command == "plan":
             return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
         if command == "start":
-            run = start_sweep(args.spec, sweep_id=getattr(args, "id", None))
+            from .train.sweep_wandb import format_launch, launch_as_dict, launch_sweep
+
+            result = launch_sweep(
+                args.spec,
+                backend=getattr(args, "backend", "native"),
+                sweep_id=getattr(args, "id", None),
+                project=getattr(args, "wandb_project", None),
+                entity=getattr(args, "wandb_entity", None),
+            )
+            if result.backend == "native":
+                for note in result.notes:
+                    print(f"note: {note}", file=sys.stderr)
+                run = result.run
+                if run is None:
+                    raise SweepError("native sweep launch is missing its run")
+                if getattr(args, "json", False):
+                    json.dump(run.document(), sys.stdout, indent=2, sort_keys=True)
+                    sys.stdout.write("\n")
+                else:
+                    sys.stdout.write(format_start(run))
+                return 0
             if getattr(args, "json", False):
-                json.dump(run.document(), sys.stdout, indent=2, sort_keys=True)
+                json.dump(
+                    launch_as_dict(result),
+                    sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
                 sys.stdout.write("\n")
             else:
-                sys.stdout.write(format_start(run))
+                sys.stdout.write(format_launch(result))
             return 0
         if command == "resume":
             count = getattr(args, "count", 1)
@@ -1955,13 +1979,29 @@ def build_parser() -> argparse.ArgumentParser:
     plan.set_defaults(func=_cmd_sweep)
     start = sweep_sub.add_parser(
         "start",
-        help="persist a new sweep run (sampler state and an empty trial table)",
+        help="start a native sweep run, or a W&B sweep when a key is configured",
     )
     start.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
     start.add_argument(
         "--id",
         default=None,
-        help="sweep id (default: a generated id). Stored under OHHO_SWEEP_DIR or ~/.ohho/sweeps",
+        help="native sweep id (default: a generated id). Stored under OHHO_SWEEP_DIR or ~/.ohho/sweeps. W&B assigns its own id",
+    )
+    start.add_argument(
+        "--backend",
+        choices=("native", "wandb", "auto"),
+        default="native",
+        help="native (default) stores a local run and prints no W&B URL. wandb creates a sweep through the W&B API when WANDB_API_KEY is set and prints the URL that client returns. auto uses wandb only when that key is set",
+    )
+    start.add_argument(
+        "--wandb-project",
+        default=None,
+        help="W&B project name (default: WANDB_PROJECT). Not a URL",
+    )
+    start.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="W&B entity name (default: WANDB_ENTITY)",
     )
     start.add_argument("--json", action="store_true", help="print the run as JSON")
     start.set_defaults(func=_cmd_sweep)
@@ -2041,7 +2081,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser(
         "run",
-        help="show an ohho.run/v1 training manifest",
+        help="show a training run, its storage, and artifact retention",
     )
     run_sub = run.add_subparsers(dest="run_command", required=True)
     show = run_sub.add_parser(
@@ -2058,6 +2098,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the manifest as JSON",
     )
     show.set_defaults(func=_cmd_run)
+    # OHH-545 retain and storage. Parser setup stays in ohho.train.artifacts.
+    from .train.artifacts import add_run_commands
+
+    add_run_commands(run_sub)
 
     return p
 
