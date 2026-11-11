@@ -272,11 +272,12 @@ def _gate_and_publish(
     local: LocalBuildCache,
     registry: RegistryCache | None,
 ) -> dict[str, Any]:
-    """Run the parity gate, then write the manifest or discard the export.
+    """Run the parity gate, then the optional task gate, then publish.
 
-    A failing report is not published unless ``allow_parity_fail`` is set.
-    The flag is stored on the manifest either way. TensorRT engines stay
-    unchecked; the ONNX or TorchScript file is what this process can execute.
+    A failing tensor report or task report is not published unless
+    ``allow_parity_fail`` is set. The flag is stored on the manifest either
+    way. TensorRT engines stay unchecked; the ONNX or TorchScript file is
+    what this process can execute. Task scores are written to ``accuracy.json``.
     """
     import json
 
@@ -373,6 +374,20 @@ def _gate_and_publish(
     if report["result"] != "pass" and not request.allow_parity_fail:
         _discard(out, outputs)
         raise ParityFailed(report)
+    task_document = None
+    if request.tasks:
+        from ohho.parity.errors import TaskFailed
+        from ohho.parity.tasks.stage import run_task_stage
+
+        try:
+            task_document = run_task_stage(request, out, report)
+        except (ParityError, OptimizeError):
+            _discard(out, outputs)
+            raise
+        failed = task_document["accuracy"]["result"] != "pass"
+        if failed and not request.allow_parity_fail:
+            _discard(out, outputs)
+            raise TaskFailed(task_document)
     document = build_manifest(
         model={
             "ref": loaded.ref,
@@ -415,6 +430,10 @@ def _gate_and_publish(
     (out / "parity.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
+    if task_document is not None:
+        (out / "accuracy.json").write_text(
+            json.dumps(task_document, indent=2) + "\n", encoding="utf-8"
+        )
     from ohho.optimize.publish import run_parity
 
     run_parity(document, out)
@@ -581,7 +600,7 @@ def _discard(out: Path, outputs: list[dict[str, Any]]) -> None:
             path.unlink()
         elif path.is_dir():
             shutil.rmtree(path)
-    for name in ("manifest.json", "parity.json"):
+    for name in ("manifest.json", "parity.json", "accuracy.json"):
         path = out / name
         if path.is_file():
             path.unlink()

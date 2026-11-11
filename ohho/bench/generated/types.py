@@ -21,6 +21,8 @@ __all__ = [
     "LatencyStage",
     "LatencyReport",
     "Throughput",
+    "JointAccuracy",
+    "AccuracyComparison",
     "Accuracy",
     "Telemetry",
     "EnvironmentVersions",
@@ -179,18 +181,60 @@ class Throughput(_ThroughputRequired, total=False):
     duration_s: float
 
 
+class _JointAccuracyRequired(TypedDict):
+    index: int
+    reference: float
+    optimized: float
+    delta: float
+
+
+class JointAccuracy(_JointAccuracyRequired, total=False):
+    """Reference and optimised error for one action joint.
+
+    Additional properties are allowed.
+    """
+
+    name: str
+
+
+class _AccuracyComparisonRequired(TypedDict):
+    task: str
+    metric: str
+    reference: float
+    optimized: float
+    delta: float
+    tolerance: float
+    result: Literal["pass", "fail"]
+
+
+class AccuracyComparison(_AccuracyComparisonRequired, total=False):
+    """Reference versus optimised score for one task metric, and whether the delta
+    is inside the tolerance.
+
+    Additional properties are allowed.
+    """
+
+    direction: Literal["lower_is_better", "higher_is_better"]
+    unit: str
+    samples: int
+    per_joint: list[JointAccuracy]
+    seeds: list[int]
+
+
 class _AccuracyRequired(TypedDict):
     primary: Metric
 
 
 class Accuracy(_AccuracyRequired, total=False):
-    """Quality of the model on the bench set.
+    """Quality of the model on the bench set. A task gate may add
+    reference-versus-optimised comparisons; primary stays the headline figure.
 
     Additional properties are allowed.
     """
 
     metrics: list[Metric]
     samples: int
+    comparisons: list[AccuracyComparison]
 
 
 class _TelemetryRequired(TypedDict):

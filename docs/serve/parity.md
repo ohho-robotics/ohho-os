@@ -183,3 +183,59 @@ An empty list means every output was compared.
 `candidate.format` is `onnx`, `torchscript`, `module`, or null when nothing
 could be executed. `reference.family` is the family used for limits and for
 the extra metrics.
+
+## Task accuracy
+
+`--tasks` is an optional stage after the tensor gate. It does not change
+`ohho.parity/v1`. The stage writes an `ohho.bench/v1` document whose
+`accuracy` block compares a reference score with an optimised score.
+
+```bash
+ohho parity --reference reference-act --candidate build/act --inputs random \
+  --tasks action_error,sim_success --task-seeds 20 --json
+ohho optimize --model reference-act --target x86-cpu --precision fp32 \
+  --out build/act --tasks action_error,sim_success
+```
+
+`--tasks all` also runs detection mAP and token match. Those two need
+`--task-detections` and `--task-tokens`. Omitting `--tasks` leaves the tensor
+gate unchanged.
+
+Evaluators are entry points in the `ohho.parity.tasks` group:
+
+| Name | Metric | What is scored |
+| --- | --- | --- |
+| `action_error` | `action_mae`, `action_l2` | Predicted action against the held-out episode's ground truth. MAE is the mean absolute joint error. L2 is the mean Euclidean norm of each frame. |
+| `sim_success` | `sim_success` | Closed-loop success on seeds `0 .. N-1` (default 20) through `ohho.sim_loop.evaluate_policy_sim`. |
+| `detection_map` | `map` | Mean average precision at IoU 0.5. |
+| `token_match` | `top1`, `token_match` | Top-1 rate and token match rate for an LLM or VLM. |
+
+Each row stores `reference`, `optimized`, `delta` (`optimized - reference`),
+`tolerance`, and `result`. Error metrics pass when `delta` is at most the
+tolerance. Rate metrics pass when the drop (`reference - optimized`) is at
+most the tolerance. A value equal to the tolerance passes. The bench
+`accuracy.result` is `fail` when any row fails. `accuracy.primary` stays the
+schema's required headline and is the first optimised score.
+
+Default tolerances are action MAE 0.05, action L2 0.05, sim success drop 0,
+mAP drop 0.01, top-1 drop 0.01, and token-match drop 0.01. A JSON file
+replaces only the metrics it names, in order `default`, `families.<family>`,
+`models.<model>`.
+
+Sim episodes use the `sim` robot. The policy sees the sim state with
+`(goal_x, goal_y, seed)` appended. The goal lies 0.4 m from the origin.
+`pursuit_action` reaches it in 8 steps of 0.1 s at 0.5 m/s. Success is a
+final position within 0.02 m. Nothing in this stage runs on a real robot.
+
+`ohho optimize` writes the document to `accuracy.json` next to `manifest.json`
+after the tensor gate. A task miss is not published unless
+`--allow-parity-fail` is set. The manifest schema is unchanged.
+
+With `--json`, `ohho parity` prints `{"parity": ..., "accuracy": ...}` only
+when `--tasks` is set. Without `--tasks` the printed document is still the
+tensor report alone. Exit 1 when either gate fails. Exit 2 when a pair cannot
+be scored.
+
+The ACT FP16 comparison is a CPU check. Weight and value rounding uses IEEE
+binary16. A GPU float16 run is not executed here. The same action-error and
+sim-success evaluators run on deterministic fake policies when torch is absent.

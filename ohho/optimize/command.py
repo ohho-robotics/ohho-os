@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from ohho.optimize.errors import OptimizeError
 from ohho.optimize.plan import PRECISION_FLAGS, OptimizeRequest
-from ohho.parity.errors import ParityError, ParityFailed
+from ohho.parity.errors import ParityError, ParityFailed, TaskFailed
 
 
 def register_optimize(subparsers: Any) -> None:
@@ -43,7 +44,11 @@ def register_optimize(subparsers: Any) -> None:
             "\n"
             "The parity gate runs after the export. A mean absolute difference "
             "above 0.05 refuses to publish unless --allow-parity-fail is set. "
-            "That flag is recorded in the manifest."
+            "That flag is recorded in the manifest.\n"
+            "\n"
+            "--tasks runs the task-accuracy gate after tensor parity and writes "
+            "accuracy.json (ohho.bench/v1). A task miss also refuses to publish "
+            "unless --allow-parity-fail is set."
         ),
     )
     parser.add_argument("--model", help="checkpoint path or registry id")
@@ -135,6 +140,37 @@ def register_optimize(subparsers: Any) -> None:
         help="model family for the parity gate (default: the model kind)",
     )
     parser.add_argument(
+        "--tasks",
+        default=None,
+        help="optional task gate after tensor parity: all, or a comma-separated list",
+    )
+    parser.add_argument(
+        "--task-seeds",
+        type=int,
+        default=20,
+        help="fixed sim seeds 0..N-1 for the task gate (default 20)",
+    )
+    parser.add_argument(
+        "--task-tolerances",
+        default=None,
+        help="JSON file of per-model task tolerances",
+    )
+    parser.add_argument(
+        "--task-episodes",
+        default=None,
+        help="held-out episode set for action error",
+    )
+    parser.add_argument(
+        "--task-detections",
+        default=None,
+        help="JSON detection set for mAP",
+    )
+    parser.add_argument(
+        "--task-tokens",
+        default=None,
+        help="JSON labelled examples for token match",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="print the manifest as JSON"
     )
     parser.add_argument(
@@ -198,6 +234,12 @@ def run_optimize(args: argparse.Namespace) -> int:
         parity_mean_abs=args.parity_mean_abs,
         parity_thresholds=args.parity_thresholds,
         parity_family=args.parity_family,
+        tasks=args.tasks,
+        task_tolerances=args.task_tolerances,
+        task_seeds=args.task_seeds,
+        task_episodes=args.task_episodes,
+        task_detections=args.task_detections,
+        task_tokens=args.task_tokens,
     )
     try:
         from ohho.optimize.engine import optimize
@@ -206,6 +248,14 @@ def run_optimize(args: argparse.Namespace) -> int:
             document = optimize(request, no_cache=True)
         else:
             document = optimize(request)
+    except TaskFailed as exc:
+        if args.json:
+            print(
+                json.dumps({"ok": False, "error": str(exc), "accuracy": exc.document})
+            )
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
     except ParityFailed as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc), "parity": exc.report}))
@@ -234,6 +284,12 @@ def run_optimize(args: argparse.Namespace) -> int:
         print(f"  {item['role']}: {item['path']}")
     parity = document.get("parity") or {}
     print(f"  parity: {parity.get('result', 'unknown')}")
+    accuracy_path = Path(args.out) / "accuracy.json"
+    if accuracy_path.is_file():
+        task_doc = json.loads(accuracy_path.read_text(encoding="utf-8"))
+        task_result = (task_doc.get("accuracy") or {}).get("result", "unknown")
+        print(f"  tasks: {task_result}")
+        print("  accuracy: accuracy.json")
     print("  manifest: manifest.json")
     return 0
 

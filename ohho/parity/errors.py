@@ -28,3 +28,22 @@ class ParityFailed(ParityError):
             text = "parity gate failed"
         super().__init__(text)
         self.report = report
+
+
+class TaskFailed(ParityError):
+    """The task-accuracy gate missed a tolerance.
+
+    ``document`` is the ``ohho.bench/v1`` result. ``ohho optimize`` does not
+    publish the artifact unless ``--allow-parity-fail`` was set. This is
+    separate from a tensor-parity miss (:class:`ParityFailed`).
+    """
+
+    def __init__(self, document: dict[str, Any]) -> None:
+        accuracy = document.get("accuracy") if isinstance(document, dict) else None
+        reasons = accuracy.get("reasons") if isinstance(accuracy, dict) else None
+        if isinstance(reasons, list) and reasons:
+            text = "; ".join(str(item) for item in reasons)
+        else:
+            text = "task accuracy gate failed"
+        super().__init__(text)
+        self.document = document

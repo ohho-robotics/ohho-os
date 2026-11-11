@@ -113,13 +113,47 @@ export interface Throughput {
 }
 
 /**
- * Quality of the model on the bench set.
+ * Reference and optimised error for one action joint.
+ * Additional properties are allowed.
+ */
+export interface JointAccuracy {
+  index: number;
+  name?: string;
+  reference: number;
+  optimized: number;
+  delta: number;
+}
+
+/**
+ * Reference versus optimised score for one task metric, and whether the delta
+ * is inside the tolerance.
+ * Additional properties are allowed.
+ */
+export interface AccuracyComparison {
+  task: string;
+  metric: string;
+  reference: number;
+  optimized: number;
+  delta: number;
+  tolerance: number;
+  result: "pass" | "fail";
+  direction?: "lower_is_better" | "higher_is_better";
+  unit?: string;
+  samples?: number;
+  per_joint?: JointAccuracy[];
+  seeds?: number[];
+}
+
+/**
+ * Quality of the model on the bench set. A task gate may add
+ * reference-versus-optimised comparisons; primary stays the headline figure.
  * Additional properties are allowed.
  */
 export interface Accuracy {
   primary: Metric;
   metrics?: Metric[];
   samples?: number;
+  comparisons?: AccuracyComparison[];
 }
 
 /**
