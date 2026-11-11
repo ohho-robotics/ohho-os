@@ -286,11 +286,11 @@ class TestRegistry(unittest.TestCase):
         self.assertTrue(get_family("act").available())
         self.assertTrue(get_family("diffusion").available())
         self.assertTrue(get_family("ppo").available())
+        self.assertTrue(get_family("smolvla").available())
+        self.assertTrue(get_family("openvla").available())
         self.assertIs(get_family("act"), ACT)
         self.assertIs(get_family("diffusion"), DIFFUSION)
         self.assertIs(get_family("ppo"), PPO)
-        for family in ("smolvla", "openvla"):
-            self.assertFalse(get_family(family).available())
         register(ACT, source="again")
 
         class Other:
@@ -386,25 +386,38 @@ class TestTrainCommand(unittest.TestCase):
                 self.assertFalse(_events_of(events, "train_start"))
 
     def test_cli_set_switches_family_before_dataset_check(self) -> None:
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            code = cli_main(
-                [
-                    "train",
-                    str(example_path("act")),
-                    "--set",
-                    "family=smolvla",
-                    "--set",
-                    "dataset.path=null",
-                    "--set",
-                    "dataset.version_id=not-resolved",
-                ]
-            )
-        self.assertEqual(code, EXIT_UNAVAILABLE, stderr.getvalue())
-        event = json.loads(stdout.getvalue().strip().splitlines()[-1])
-        self.assertEqual(event["message"], UNAVAILABLE_MESSAGE)
-        self.assertEqual(event["family"], "smolvla")
+        class UnavailableTestPolicy:
+            id = "unavailable_stub"
+
+            def available(self) -> bool:
+                return False
+
+            def run(self, recipe, emit):
+                pass
+
+        register(UnavailableTestPolicy(), source="test")
+        try:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = cli_main(
+                    [
+                        "train",
+                        str(example_path("act")),
+                        "--set",
+                        "family=unavailable_stub",
+                        "--set",
+                        "dataset.path=null",
+                        "--set",
+                        "dataset.version_id=not-resolved",
+                    ]
+                )
+            self.assertEqual(code, EXIT_UNAVAILABLE, stderr.getvalue())
+            event = json.loads(stdout.getvalue().strip().splitlines()[-1])
+            self.assertEqual(event["message"], UNAVAILABLE_MESSAGE)
+            self.assertEqual(event["family"], "unavailable_stub")
+        finally:
+            unregister("unavailable_stub")
 
     def test_invalid_config_fails_before_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

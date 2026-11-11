@@ -106,11 +106,16 @@ smolvla = "ohho.train.builtin_recipes:SMOLVLA"
 openvla = "ohho.train.builtin_recipes:OPENVLA"
 ppo = "ohho.train.builtin_recipes:PPO"
 
+[project.entry-points."ohho.parity.tasks"]
+action_error = "ohho.parity.tasks.action_error:evaluator"
+sim_success = "ohho.parity.tasks.sim_success:evaluator"
+detection_map = "ohho.parity.tasks.detection_map:evaluator"
+token_match = "ohho.parity.tasks.token_match:evaluator"
+
 [project.entry-points."ohho.rl_tasks"]
 cartpole = "ohho.train.rl_tasks:CARTPOLE"
 mujoco-inverted-pendulum = "ohho.train.rl_tasks:MUJOCO_INVERTED_PENDULUM"
 isaac-velocity = "ohho.train.rl_tasks:ISAAC_VELOCITY"
-
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
@@ -123,10 +128,12 @@ ohho = [
   "targets/profiles/*.json",
   "targets/*.json",
   "optimize/*.json",
+  "worker_images/*.json",
   "parity/*.json",
   "train/schema/*.json",
   "train/examples/*.yaml",
   "train/examples/il/*.yaml",
+  "train/examples/vla/*.yaml",
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",

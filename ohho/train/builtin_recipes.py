@@ -3,8 +3,9 @@
 ACT calls :func:`ohho.train.act.train_act` and writes a real checkpoint.
 Diffusion Policy calls :func:`ohho.train.il.diffusion_policy.train_diffusion`.
 PPO calls :func:`ohho.train.ppo.run_ppo` and writes a real checkpoint.
-SmolVLA and OpenVLA are registered so a recipe can name them, and their
-run step reports that the family is not available. They do not call a mock trainer.
+SmolVLA and OpenVLA validate their family parameters and then report that the
+weight-loading trainer is not available. They do not download base weights.
+None of them call a mock trainer.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from .recipe_schema import (
     RecipeConfigError,
     TrainFailed,
 )
+from .vla.family import OPENVLA, SMOLVLA
 
 _ACT_KEYS = frozenset(
     {
@@ -74,6 +76,8 @@ class ActRecipe:
 
         preflight_il_recipe(recipe, family_id=self.id)
         _prepare_qat(recipe)
+        train_steps = int(recipe.get("hyperparameters", {}).get("train_steps", 200))
+        _pruning_for(recipe, train_steps)
 
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         plan = prepare_precision(recipe, family=self)
@@ -86,13 +90,19 @@ class ActRecipe:
             trainer_name="ACT",
         )
         train_steps = int(prepared.resolved["train_steps"])
+        pruning = _pruning_for(recipe, train_steps)
+        planned = train_steps
+        if pruning is not None:
+            from .compression.pruning import optimizer_steps
+
+            planned = optimizer_steps(pruning, train_steps)
         emit(
             {
                 "event": "train_start",
                 "family": self.id,
                 "device": plan.device,
                 "precision": plan.precision,
-                "train_steps": train_steps,
+                "train_steps": planned,
                 "val_every": int(prepared.resolved["val_every"]),
                 "deterministic": prepared.deterministic,
             }
@@ -108,6 +118,7 @@ class ActRecipe:
                     device=plan.device,
                     precision=plan.precision,
                     mock=False,
+                    pruning=pruning,
                     qat=recipe.get("qat"),
                     train_steps=train_steps,
                     batch_size=int(prepared.resolved["batch_size"]),
@@ -189,8 +200,6 @@ class UnavailableRecipe:
 
 ACT = ActRecipe()
 DIFFUSION = DiffusionRecipe()
-SMOLVLA = UnavailableRecipe("smolvla")
-OPENVLA = UnavailableRecipe("openvla")
 PPO = PpoRecipe()
 
 
@@ -275,13 +284,28 @@ def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _pruning_for(recipe: dict[str, Any], train_steps: int) -> dict[str, Any] | None:
+    """Normalize ``recipe["pruning"]`` before training starts.
+
+    A schedule that cannot fit in ``train_steps`` fails here, so the run
+    manifest is not opened.
+    """
+    block = recipe.get("pruning")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise RecipeConfigError("pruning must be a mapping")
+    from .compression.pruning import normalize_pruning
+
+    return normalize_pruning(block, train_steps=train_steps)
+
+
 def _prepare_qat(recipe: dict[str, Any]) -> None:
     """Refuse a QAT block the ACT trainer cannot run. Absent block is a no-op."""
     block = recipe.get("qat")
     if not isinstance(block, dict):
         return
     prepare_qat_recipe(block, family_id="act")
-
 
 def _dataset_dir(recipe: dict[str, Any]) -> Path:
     dataset = recipe["dataset"]

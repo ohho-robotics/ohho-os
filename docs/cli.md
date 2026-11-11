@@ -63,6 +63,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile detect` | Auto-detect this machine |
 | `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
 | `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
+| `ohho targets verify` | Check this process against a pinned serve worker image ([`serve/worker-images.md`](serve/worker-images.md)) |
 | `ohho optimize --model <path|id> --target <profile> --precision fp32|int8|int4-awq|fp8 --out DIR` | ONNX export, ORT static INT8, TensorRT FP8, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
 | `ohho parity --reference <model> --candidate <artifact> --inputs random|DATASET|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
@@ -73,6 +74,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho sweep start <file> [--id ID] [--backend native\|wandb\|auto]` | Native (the default) persists a run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` and prints no W&B URL. `wandb` creates a sweep through the W&B API when `WANDB_API_KEY` is set and prints the URL that client returns. `auto` uses W&B only when that key is set |
 | `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
+| `ohho sweep group <id>` | Group that run's trial table by dataset version id ([`train/sweeps.md`](train/sweeps.md)) |
 | `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
 | `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 
@@ -103,7 +105,7 @@ external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). An optional `qat` block is described in [`train/qat.md`](train/qat.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). SmolVLA and OpenVLA parameters, the memory estimate, and LoRA export are in [`train/vla-recipes.md`](train/vla-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). An optional `qat` block is described in [`train/qat.md`](train/qat.md). |
 | `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
 | `ohho run rerun <id> [--output DIR] [--json]` | Re-run that manifest's resolved recipe into a new directory and compare final metrics. `<id>` is the run directory or `run_manifest.json`. Exit 0 when the final metrics match exactly. See [`train/determinism.md`](train/determinism.md). |
 | `ohho run clone <run> [--set k=v ...] [--dest DIR]` | Write a new run config from that run's resolved recipe. `--set` is repeatable, dotted, and typed like `ohho train`, then validated as `ohho.recipe/v1`. The new manifest records `cloned_from`. Clone does not train. |

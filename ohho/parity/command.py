@@ -25,7 +25,10 @@ def register_parity(subparsers: Any) -> None:
             "\n"
             "The default fail is mean absolute difference above 0.05. "
             "A threshold file can set limits per model family and per target. "
-            "TensorRT engines are not executed (GPU follow-up); pass the ONNX file."
+            "TensorRT engines are not executed (GPU follow-up); pass the ONNX file.\n"
+            "\n"
+            "--tasks runs action error, sim success, detection mAP, and token "
+            "match after the tensor gate. The task report is ohho.bench/v1."
         ),
     )
     parser.add_argument(
@@ -80,6 +83,42 @@ def register_parity(subparsers: Any) -> None:
         "--out", default=None, help="write the report JSON to this path"
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    parser.add_argument(
+        "--tasks",
+        default=None,
+        help="optional task gate: all, or a comma-separated evaluator list",
+    )
+    parser.add_argument(
+        "--task-seeds",
+        type=int,
+        default=20,
+        help="fixed sim seeds 0..N-1 (default 20)",
+    )
+    parser.add_argument(
+        "--task-tolerances",
+        default=None,
+        help="JSON file of per-model task tolerances",
+    )
+    parser.add_argument(
+        "--task-episodes",
+        default=None,
+        help="held-out LeRobot dataset or JSON episode file",
+    )
+    parser.add_argument(
+        "--task-detections",
+        default=None,
+        help="JSON file of detection images for mAP",
+    )
+    parser.add_argument(
+        "--task-tokens",
+        default=None,
+        help="JSON file of labelled token examples",
+    )
+    parser.add_argument(
+        "--accuracy-out",
+        default=None,
+        help="write the ohho.bench/v1 task report to this path",
+    )
     parser.set_defaults(func=run_parity)
 
 
@@ -102,6 +141,11 @@ def run_parity(args: argparse.Namespace) -> int:
             thresholds=args.thresholds,
             record_dir=args.record_dir,
         )
+        accuracy = None
+        if args.tasks:
+            from ohho.parity.tasks.stage import evaluate_cli
+
+            accuracy = evaluate_cli(args)
     except ParityError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}))
@@ -115,11 +159,48 @@ def run_parity(args: argparse.Namespace) -> int:
         destination = Path(args.out)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(text + "\n", encoding="utf-8")
+    if accuracy is not None:
+        _write_accuracy(args, accuracy)
     if args.json:
-        print(text)
+        if accuracy is None:
+            print(text)
+        else:
+            print(json.dumps({"parity": report, "accuracy": accuracy}, indent=2))
     else:
         _print_human(report)
-    return 0 if report["result"] == "pass" else 1
+        if accuracy is not None:
+            _print_accuracy(accuracy)
+    task_failed = accuracy is not None and accuracy["accuracy"]["result"] != "pass"
+    if report["result"] != "pass" or task_failed:
+        return 1
+    return 0
+
+
+def _write_accuracy(args: argparse.Namespace, accuracy: dict[str, Any]) -> None:
+    from pathlib import Path
+
+    if args.accuracy_out:
+        destination = Path(args.accuracy_out)
+    elif args.out:
+        destination = Path(args.out).with_name("accuracy.json")
+    else:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(accuracy, indent=2) + "\n", encoding="utf-8")
+
+
+def _print_accuracy(document: dict[str, Any]) -> None:
+    accuracy = document["accuracy"]
+    print(f"tasks {accuracy['result']}")
+    for item in accuracy.get("comparisons") or []:
+        print(
+            f"  {item['task']} {item['metric']}: "
+            f"reference={item['reference']:.6g} "
+            f"optimized={item['optimized']:.6g} "
+            f"delta={item['delta']:.6g} {item['result']}"
+        )
+    for reason in accuracy.get("reasons") or []:
+        print(f"  {reason}")
 
 
 def _print_human(report: dict[str, Any]) -> None:

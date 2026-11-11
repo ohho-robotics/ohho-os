@@ -17,6 +17,22 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Pinned serve worker images (OHH-484)** — `ohho-serve-worker:{cpu,cuda,jetson}-1.2.0`
+  with a version matrix (torch, ORT, TensorRT, CUDA, JetPack). CI builds all
+  three, runs `ohho targets verify`, writes a syft SBOM, scans it, and on a
+  `v*` tag signs the image digest with cosign and attaches the SBOM and
+  signature to the release. Job results record `image_digest`. The agent and
+  `ohho serve` refuse an image the console allowlist does not name. Docs:
+  [`docs/serve/worker-images.md`](docs/serve/worker-images.md).
+- **Reproducible optimize builds (OHH-469)** — `manifest.json` records the
+  model sha256, the calibration-cache sha256, toolchain versions (torch,
+  ONNX, ONNX Runtime, TensorRT, CUDA, driver, and JetPack when detectable),
+  the host GPU, and the build duration. A local cache keyed by that model
+  sha256, the target, the precision, the flags, and the toolchain versions
+  skips a repeat build. `--no-cache` rebuilds. `--explain ARTIFACT` prints
+  the manifest. An engine is refused when the host GPU architecture or
+  TensorRT version differs from the manifest. `RegistryCache` is the hook
+  for a console registry.
 - **Training metric log** — `ohho.log(step, metrics)` (OHH-544). Built-in
   trainers buffer samples and flush an append-only `metrics.jsonl` plus a
   `metrics.json` snapshot next to the run. A `MetricsUploader` can receive
@@ -120,6 +136,12 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   status. A 32-trial synthetic ASHA benchmark uses under half the
   trial-steps of the same sweep with no stopping rule.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Dataset version sweep axis** — `type: dataset` on `ohho.sweep/v1` lists
+  content-hashed dataset version ids. A grid of 3 versions and 2 models
+  yields 6 trials, and each trial records `dataset_version_id` on the plan,
+  the sampler state, and `ohho.sweep.run/v1`. A worker cache keyed by that
+  id fetches and copies a version once. `ohho sweep group` groups the trial
+  table by version id. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
   `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
   `ohho sweep start --backend native` (the default) stores a local run and

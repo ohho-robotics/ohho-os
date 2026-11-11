@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from ohho.optimize.errors import OptimizeError
 from ohho.optimize.plan import PRECISION_FLAGS, OptimizeRequest
-from ohho.parity.errors import ParityError, ParityFailed
+from ohho.parity.errors import ParityError, ParityFailed, TaskFailed
 
 
 def register_optimize(subparsers: Any) -> None:
@@ -32,6 +33,9 @@ def register_optimize(subparsers: Any) -> None:
             "--target INT4_PROFILE --out build/awq\n"
             "  ohho optimize --model reference-act --target x86-cpu "
             "--precision int8 --out build/int8\n"
+            "  ohho optimize --explain build/fp16\n"
+            "  ohho optimize --model policy.pt --target x86-cuda --precision fp16 "
+            "--tensorrt --out build/fp16 --no-cache\n"
             "\n"
             "TensorRT, the CUDA execution provider, AWQ, GPTQ, bitsandbytes, "
             "and FP8 fail fast when they are not installed. That is a GPU follow-up. "
@@ -40,16 +44,17 @@ def register_optimize(subparsers: Any) -> None:
             "\n"
             "The parity gate runs after the export. A mean absolute difference "
             "above 0.05 refuses to publish unless --allow-parity-fail is set. "
-            "That flag is recorded in the manifest."
+            "That flag is recorded in the manifest.\n"
+            "\n"
+            "--tasks runs the task-accuracy gate after tensor parity and writes "
+            "accuracy.json (ohho.bench/v1). A task miss also refuses to publish "
+            "unless --allow-parity-fail is set."
         ),
     )
-    parser.add_argument("--model", required=True, help="checkpoint path or registry id")
-    parser.add_argument(
-        "--target", required=True, help="target profile id or profile file"
-    )
+    parser.add_argument("--model", help="checkpoint path or registry id")
+    parser.add_argument("--target", help="target profile id or profile file")
     parser.add_argument(
         "--precision",
-        required=True,
         choices=PRECISION_FLAGS,
         help=(
             "fp32, fp16, int8 (ORT static on CPU; TensorRT with --tensorrt), "
@@ -101,7 +106,7 @@ def register_optimize(subparsers: Any) -> None:
         default=None,
         help="dotted module path, or a role: vision, actor, encoder, lm",
     )
-    parser.add_argument("--out", required=True, help="output directory")
+    parser.add_argument("--out", help="output directory")
     parser.add_argument(
         "--allow-parity-fail",
         action="store_true",
@@ -135,13 +140,76 @@ def register_optimize(subparsers: Any) -> None:
         help="model family for the parity gate (default: the model kind)",
     )
     parser.add_argument(
+        "--tasks",
+        default=None,
+        help="optional task gate after tensor parity: all, or a comma-separated list",
+    )
+    parser.add_argument(
+        "--task-seeds",
+        type=int,
+        default=20,
+        help="fixed sim seeds 0..N-1 for the task gate (default 20)",
+    )
+    parser.add_argument(
+        "--task-tolerances",
+        default=None,
+        help="JSON file of per-model task tolerances",
+    )
+    parser.add_argument(
+        "--task-episodes",
+        default=None,
+        help="held-out episode set for action error",
+    )
+    parser.add_argument(
+        "--task-detections",
+        default=None,
+        help="JSON detection set for mAP",
+    )
+    parser.add_argument(
+        "--task-tokens",
+        default=None,
+        help="JSON labelled examples for token match",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="print the manifest as JSON"
+    )
+    parser.add_argument(
+        "--explain",
+        metavar="ARTIFACT",
+        help="print the manifest beside a build directory or artifact and exit",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "rebuild even when the local cache already has this model, "
+            "target, flags, and toolchain"
+        ),
     )
     parser.set_defaults(func=run_optimize)
 
 
 def run_optimize(args: argparse.Namespace) -> int:
     """Run one optimize request. Validation and capability errors exit 2."""
+    if args.explain:
+        return _explain(args)
+    missing = [
+        flag
+        for flag, value in (
+            ("--model", args.model),
+            ("--target", args.target),
+            ("--precision", args.precision),
+            ("--out", args.out),
+        )
+        if not value
+    ]
+    if missing:
+        joined = ", ".join(missing)
+        print(
+            f"error: {joined} {'is' if len(missing) == 1 else 'are'} required.",
+            file=sys.stderr,
+        )
+        return 2
     request = OptimizeRequest(
         model=args.model,
         target=args.target,
@@ -166,11 +234,28 @@ def run_optimize(args: argparse.Namespace) -> int:
         parity_mean_abs=args.parity_mean_abs,
         parity_thresholds=args.parity_thresholds,
         parity_family=args.parity_family,
+        tasks=args.tasks,
+        task_tolerances=args.task_tolerances,
+        task_seeds=args.task_seeds,
+        task_episodes=args.task_episodes,
+        task_detections=args.task_detections,
+        task_tokens=args.task_tokens,
     )
     try:
         from ohho.optimize.engine import optimize
 
-        document = optimize(request)
+        if args.no_cache:
+            document = optimize(request, no_cache=True)
+        else:
+            document = optimize(request)
+    except TaskFailed as exc:
+        if args.json:
+            print(
+                json.dumps({"ok": False, "error": str(exc), "accuracy": exc.document})
+            )
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
     except ParityFailed as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc), "parity": exc.report}))
@@ -199,5 +284,27 @@ def run_optimize(args: argparse.Namespace) -> int:
         print(f"  {item['role']}: {item['path']}")
     parity = document.get("parity") or {}
     print(f"  parity: {parity.get('result', 'unknown')}")
+    accuracy_path = Path(args.out) / "accuracy.json"
+    if accuracy_path.is_file():
+        task_doc = json.loads(accuracy_path.read_text(encoding="utf-8"))
+        task_result = (task_doc.get("accuracy") or {}).get("result", "unknown")
+        print(f"  tasks: {task_result}")
+        print("  accuracy: accuracy.json")
     print("  manifest: manifest.json")
+    return 0
+
+
+def _explain(args: argparse.Namespace) -> int:
+    """Print the manifest beside ``--explain`` and exit."""
+    try:
+        from ohho.optimize.manifest import explain_artifact
+
+        document = explain_artifact(args.explain)
+    except OptimizeError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(document, indent=2))
     return 0

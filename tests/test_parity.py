@@ -402,7 +402,7 @@ class TestReportAndManifest(unittest.TestCase):
 
     def test_modules_do_not_import_heavy_packages_at_import(self) -> None:
         package = ROOT / "ohho" / "parity"
-        for path in package.glob("*.py"):
+        for path in package.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in tree.body:
                 names: list[str] = []

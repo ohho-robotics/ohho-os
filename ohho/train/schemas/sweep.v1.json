@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/ohho.sweep.v1.json",
   "title": "ohho.sweep/v1",
-  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random, tpe, bayesian, or multi with at least one dimension requires budget.max_trials; strategy tpe and strategy bayesian (the built-in Tree-structured Parzen Estimator) require an objective and, when more than one objective is set, a primary; strategy multi (multi-objective TPE) requires at least two objectives; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points. estimated GPU-hours are an estimate computed from per-trial values in this spec. early_stopping.rule is patience (default), asha, or median. rule asha requires a non-empty rungs array. rungs are strictly increasing and each rung is greater than or equal to grace_period. asha keeps the best floor(n/reduction_factor) trials at a rung once n is at least reduction_factor. median stops a trial that is strictly worse than the median at that step once reduction_factor trials have reported it, and not before grace_period.",
+  "description": "Search space for an OhhO training sweep. Each trial recipe is the opaque base recipe plus dotted path=value overrides (the form ohho train --set uses). The recipe mapping is not validated here; its schema is a separate contract. Semantic rules enforced by ohho.train.sweep.validate_sweep in addition to this document: dimension names are unique; dimension paths are unique; high is greater than or equal to low; an int bound or step is an integer; float and log_uniform ranges with n greater than 1 have high greater than low; at most one objective is primary; strategy random, tpe, bayesian, or multi with at least one dimension requires budget.max_trials; strategy tpe and strategy bayesian (the built-in Tree-structured Parzen Estimator) require an objective and, when more than one objective is set, a primary; strategy multi (multi-objective TPE) requires at least two objectives; a grid float or log_uniform dimension without values requires n; an int n must yield that many strictly increasing points; a dataset dimension is categorical over dataset version ids (dv_ and 32 lowercase hex characters) and a sweep allows at most one dataset dimension. estimated GPU-hours are an estimate computed from per-trial values in this spec. early_stopping.rule is patience (default), asha, or median. rule asha requires a non-empty rungs array. rungs are strictly increasing and each rung is greater than or equal to grace_period. asha keeps the best floor(n/reduction_factor) trials at a rung once n is at least reduction_factor. median stops a trial that is strictly worse than the median at that step once reduction_factor trials have reported it, and not before grace_period.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema"],
@@ -158,7 +158,7 @@
       "properties": {
         "name": {"$ref": "#/$defs/name"},
         "path": {"$ref": "#/$defs/dottedPath"},
-        "type": {"enum": ["categorical", "int", "float", "log_uniform"]},
+        "type": {"enum": ["categorical", "dataset", "int", "float", "log_uniform"]},
         "values": {
           "type": "array",
           "minItems": 1,
@@ -194,6 +194,25 @@
             "properties": {"type": {"const": "categorical"}}
           },
           "then": {"required": ["values"]}
+        },
+        {
+          "if": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {"type": {"const": "dataset"}}
+          },
+          "then": {
+            "required": ["values"],
+            "properties": {
+              "values": {
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^dv_[0-9a-f]{32}$"
+                }
+              }
+            }
+          }
         },
         {
           "if": {

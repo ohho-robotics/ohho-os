@@ -96,6 +96,7 @@ class TestStrategySchema(unittest.TestCase):
             "sweep.leaderboard.v1.json",
             "sweep.sampler.v1.json",
             "sweep.run.v1.json",
+            "sweep.dataset_groups.v1.json",
         ):
             packaged = (
                 files("ohho.train")

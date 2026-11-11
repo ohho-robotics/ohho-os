@@ -73,6 +73,7 @@ CONSOLE_FIELDS = (
     "final_loss",
     "wandb_url",
     "precision_metrics",
+    "pruning",
     "qat",
     "error",
     "resolved_config",
@@ -230,7 +231,9 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
-    qat: dict[str, Any] | None
+    pruning: dict[str, Any] | None = None
+    qat: dict[str, Any] | None = None
+    lineage: dict[str, Any] | None = None
     cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -268,8 +271,11 @@ class RunManifest:
                 ),
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
+            "pruning": _copy_pruning(self.pruning),
             "qat": _copy_qat(self.qat),
         }
+        if self.lineage is not None:
+            document["lineage"] = json.loads(json.dumps(self.lineage))
         if self.cloned_from is not None:
             document["cloned_from"] = self.cloned_from.to_dict()
         return document
@@ -345,7 +351,9 @@ class RunManifest:
                 "eval_hooks": [str(item) for item in hooks["eval_hooks"]],
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
+            pruning=_copy_pruning(document.get("pruning")),
             qat=_copy_qat(document.get("qat")),
+            lineage=_copy_lineage(document.get("lineage")),
             cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
@@ -373,7 +381,9 @@ class RunCapture:
     gpu: GpuRecord | None
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
-    qat: dict[str, Any] | None
+    pruning: dict[str, Any] | None = None
+    qat: dict[str, Any] | None = None
+    lineage: dict[str, Any] | None = None
 
 
 def schema_path() -> Path:
@@ -416,6 +426,54 @@ def validate_run_manifest(document: Any) -> list[str]:
             errors.append("$.error: is required when the run failed or was interrupted")
     errors.extend(_precision_errors(document))
     return errors
+
+
+_LINEAGE_CONTRIBUTORS: list[
+    Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
+] = []
+
+
+def register_lineage_contributor(
+    contributor: Callable[[Mapping[str, Any]], Mapping[str, Any] | None],
+) -> None:
+    """Register a function that adds keys to a run's optional ``lineage``.
+
+    Each compression method registers its own contributor and returns only
+    the keys it owns, or ``None`` when the recipe does not use that method.
+    Contributors run in registration order. The manifest omits ``lineage``
+    when every contributor returns nothing.
+    """
+    if contributor not in _LINEAGE_CONTRIBUTORS:
+        _LINEAGE_CONTRIBUTORS.append(contributor)
+
+
+def _collect_lineage(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    merged: dict[str, Any] = {}
+    for contributor in _LINEAGE_CONTRIBUTORS:
+        part = contributor(recipe)
+        if not isinstance(part, Mapping) or not part:
+            continue
+        for key, value in part.items():
+            merged[str(key)] = value
+    if not merged:
+        return None
+    return json.loads(json.dumps(merged))
+
+
+def _copy_lineage(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or not value:
+        return None
+    return json.loads(json.dumps(value))
+
+
+def _lineage_line(document: Mapping[str, Any]) -> str | None:
+    lineage = document.get("lineage")
+    if not isinstance(lineage, Mapping):
+        return None
+    teacher = lineage.get("teacher")
+    if not isinstance(teacher, Mapping) or "version" not in teacher:
+        return None
+    return f"lineage.teacher.version: {_format_value(teacher.get('version'))}"
 
 
 def set_run_store(store: RunStore | Callable[[Mapping[str, Any]], None] | None) -> None:
@@ -616,7 +674,9 @@ def capture_run(
         gpu=None if gpu is None else GpuRecord(**gpu),
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
+        pruning=_capture_pruning(recipe),
         qat=_qat_from_recipe(recipe),
+        lineage=_collect_lineage(recipe),
     )
 
 
@@ -634,6 +694,8 @@ def manifest_from_capture(
     wandb_url: str | None = None,
     throughput_steps_per_s: Any = None,
     peak_memory_bytes: Any = None,
+    pruning_report: Any = None,
+    pruning_from_metrics: bool = False,
 ) -> RunManifest:
     """Build a manifest from a start snapshot plus the outcome fields."""
     used = device.strip() if isinstance(device, str) and device.strip() else ""
@@ -693,7 +755,11 @@ def manifest_from_capture(
             normalize_throughput(throughput_steps_per_s),
             normalize_peak(peak_memory_bytes),
         ),
+        pruning=_copy_pruning(pruning_report)
+        if pruning_from_metrics
+        else _copy_pruning(capture.pruning),
         qat=_copy_qat(capture.qat),
+        lineage=_copy_lineage(capture.lineage),
     )
 
 
@@ -805,6 +871,13 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"base_weights.revision: {_format_value(weights.get('revision'))}",
             f"base_weights.hash: {_format_value(weights.get('hash'))}",
             f"base_weights.loaded: {_format_value(weights.get('loaded'))}",
+        ]
+    )
+    lineage_line = _lineage_line(document)
+    if lineage_line is not None:
+        lines.append(lineage_line)
+    lines.extend(
+        [
             "container_image_digest: "
             + _format_value(document.get("container_image_digest")),
             "library_versions: "
@@ -814,6 +887,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             f"wandb_url: {_format_value(document.get('wandb_url'))}",
             "precision_metrics: "
             + _format_precision_metrics(document.get("precision_metrics")),
+            "pruning: " + _format_pruning(document.get("pruning")),
             f"qat: {_format_value(document.get('qat'))}",
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
@@ -1153,6 +1227,37 @@ def _format_precision_metrics(value: Any) -> str:
     return " ".join(parts)
 
 
+def _format_pruning(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "null"
+    keys = (
+        "method",
+        "schedule",
+        "target_sparsity",
+        "achieved_sparsity",
+        "params_before",
+        "params_after",
+        "export_bytes_before",
+        "export_bytes_after",
+    )
+    return " ".join(f"{key}={_format_value(value.get(key))}" for key in keys)
+
+
+def _copy_pruning(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return json.loads(json.dumps(value))
+
+
+def _capture_pruning(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    block = recipe.get("pruning")
+    if not isinstance(block, Mapping):
+        return None
+    from .compression.pruning import pending_report
+
+    return pending_report(block)
+
+
 def _qat_from_recipe(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
     from ohho.compression.qat import settings_from_recipe
 
@@ -1163,7 +1268,6 @@ def _copy_qat(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
     return json.loads(json.dumps(dict(value)))
-
 
 def _capture_precision(recipe: Mapping[str, Any]) -> str:
     precision = recipe.get("precision", "fp32")

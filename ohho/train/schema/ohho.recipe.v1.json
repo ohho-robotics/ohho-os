@@ -107,6 +107,56 @@
       "enum": ["cpu", "cuda", "mps", "auto"],
       "default": "cpu"
     },
+    "pruning": {
+      "description": "Optional pruning. Omit it to train a dense model. target_sparsity, schedule, include, and exclude are sweepable with --set. nm_2_4 keeps 2 of every 4 weights, so its target_sparsity is 0.5. include and exclude are module-name patterns; an empty include selects every layer the method can prune, and exclude wins.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "schedule", "target_sparsity"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["unstructured", "structured_channel", "structured_head", "nm_2_4"]
+        },
+        "schedule": {
+          "type": "string",
+          "enum": ["one_shot", "gradual", "iterative"]
+        },
+        "target_sparsity": {
+          "description": "Fraction of weights or channels or heads to remove. 0.5 for nm_2_4.",
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "include": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "exclude": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "start_step": {
+          "description": "First gradual step. Defaults to 0. Only for schedule gradual.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_step": {
+          "description": "Gradual step that reaches target_sparsity. Defaults to the last optimizer step. Only for schedule gradual.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "iterations": {
+          "description": "Prune-and-fine-tune cycles. Defaults to 3. Only for schedule iterative.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "finetune_steps": {
+          "description": "Optimizer steps after each iterative prune. When set, the run length is iterations times this value. Only for schedule iterative.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
     "deterministic": {
       "description": "When true, seed batch order, pin DataLoader workers, and request deterministic torch and cuDNN algorithms. Omitted means false.",
       "type": "boolean",
@@ -148,6 +198,50 @@
       "type": "array",
       "items": {"$ref": "#/$defs/hook"}
     },
+    "distillation": {
+      "description": "Optional knowledge distillation. The recipe family is the student imitation-learning recipe. The teacher is a registry model version or a local checkpoint. Absent means ordinary training.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["teacher"],
+      "properties": {
+        "teacher": {"$ref": "#/$defs/teacher_ref"},
+        "loss": {
+          "description": "action_regression is mean squared error against teacher actions. kl is temperature-scaled KL on teacher outputs.",
+          "type": "string",
+          "enum": ["action_regression", "kl"],
+          "default": "action_regression"
+        },
+        "feature_matching": {
+          "description": "Add mean squared error between student and teacher features.",
+          "type": "boolean",
+          "default": false
+        },
+        "feature_weight": {
+          "description": "Multiplier on the feature-matching term.",
+          "type": "number",
+          "minimum": 0,
+          "default": 1
+        },
+        "mix_weight": {
+          "description": "Weight on the teacher loss. The supervised imitation loss keeps 1 - mix_weight.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5
+        },
+        "temperature": {
+          "description": "Softmax temperature for KL on teacher outputs. Must be greater than 0. Action regression records it and does not apply it.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1
+        },
+        "cache_dir": {
+          "description": "Directory for the teacher-output cache, shared across trials. The default is ~/.ohho/cache/teacher-outputs.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "output": {
       "type": "object",
       "additionalProperties": false,
@@ -169,6 +263,48 @@
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "params": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "teacher_ref": {
+      "description": "A local checkpoint or a registry model version. Set exactly one.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["checkpoint"],
+          "not": {"required": ["registry"]},
+          "properties": {
+            "checkpoint": {
+              "description": "Local tiny-teacher directory, or its policy.pt file.",
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "description": "Teacher version recorded in the student lineage and the output cache. When omitted, the version is sha256: plus the sha256 of policy.pt.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registry"],
+          "not": {"required": ["checkpoint"]},
+          "properties": {
+            "registry": {"$ref": "#/$defs/teacher_registry"}
+          }
+        }
+      ]
+    },
+    "teacher_registry": {
+      "description": "Registry model version. A ModelRegistry client resolves it to a local checkpoint. This build does not download weights.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "version"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
       }
     }
   }
