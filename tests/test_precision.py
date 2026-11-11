@@ -381,7 +381,7 @@ class TestRunnerAndManifest(unittest.TestCase):
         self.assertTrue(act["available"])
         smolvla = family_metadata("smolvla")
         self.assertEqual(smolvla["precisions"], list(PRECISIONS))
-        self.assertFalse(smolvla["available"])
+        self.assertTrue(smolvla["available"])
         register(_Fp32Family(), source="test")
         try:
             self.assertEqual(family_metadata("fp32_only")["precisions"], ["fp32"])

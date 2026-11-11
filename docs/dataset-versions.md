@@ -331,6 +331,13 @@ plus the path under the local `dataset/` directory.
 A pinned row is immutable. An edit inserts a new row and writes a new
 prefix. The previous prefix stays.
 
+## Sweeps
+
+A training sweep selects versions with a `dataset` dimension
+(`type: dataset`, values are version ids). Each trial records
+`dataset_version_id`. The worker cache and `ohho sweep group` are
+described in [`train/sweeps.md`](train/sweeps.md).
+
 ## Commands
 
 ```text

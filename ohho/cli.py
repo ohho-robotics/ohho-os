@@ -1209,6 +1209,11 @@ def _cmd_run_diff(args) -> int:
 
 def _cmd_sweep(args) -> int:
     from .train.sweep import SweepError, run_plan
+    from .train.sweep_dataset import (
+        format_dataset_groups,
+        group_by_dataset_version,
+        groups_as_dict,
+    )
     from .train.sweep_run import (
         format_resume,
         format_start,
@@ -1267,6 +1272,16 @@ def _cmd_sweep(args) -> int:
                 sys.stdout.write("\n")
             else:
                 sys.stdout.write(format_resume(run, proposed))
+            return 0
+        if command == "group":
+            run = resume_sweep(args.sweep_id)
+            groups = group_by_dataset_version(run.trial_table())
+            payload = groups_as_dict(run.sweep_id, groups)
+            if getattr(args, "json", False):
+                json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+                sys.stdout.write("\n")
+            else:
+                sys.stdout.write(format_dataset_groups(run.sweep_id, groups))
             return 0
         print(f"error: unknown sweep command {command}", file=sys.stderr)
         return 1
@@ -1990,10 +2005,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="override a dotted field before validation (repeatable)",
     )
     train.set_defaults(func=_cmd_train)
-
     sweep = sub.add_parser(
         "sweep",
-        help="plan, start, or resume a training sweep",
+        help="plan, start, resume, or group a training sweep",
     )
     sweep_sub = sweep.add_subparsers(dest="sweep_command", required=True)
     plan = sweep_sub.add_parser(
@@ -2052,6 +2066,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the new trials as JSON",
     )
     resume.set_defaults(func=_cmd_sweep)
+    group = sweep_sub.add_parser(
+        "group",
+        help="group a sweep run's trials by dataset version id",
+    )
+    group.add_argument("sweep_id", help="id passed to ohho sweep start")
+    group.add_argument(
+        "--json",
+        action="store_true",
+        help="print ohho.sweep.dataset_groups/v1 JSON",
+    )
+    group.set_defaults(func=_cmd_sweep)
 
     job = sub.add_parser("job", help="validate or run an ohho.job/v1 spec")
     job_sub = job.add_subparsers(dest="job_command", required=True)

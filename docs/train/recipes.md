@@ -14,8 +14,8 @@ Its `$id` is `https://ohho-robotics.com/schemas/ohho.recipe/v1.json` and its tit
 | --- | --- | --- |
 | `act.yaml` | `act` | Yes. Calls `ohho.train.act.train_act` on CPU or GPU. |
 | `diffusion.yaml` | `diffusion` | Yes. Calls `ohho.train.il.diffusion_policy.train_diffusion`. |
-| `smolvla.yaml` | `smolvla` | No. |
-| `openvla.yaml` | `openvla` | No. |
+| `smolvla.yaml` | `smolvla` | Preflight only, then exit 3. Does not download weights. |
+| `openvla.yaml` | `openvla` | Preflight only, then exit 3. Does not download weights. |
 | `ppo.yaml` | `ppo` | Yes. Built-in CPU PPO, optional rsl_rl or skrl. See [ppo.md](ppo.md). |
 
 ```bash
@@ -23,7 +23,7 @@ ohho train ohho/train/examples/il/act-tiny-cpu.yaml --set dataset.path=/path/to/
 ohho train ohho/train/examples/il/diffusion-tiny-cpu.yaml --set dataset.path=/path/to/dataset --set output.dir=/path/to/run
 ```
 
-ACT and Diffusion Policy parameters, defaults, ranges, validation events, and the checkpoint layout serve loads are in [`il-recipes.md`](il-recipes.md). Tiny CPU configs and single-GPU examples live in `ohho/train/examples/il/`. The files in `ohho/train/examples/*.yaml` are one schema example per family. Running `diffusion.yaml` as shipped exits `4` until `dataset.path` is a real directory or an `hf://` hub id. `smolvla`, `openvla`, and `ppo` are schema-valid and exit `3`. They do not train.
+ACT and Diffusion Policy parameters, defaults, ranges, validation events, and the checkpoint layout serve loads are in [`il-recipes.md`](il-recipes.md). Tiny CPU configs and single-GPU examples live in `ohho/train/examples/il/`. SmolVLA and OpenVLA parameters, the memory estimate, LoRA merge export, and base-model licence are in [`vla-recipes.md`](vla-recipes.md). Launch examples live in `ohho/train/examples/vla/`. The files in `ohho/train/examples/*.yaml` are one schema example per family. Running `diffusion.yaml` as shipped exits `4` until `dataset.path` is a real directory or an `hf://` hub id. `smolvla` and `openvla` are schema-valid, check their family parameters, and exit `3` without downloading weights. `ppo` is schema-valid and exits `3`. They do not train.
 
 ## Document
 
@@ -37,7 +37,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `base_weights` | Optional `{uri, revision}`. The ACT trainer records the uri and does not load it. |
 | `dataset` | Exactly one of `path` (local directory) or `version_id`. |
 | `hyperparameters` | Object. Known keys are typed. Other keys are allowed so a plugin can read them. |
-| `precision` | `fp32` (default), `fp16`, `bf16`, or `fp8`. See [Mixed precision](precision.md). An unsupported choice fails before training. |
+| `precision` | `fp32` (default), `fp16`, `bf16`, or `fp8`. See [Mixed precision](precision.md). An unsupported choice fails before training. SmolVLA and OpenVLA store BF16 on `hyperparameters.precision` and do not read this field. |
 | `device` | `cpu` (default), `cuda`, `mps`, or `auto`. |
 | `deterministic` | `false` (default) or `true`. ACT and Diffusion Policy honor `true`: seeded batch order, DataLoader workers fixed at 0, and torch / cuDNN deterministic algorithms when those knobs exist. See [`determinism.md`](determinism.md). |
 | `qat` | Optional quantisation-aware training block. See [Quantisation-aware training](qat.md). `bit_width`, `granularity`, `calibration_steps`, and `finetune_steps` are plain `--set` fields. |
@@ -57,7 +57,7 @@ Relative paths are resolved from the process working directory.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
 5.  and diffusionShared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision. `deterministic: true` with no `hyperparameters.seed` records seed `0`. It is not a separate exit.
-6. Family preflight: for ACT and diffusion: precision, hyperparameters, dataset, device, torch (for ACT: also the QAT block when set; a QAT block that asks ACT to export ONNX, or weight-and-activation QAT with `calibration_steps` of 0, fails here). PPO checks precision, hyperparameters, the task, the backend, torch, and onnx. A missing dataset directory does not stop PPO. `version_id` alone still does.
+6. Family preflight: for ACT and diffusion: precision, hyperparameters, dataset, device, torch (for ACT: also the QAT block when set; a QAT block that asks ACT to export ONNX, or weight-and-activation QAT with `calibration_steps` of 0, fails here). SmolVLA and OpenVLA check family hyperparameters (BF16 is `hyperparameters.precision`; the shared precision field is not read) and build a memory estimate, then stop (they do not download weights and do not emit `train_start`). PPO checks precision, hyperparameters, the task, the backend, torch, and onnx. A missing dataset directory does not stop PPO. `version_id` alone still does.
 7. On `train_start`, write `run_manifest.json` with `status: running`. The progress event includes `precision` (the runner fills it when the family omits it).
 8. Call the trainer.
 9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
@@ -130,15 +130,15 @@ A run that never starts training emits a single `error` line and no `train_start
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | ok | Checkpoint, metrics, and a final `run_manifest.json` (`status: succeeded`) were written. |
-| 1 | invalid | Parse error, `--set` error, schema error, or preflight refusal. ACT and diffusion refuse unsupported precision, precision the family metadata does not accept, an unknown hyperparameter, value outside its range, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, `vision_backbone` other than `none`, device not available, or missing torch. PPO refuses those same precision, hyperparameter, device, and torch problems, plus an unknown or unavailable task, a GPU-only task or backend, a missing onnx package, or an optional backend that is not installed. The trainer was not called. |
+| 1 | invalid | Parse error, `--set` error, schema error, or preflight refusal. ACT and diffusion refuse unsupported precision, precision the family metadata does not accept, an unknown hyperparameter, value outside its range, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, `vision_backbone` other than `none`, device not available, or missing torch. SmolVLA/OpenVLA refuse hyperparameters outside their range. PPO refuses those same precision, hyperparameter, device, and torch problems, plus an unknown or unavailable task, a GPU-only task or backend, a missing onnx package, or an optional backend that is not installed. The trainer was not called. |
 | 2 | usage | The process was invoked incorrectly. This is argparse (the recipe path was missing). No JSON line. |
-| 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build. `message` is `family not available in this build`. The trainer was not called. |
+| 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build (including schema-valid SmolVLA or OpenVLA recipes whose parameters are in range, which do not download base weights or launch fine-tuning). `message` is `family not available in this build`. The trainer was not called. |
 | 4 | dataset | The family can train, but the dataset cannot be used. `version_id` alone is refused. ACT also refuses a `path` that is not a directory. PPO does not read `dataset.path`, so a missing directory does not use this code. The trainer was not called. |
 | 5 | failed | `train_start` was emitted and the trainer then failed. The manifest is finalised with `status: failed`. |
 
 ## Adding a family
 
-Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. Optional `metadata()` returns `{"precisions": [...]}`. Omit it, or list `fp32`, `fp16`, `bf16`, and `fp8`, and the shared runner applies the device check before `run`. A shorter list refuses the other precisions before training. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest. Put `throughput_steps_per_s` and `peak_memory_bytes` in `metrics.json` (a `PrecisionSession` from `ohho.train.precision` measures them) and the manifest records those numbers under the precision that ran. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines.
+Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. Optional `metadata()` returns `{"precisions": [...]}`. Omit it, or list `fp32`, `fp16`, `bf16`, and `fp8`, and the shared runner applies the device check before `run`. A shorter list refuses the other precisions before training. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest. Put `throughput_steps_per_s` and `peak_memory_bytes` in `metrics.json` (a `PrecisionSession` from `ohho.train.precision` measures them) and the manifest records those numbers under the precision that ran. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines. SmolVLA and OpenVLA set `available()` true so parameter preflight runs, then `run` raises `FamilyUnavailable` because this build does not load their base weights.
 
 ```python
 from ohho.train.recipe_registry import TrainResult, register
