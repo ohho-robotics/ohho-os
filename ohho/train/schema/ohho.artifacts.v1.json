@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.artifacts/v1.json",
+  "title": "ohho.artifacts/v1",
+  "description": "Sidecar for one training run. Records pin, promote, and prune state plus checkpoint deletions. ohho run retain writes it. Retention does not rewrite run_manifest.json or metrics.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "experiment",
+    "pinned",
+    "promoted",
+    "pruned",
+    "pruned_at",
+    "checkpoints",
+    "deletions"
+  ],
+  "properties": {
+    "schema": {
+      "description": "Artifact index document identifier.",
+      "const": "ohho.artifacts/v1"
+    },
+    "experiment": {
+      "description": "Experiment id for this run. Null until set. A parent directory name is not written here.",
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "pinned": {
+      "description": "Pinned runs are never deleted by retention.",
+      "type": "boolean"
+    },
+    "promoted": {
+      "description": "Promoted runs are never deleted by retention.",
+      "type": "boolean"
+    },
+    "pruned": {
+      "description": "Pruned trials are eligible to lose intermediate checkpoints after the retention window.",
+      "type": "boolean"
+    },
+    "pruned_at": {
+      "description": "UTC time the trial was marked pruned. Null when the trial is not pruned. The retention clock is the checkpoint mtime, not this field.",
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "checkpoints": {
+      "description": "Checkpoints still on disk under checkpoints/.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role", "pinned", "promoted"],
+        "properties": {
+          "path": {
+            "description": "Path relative to the run directory, POSIX separators.",
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^checkpoints/[A-Za-z0-9][A-Za-z0-9._-]*$"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["best", "last", "step", "epoch", "other"]
+          },
+          "pinned": {"type": "boolean"},
+          "promoted": {"type": "boolean"}
+        }
+      }
+    },
+    "deletions": {
+      "description": "Checkpoints retention removed. The files are gone; the manifest and metrics are not.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role", "bytes", "deleted_at", "reason"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^checkpoints/[A-Za-z0-9][A-Za-z0-9._-]*$"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["best", "last", "step", "epoch", "other"]
+          },
+          "bytes": {"type": "integer", "minimum": 0},
+          "deleted_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+          },
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

@@ -1171,6 +1171,32 @@ def _cmd_train(args) -> int:
     return execute(args.recipe, getattr(args, "set", None))
 
 
+def _cmd_run(args) -> int:
+    from .train.run_manifest import show_run
+
+    return show_run(args.run_dir, as_json=bool(getattr(args, "json", False)))
+
+
+def _cmd_run_clone(args) -> int:
+    from .train.run_clone import clone_command
+
+    return clone_command(
+        args.run_id,
+        getattr(args, "set", None),
+        dest=getattr(args, "dest", None),
+    )
+
+
+def _cmd_run_diff(args) -> int:
+    from .train.run_clone import diff_command
+
+    return diff_command(
+        args.left,
+        args.right,
+        as_json=bool(getattr(args, "json", False)),
+    )
+
+
 def _cmd_sweep(args) -> int:
     from .train.sweep import SweepError, run_plan
     from .train.sweep_dataset import (
@@ -1183,7 +1209,6 @@ def _cmd_sweep(args) -> int:
         format_start,
         resume_as_dict,
         resume_sweep,
-        start_sweep,
     )
 
     command = getattr(args, "sweep_command", "plan")
@@ -1191,12 +1216,37 @@ def _cmd_sweep(args) -> int:
         if command == "plan":
             return run_plan(args.spec, as_json=bool(getattr(args, "json", False)))
         if command == "start":
-            run = start_sweep(args.spec, sweep_id=getattr(args, "id", None))
+            from .train.sweep_wandb import format_launch, launch_as_dict, launch_sweep
+
+            result = launch_sweep(
+                args.spec,
+                backend=getattr(args, "backend", "native"),
+                sweep_id=getattr(args, "id", None),
+                project=getattr(args, "wandb_project", None),
+                entity=getattr(args, "wandb_entity", None),
+            )
+            if result.backend == "native":
+                for note in result.notes:
+                    print(f"note: {note}", file=sys.stderr)
+                run = result.run
+                if run is None:
+                    raise SweepError("native sweep launch is missing its run")
+                if getattr(args, "json", False):
+                    json.dump(run.document(), sys.stdout, indent=2, sort_keys=True)
+                    sys.stdout.write("\n")
+                else:
+                    sys.stdout.write(format_start(run))
+                return 0
             if getattr(args, "json", False):
-                json.dump(run.document(), sys.stdout, indent=2, sort_keys=True)
+                json.dump(
+                    launch_as_dict(result),
+                    sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
                 sys.stdout.write("\n")
             else:
-                sys.stdout.write(format_start(run))
+                sys.stdout.write(format_launch(result))
             return 0
         if command == "resume":
             count = getattr(args, "count", 1)
@@ -1963,13 +2013,29 @@ def build_parser() -> argparse.ArgumentParser:
     plan.set_defaults(func=_cmd_sweep)
     start = sweep_sub.add_parser(
         "start",
-        help="persist a new sweep run (sampler state and an empty trial table)",
+        help="start a native sweep run, or a W&B sweep when a key is configured",
     )
     start.add_argument("spec", help="path to an ohho.sweep/v1 file (.yaml or .json)")
     start.add_argument(
         "--id",
         default=None,
-        help="sweep id (default: a generated id). Stored under OHHO_SWEEP_DIR or ~/.ohho/sweeps",
+        help="native sweep id (default: a generated id). Stored under OHHO_SWEEP_DIR or ~/.ohho/sweeps. W&B assigns its own id",
+    )
+    start.add_argument(
+        "--backend",
+        choices=("native", "wandb", "auto"),
+        default="native",
+        help="native (default) stores a local run and prints no W&B URL. wandb creates a sweep through the W&B API when WANDB_API_KEY is set and prints the URL that client returns. auto uses wandb only when that key is set",
+    )
+    start.add_argument(
+        "--wandb-project",
+        default=None,
+        help="W&B project name (default: WANDB_PROJECT). Not a URL",
+    )
+    start.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="W&B entity name (default: WANDB_ENTITY)",
     )
     start.add_argument("--json", action="store_true", help="print the run as JSON")
     start.set_defaults(func=_cmd_sweep)
@@ -2057,6 +2123,64 @@ def build_parser() -> argparse.ArgumentParser:
     from .bench.command import register_bench
 
     register_bench(sub)
+
+    run = sub.add_parser(
+        "run",
+        help="show, clone, diff, or manage storage for an ohho.run/v1 training run",
+    )
+    run_sub = run.add_subparsers(dest="run_command", required=True)
+    show = run_sub.add_parser(
+        "show",
+        help="print the manifest stored in a run directory",
+    )
+    show.add_argument(
+        "run_dir",
+        help="run directory that contains run_manifest.json",
+    )
+    show.add_argument(
+        "--json",
+        action="store_true",
+        help="print the manifest as JSON",
+    )
+    show.set_defaults(func=_cmd_run)
+    clone = run_sub.add_parser(
+        "clone",
+        help="tweak a run's resolved config and record cloned_from",
+    )
+    clone.add_argument(
+        "run_id",
+        help="source run directory or run_manifest.json",
+    )
+    clone.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="k=v",
+        help="override a dotted field on the resolved config (repeatable)",
+    )
+    clone.add_argument(
+        "--dest",
+        default=None,
+        metavar="DIR",
+        help="directory for the new run (default: <source>-clone)",
+    )
+    clone.set_defaults(func=_cmd_run_clone)
+    diff = run_sub.add_parser(
+        "diff",
+        help="compare the resolved configs of two runs",
+    )
+    diff.add_argument("left", help="run directory or run_manifest.json")
+    diff.add_argument("right", help="run directory or run_manifest.json")
+    diff.add_argument(
+        "--json",
+        action="store_true",
+        help="print the config diff as JSON",
+    )
+    diff.set_defaults(func=_cmd_run_diff)
+    # OHH-545 retain and storage. Parser setup stays in ohho.train.artifacts.
+    from .train.artifacts import add_run_commands
+
+    add_run_commands(run_sub)
 
     return p
 

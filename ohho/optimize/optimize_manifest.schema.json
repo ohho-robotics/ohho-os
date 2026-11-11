@@ -60,6 +60,8 @@
         "max_batch",
         "dynamic_batch",
         "calib_batch",
+        "calib_max_images",
+        "quantization",
         "opset",
         "submodule",
         "allow_parity_fail"
@@ -74,6 +76,8 @@
         "max_batch": {"type": "integer", "minimum": 1},
         "dynamic_batch": {"type": "boolean"},
         "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
+        "quantization": {"type": ["string", "null"], "enum": ["implicit", "explicit", null]},
         "opset": {"type": ["integer", "null"]},
         "submodule": {"type": ["string", "null"]},
         "allow_parity_fail": {"type": "boolean"}
@@ -107,6 +111,7 @@
         "calib_data",
         "calib_cache",
         "calib_batch",
+        "calib_max_images",
         "submodule",
         "allow_parity_fail"
       ],
@@ -124,6 +129,7 @@
         "calib_data": {"type": ["string", "null"]},
         "calib_cache": {"type": ["string", "null"]},
         "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
         "submodule": {"type": ["string", "null"]},
         "allow_parity_fail": {"type": "boolean"}
       }
@@ -133,15 +139,17 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["role", "path", "sha256", "bytes"],
+        "required": ["role", "path", "sha256", "bytes", "backend", "backend_version"],
         "properties": {
           "role": {
             "type": "string",
-            "enum": ["onnx", "torchscript", "engine", "awq", "gptq", "bitsandbytes", "fp8"]
+            "enum": ["onnx", "torchscript", "engine", "awq", "gptq", "bitsandbytes", "fp8", "ort-int8"]
           },
           "path": {"type": "string"},
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-          "bytes": {"type": "integer", "minimum": 0}
+          "bytes": {"type": "integer", "minimum": 0},
+          "backend": {"type": "string", "minLength": 1},
+          "backend_version": {"type": "string", "minLength": 1}
         }
       }
     },

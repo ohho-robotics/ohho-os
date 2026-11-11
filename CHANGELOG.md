@@ -17,6 +17,19 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
 
 ### Added
 
+- **Quantizer plugins (OHH-468)** — `ohho.quantizers` entry points for ORT
+  static INT8 (QDQ on `x86-cpu` and `rpi5-cpu`), TensorRT FP8 (Ada and Hopper
+  only), AWQ and GPTQ INT4, and bitsandbytes NF4. `--precision int4-awq`,
+  `int4-gptq`, `fp8`, and `int8` select them. The older `--quant` flag still
+  works. Each manifest output records the backend name and version. Publish
+  calls `run_parity` so OHH-430 can gate the artifact.
+- **Bench export (OHH-498)** — `ohho bench --export` sends one result through
+  optional exporter plugins. A W&B spec records the job spec, manifest,
+  latency, accuracy, and energy, and the result stores the run URL. A
+  Prometheus spec pushes gauges to a Pushgateway (the grouping key is deleted
+  after `--export-ttl` minutes) or remote-write. Failures are warnings.
+  `export_result` is the same hook an optimize run calls. Docs:
+  [`docs/serve/bench.md`](docs/serve/bench.md).
 - **LLM serving sweep** (OHH-476) — `ohho bench llm --sweep` varies
   concurrency, max batch tokens, prefix caching, chunked prefill, and
   speculative decoding where the serving adapter supports the option.
@@ -60,6 +73,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
   quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
   Docs: [`docs/optimize.md`](docs/optimize.md).
+- **INT8 calibration cache (OHH-467)** — TensorRT 10 and newer build explicit
+  Q/DQ; TensorRT 8 and 9 keep the implicit entropy calibrator on
+  `config.int8_calibrator`. `--calib-max-images` caps how many samples are
+  read. The cache sidecar stores the model sha256 and preprocessing config,
+  is reused on the next build, and is invalidated when either changes. INT8
+  without calibration data is refused unless the ONNX graph already has Q/DQ
+  nodes.
 - **`ohho sweep plan`** — `ohho.sweep/v1` search-space schema (package data) and an
   expander that turns it into trial recipes. Each trial is the opaque base
   recipe plus dotted `path=value` overrides (the same form as
@@ -86,6 +106,15 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   the sampler state, and `ohho.sweep.run/v1`. A worker cache keyed by that
   id fetches and copies a version once. `ohho sweep group` groups the trial
   table by version id. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
+  `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
+  `ohho sweep start --backend native` (the default) stores a local run and
+  prints no W&B URL. `--backend wandb` creates the sweep through the W&B
+  API when `WANDB_API_KEY` is set and prints the URL that client returns.
+  Each agent trial runs `python -m ohho.train.sweep_agent`, one OhhO train
+  job. `wandb` is an optional extra and is imported only on that path.
+  Patience-based `early_stopping` is not sent as Hyperband `early_terminate`
+  (OHH-520). Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Serve examples** (OHH-491). `examples/serve/` runs in CI and on release
   tags (`python examples/serve/run_cpu.py`). A failed example fails the
   release workflow. Jetson FP16 TensorRT, CPU ORT INT8, vLLM, and

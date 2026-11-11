@@ -493,17 +493,34 @@ with no early stopping use `32 * 81 = 2592` trial-steps. The ASHA run uses
 reaches step 81. `tests/test_sweep_early.py` checks that bound.
 
 ## Dataset versions
+## Optional W&B backend
 
-`type: dataset` is a categorical dimension whose `values` are dataset
-version ids (`dv_` plus 32 lowercase hex characters), the ids from
-[`dataset-versions.md`](../dataset-versions.md). A sweep allows one
-dataset dimension. Grid expansion crosses it with the other axes: 3
-dataset versions and 2 models produce 6 trials. Each trial stores the
-chosen id on `dataset_version_id` and as the dimension's override, so
-the resolved recipe carries it too.
-
-`ohho/train/schemas/examples/dataset_3x2.json` is that 3×2 grid.
-
+Follow-up: the Connect console comparison view, and copying
+`dataset_version_id` onto `ohho.run/v1` when that manifest exists. This
+package records the id on the trial and on `ohho.sweep.run/v1`.
+`ohho sweep group <id>` prints the persisted trial table grouped by
+dataset version id. `--json` prints `ohho.sweep.dataset_groups/v1`
+(`ohho/train/schemas/sweep.dataset_groups.v1.json`). Trials that did
+not select a version are grouped under `(none)` in the text and `null`
+in the JSON. Group order is the order in which version ids first appear.
+cache = worker_dataset_cache()
+root = resolve_trial_dataset(trial, cache)
+```python
+from ohho.train.sweep_dataset import (
+    resolve_trial_dataset,
+    worker_dataset_cache,
+)
+A worker resolves the id to a local dataset directory through
+`DatasetVersionCache`. The cache key is the version id. The first
+request calls the fetcher (by default
+`ohho.datasets.resolve_dataset_version`) and copies the tree into
+`OHHO_SWEEP_DATASET_CACHE` or `~/.ohho/sweep-datasets/<version_id>`.
+A later trial with the same id, including a new cache on that
+directory, returns the stored path and does not fetch or copy again.
+`ohho sweep plan` prints `dataset_version_id` on each trial that selected
+one. The same field is stored on `ohho.sweep.run/v1` trial rows and on
+the sampler state. A conditional dataset dimension that does not apply
+leaves the field off that trial.
 ```yaml
 dimensions:
   - name: dataset
@@ -515,46 +532,68 @@ dimensions:
   - name: model
     type: categorical
     values: [act, diffusion]
-```
-
-`ohho sweep plan` prints `dataset_version_id` on each trial that selected
-one. The same field is stored on `ohho.sweep.run/v1` trial rows and on
-the sampler state. A conditional dataset dimension that does not apply
-leaves the field off that trial.
-
-A worker resolves the id to a local dataset directory through
-`DatasetVersionCache`. The cache key is the version id. The first
-request calls the fetcher (by default
-`ohho.datasets.resolve_dataset_version`) and copies the tree into
-`OHHO_SWEEP_DATASET_CACHE` or `~/.ohho/sweep-datasets/<version_id>`.
-A later trial with the same id, including a new cache on that
-directory, returns the stored path and does not fetch or copy again.
-
-```python
-from ohho.train.sweep_dataset import (
-    resolve_trial_dataset,
-    worker_dataset_cache,
-)
-
-cache = worker_dataset_cache()
-root = resolve_trial_dataset(trial, cache)
-```
-
-`ohho sweep group <id>` prints the persisted trial table grouped by
-dataset version id. `--json` prints `ohho.sweep.dataset_groups/v1`
-(`ohho/train/schemas/sweep.dataset_groups.v1.json`). Trials that did
-not select a version are grouped under `(none)` in the text and `null`
-in the JSON. Group order is the order in which version ids first appear.
+`ohho/train/schemas/examples/dataset_3x2.json` is that 3×2 grid.
+`type: dataset` is a categorical dimension whose `values` are dataset
+version ids (`dv_` plus 32 lowercase hex characters), the ids from
+[`dataset-versions.md`](../dataset-versions.md). A sweep allows one
+dataset dimension. Grid expansion crosses it with the other axes: 3
+dataset versions and 2 models produce 6 trials. Each trial stores the
+chosen id on `dataset_version_id` and as the dimension's override, so
+the resolved recipe carries it too.
+`ohho sweep start` uses the native backend unless `--backend` says
+otherwise. Native writes the run file and prints no W&B URL.
 
 ```bash
 ohho sweep group push-lr
 ohho sweep group push-lr --json
+ohho sweep start sweep.yaml --id push-lr
+ohho sweep start sweep.yaml --backend wandb --wandb-project ohho-train
 ```
 
-Follow-up: the Connect console comparison view, and copying
-`dataset_version_id` onto `ohho.run/v1` when that manifest exists. This
-package records the id on the trial and on `ohho.sweep.run/v1`.
+`--backend auto` uses W&B only when `WANDB_API_KEY` is set, `WANDB_MODE`
+is not `disabled` or `offline`, and the `wandb` package imports. Otherwise
+it uses the native backend.
+`--backend wandb` needs that key and a project (`--wandb-project` or
+`WANDB_PROJECT`). The `wandb` package is optional (`pip install
+'ohho-os[wandb]'`) and is imported only when a launch is about to call the
+API.
 
+The W&B path returns the absolute URL the W&B client returned. This package
+does not build a sweep URL. A missing key, a missing project, or a client
+that does not return an absolute URL stops with no URL.
+
+`ohho.train.sweep_wandb.to_wandb_sweep_config` maps a validated spec:
+
+| ohho.sweep/v1 | W&B config |
+| --- | --- |
+| `grid` | `method: grid` |
+| `random` | `method: random` |
+| `tpe`, `bayesian` | `method: bayes` (W&B's search, not the built-in TPE) |
+| `multi` | `method: bayes`, with the primary objective as the only metric |
+| primary objective, or the only objective | `metric.name` and `metric.goal` |
+| categorical, `values`, or `n` | `parameters.<path>.values`, the same levels the native expander uses |
+| `int` low/high with step 1, on random or bayes | `int_uniform` |
+| `int` low/high with another step, or any grid int range | those levels as `values` |
+| continuous `float` | `uniform` |
+| continuous `log_uniform` | `log_uniform_values` (bounds are the spec's low and high) |
+| scalar recipe fields | constant `value` |
+| agent | `python -m ohho.train.sweep_agent`, with W&B's `${args}` |
+
+`when` and `constraints` are not represented. W&B samples every parameter
+and does not drop combinations. `budget.max_trials` is reported as
+`agent_count` and is not a W&B field. `budget.max_gpu_hours`,
+`parallelism`, and the sweep seed are not sent. `strategy: multi` without a
+primary objective is not created, because W&B bayes would need a metric the
+spec does not name.
+
+`early_stopping` is not mapped. TODO(OHH-520): that module owns early
+stopping. The sweep field is patience, min_delta, and mode. W&B
+`early_terminate` is Hyperband, and those numbers are not a Hyperband
+schedule, so the config omits `early_terminate`.
+
+The agent does not import wandb. It turns `--path=value` into one
+`ohho.train.finetune` call. A trial that asks for CUDA, TensorRT, or
+another non-CPU device fails before training. This agent runs CPU jobs.
 
 ## YAML subset
 
