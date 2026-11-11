@@ -75,6 +75,13 @@ class OptimizeRequest:
     max_batch: int = 1
     dynamic_batch: bool = False
     submodule: str | None = None
+    allow_parity_fail: bool = False
+    parity_inputs: str = "random"
+    parity_n: int = 256
+    parity_seed: int = 0
+    parity_mean_abs: float | None = None
+    parity_thresholds: str | None = None
+    parity_family: str | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +156,18 @@ def build_plan(
     _require_text(request.out_dir, "--out")
     if request.max_batch < 1:
         raise OptimizeError("--max-batch must be at least 1.")
+    if request.parity_n < 1:
+        raise OptimizeError("--parity-n must be at least 1.")
+    if type(request.parity_seed) is not int:
+        raise OptimizeError("--parity-seed must be an integer.")
+    if not isinstance(request.parity_inputs, str) or not request.parity_inputs.strip():
+        raise OptimizeError("--parity-inputs is required.")
+    if request.parity_mean_abs is not None and (
+        isinstance(request.parity_mean_abs, bool)
+        or not isinstance(request.parity_mean_abs, (int, float))
+        or float(request.parity_mean_abs) < 0
+    ):
+        raise OptimizeError("--parity-mean-abs must be >= 0.")
     if request.calib_batch is not None and request.calib_batch < 1:
         raise OptimizeError("--calib-batch must be at least 1.")
     if request.calib_max_images is not None and request.calib_max_images < 1:

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/ohho.sweep.sampler.v1.json",
+  "title": "ohho.sweep.sampler/v1",
+  "description": "JSON state for SweepSampler. Restoring it and asking again proposes the same next trials as the sampler that produced the state. leaderboard is ohho.sweep.leaderboard/v1 derived from trials whose values are set. values null means the trial was proposed and not told. rng.state is the stdlib MT19937 state. rng.gauss is the cached Gaussian deviate or null. Each trial seed is the training seed derived from the sweep seed and the trial index.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "spec", "rng", "cursor", "gpu_stop", "trials", "leaderboard"],
+  "properties": {
+    "schema": {"const": "ohho.sweep.sampler/v1"},
+    "spec": {"type": "object"},
+    "rng": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "state", "gauss"],
+      "properties": {
+        "version": {"type": "integer"},
+        "state": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "integer"}
+        },
+        "gauss": {"anyOf": [{"type": "null"}, {"type": "number"}]}
+      }
+    },
+    "cursor": {"type": "integer", "minimum": 0},
+    "gpu_stop": {"type": "boolean"},
+    "trials": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/trial"}
+    },
+    "leaderboard": {"type": "object"}
+  },
+  "$defs": {
+    "trial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "seed", "overrides", "sets", "estimated_gpu_hours", "values"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Training seed derived from the sweep seed and this trial index."
+        },
+        "overrides": {"type": "object"},
+        "sets": {"type": "array", "items": {"type": "string"}},
+        "estimated_gpu_hours": {"type": "number", "minimum": 0},
+        "values": {
+          "anyOf": [
+            {"type": "null"},
+            {"type": "object", "additionalProperties": {"type": "number"}}
+          ]
+        }
+      }
+    }
+  }
+}

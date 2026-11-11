@@ -129,15 +129,36 @@ The output directory gets `manifest.json`. The schema id is
 `ohho.optimize_manifest.v1` (`ohho/optimize/optimize_manifest.schema.json`).
 The document records the model sha256, the target profile, the precision,
 every applied flag, the calibration-cache sha256, the request inputs, the
-session providers that were actually enabled, and the sha256, size, backend
-name, and backend version of each output. It also records the build duration
-and the host GPU (device name and compute capability `major.minor`).
+session providers that were actually enabled, the sha256, size, backend
+name, and backend version of each output, and the parity report. It also
+records the build duration and the host GPU (device name and compute
+capability `major.minor`).
 
 Toolchain versions on that manifest are torch, ONNX, ONNX Runtime, TensorRT,
 CUDA, the driver, and JetPack. CUDA comes from `torch.version.cuda`. The
 driver comes from `nvidia-smi`. JetPack is the L4T release parsed from
 `/etc/nv_tegra_release` when that file exists. A probe that cannot see a
 piece stores null.
+
+## Parity gate
+
+After a successful export, `ohho optimize` compares the reference model to the
+ONNX or TorchScript file it just wrote. The default fail is a mean absolute
+difference above 0.05. A failure deletes the outputs and exits 1, so the
+artifact is not published. `--allow-parity-fail` publishes anyway and records
+that flag on `flags`, `inputs`, and `parity` in the manifest.
+
+```bash
+ohho optimize --model reference-act --target x86-cpu --precision fp32 --out build/act --parity-n 256
+ohho optimize --model reference-act --target x86-cpu --precision fp32 --out build/act --allow-parity-fail
+```
+
+`--parity-inputs` is `random` (seeded, `--parity-seed`), a LeRobot dataset
+directory, or `recorded` (one short episode from the sim-loop recorder).
+TensorRT engines and weight-quant directories are not executed here. When the
+directory has an ONNX graph, that graph is what the gate scores and the engine
+is listed as unchecked. When nothing runnable was written, the gate fails
+closed. The report schema is [`docs/serve/parity.md`](serve/parity.md).
 
 ## Reproducible builds
 
