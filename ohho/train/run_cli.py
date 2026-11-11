@@ -179,6 +179,9 @@ def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
         if family is None or not family.available():
             return _unavailable(family_id)
         run.bind(recipe_path=recipe, overrides=list(overrides or []), recipe=loaded)
+        preflight = getattr(family, "preflight", None)
+        if callable(preflight):
+            preflight(loaded)
         prepare_precision(loaded, family=family)
 
         def emit(event: dict[str, Any]) -> None:

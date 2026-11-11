@@ -1,9 +1,9 @@
 """Built-in recipe families.
 
 ACT calls :func:`ohho.train.act.train_act` and writes a real checkpoint.
-Diffusion Policy, SmolVLA, OpenVLA, and PPO are registered so a recipe can
-name them, and their run step reports that the family is not available.
-They do not call a mock trainer.
+Diffusion Policy calls :func:`ohho.train.il.diffusion_policy.train_diffusion`.
+SmolVLA, OpenVLA, and PPO are registered so a recipe can name them, and their
+run step reports that the family is not available. They do not call a mock trainer.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .il.family import DiffusionRecipe, prepare_il_run
 from .precision import PRECISIONS, prepare_precision
 from .recipe_registry import Emit, TrainResult, register
 from .recipe_schema import (
@@ -65,14 +66,21 @@ class ActRecipe:
         """Precisions the shared runner may select for ACT."""
         return {"precisions": list(PRECISIONS)}
 
+    def preflight(self, recipe: dict[str, Any]) -> None:
+        from .il.family import preflight_il_recipe
+
+        preflight_il_recipe(recipe, family_id=self.id)
+
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         plan = prepare_precision(recipe, family=self)
-        kwargs = _act_kwargs(recipe)
-        dataset_path = _dataset_dir(recipe)
-        torch = _load_torch()
-        _emit_declared(recipe, emit)
-        _apply_seed(torch, recipe, plan.device)
-        train_steps = int(kwargs.get("train_steps", 200))
+        prepared = prepare_il_run(
+            recipe,
+            emit,
+            family_id=self.id,
+            family_label="ACT",
+            trainer_name="ACT",
+        )
+        train_steps = int(prepared.resolved["train_steps"])
         emit(
             {
                 "event": "train_start",
@@ -80,19 +88,39 @@ class ActRecipe:
                 "device": plan.device,
                 "precision": plan.precision,
                 "train_steps": train_steps,
+                "val_every": int(prepared.resolved["val_every"]),
             }
         )
         try:
             from ohho.train.act import train_act
 
             checkpoint = train_act(
-                dataset=str(dataset_path),
+                dataset=str(prepared.dataset),
                 output_dir=str(Path(recipe["output"]["dir"]).expanduser()),
                 device=plan.device,
                 precision=plan.precision,
                 mock=False,
-                **kwargs,
+                train_steps=train_steps,
+                batch_size=int(prepared.resolved["batch_size"]),
+                lr=float(prepared.resolved["lr"]),
+                chunk_size=int(prepared.resolved["chunk_size"]),
+                d_model=int(prepared.resolved["d_model"]),
+                nhead=int(prepared.resolved["nhead"]),
+                num_encoder_layers=int(prepared.resolved["num_encoder_layers"]),
+                num_decoder_layers=int(prepared.resolved["num_decoder_layers"]),
+                dim_feedforward=int(prepared.resolved["dim_feedforward"]),
+                latent_dim=int(prepared.resolved["latent_dim"]),
+                kl_weight=float(prepared.resolved["kl_weight"]),
+                log_every=int(prepared.resolved["log_every"]),
+                val_every=int(prepared.resolved["val_every"]),
+                val_fraction=float(prepared.resolved["val_fraction"]),
+                early_stop_patience=int(prepared.resolved["early_stop_patience"]),
+                early_stop_min_delta=float(prepared.resolved["early_stop_min_delta"]),
+                vision_backbone=str(prepared.resolved["vision_backbone"]),
+                on_event=_on_event(self.id, emit),
             )
+        except TrainFailed:
+            raise
         except Exception as exc:
             raise TrainFailed(f"ACT training failed: {exc}") from exc
         metrics = Path(checkpoint) / "metrics.json"
@@ -125,7 +153,7 @@ class UnavailableRecipe:
 
 
 ACT = ActRecipe()
-DIFFUSION = UnavailableRecipe("diffusion")
+DIFFUSION = DiffusionRecipe()
 SMOLVLA = UnavailableRecipe("smolvla")
 OPENVLA = UnavailableRecipe("openvla")
 PPO = UnavailableRecipe("ppo")
@@ -138,6 +166,46 @@ def register_builtins() -> None:
     register(SMOLVLA, source="builtin:ohho.train.builtin_recipes")
     register(OPENVLA, source="builtin:ohho.train.builtin_recipes")
     register(PPO, source="builtin:ohho.train.builtin_recipes")
+
+
+def _on_event(family_id: str, emit: Emit) -> Emit:
+    def _send(payload: dict[str, Any]) -> None:
+        body = dict(payload)
+        body.setdefault("family", family_id)
+        emit(body)
+
+    return _send
+
+
+def _check_precision(recipe: dict[str, Any], family_id: str = "act") -> None:
+    if family_id == "act":
+        return
+    precision = recipe.get("precision", "fp32")
+    if precision != "fp32":
+        raise RecipeConfigError(
+            f"precision {precision!r} is not available for family {family_id!r} in this build"
+        )
+
+
+def _resolve_device(requested: str, family_label: str = "ACT") -> str:
+    if requested == "cpu":
+        return "cpu"
+    if requested == "auto":
+        from ohho.hardware import resolve_device
+
+        device = resolve_device("auto")
+        return device if device in ("cpu", "cuda", "mps") else "cpu"
+    torch = _load_torch(family_label)
+    if requested == "cuda" or requested.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise RecipeConfigError("device 'cuda' is not available on this machine")
+        return requested
+    if requested == "mps":
+        mps = getattr(torch.backends, "mps", None)
+        if mps is None or not mps.is_available():
+            raise RecipeConfigError("device 'mps' is not available on this machine")
+        return "mps"
+    raise RecipeConfigError(f"device {requested!r} is not available in this build")
 
 
 def _act_kwargs(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -189,12 +257,12 @@ def _import_torch() -> Any:
     return torch
 
 
-def _load_torch() -> Any:
+def _load_torch(family_label: str = "ACT") -> Any:
     try:
         return _import_torch()
     except ImportError as exc:
         raise RecipeConfigError(
-            "ACT training needs torch. Install it with: pip install 'ohho-os[train]'"
+            f"{family_label} training needs torch. Install it with: pip install 'ohho-os[train]'"
         ) from exc
 
 
@@ -210,7 +278,9 @@ def _apply_seed(torch: Any, recipe: dict[str, Any], device: str) -> None:
             cuda.manual_seed_all(seed)
 
 
-def _emit_declared(recipe: dict[str, Any], emit: Emit) -> None:
+def _emit_declared(
+    recipe: dict[str, Any], emit: Emit, trainer_name: str = "ACT"
+) -> None:
     weights = recipe.get("base_weights")
     if isinstance(weights, dict) and weights:
         emit(
@@ -219,7 +289,7 @@ def _emit_declared(recipe: dict[str, Any], emit: Emit) -> None:
                 "status": "not_loaded",
                 "uri": weights.get("uri", ""),
                 "reason": (
-                    "the ACT trainer in this build starts from the dataset "
+                    f"the {trainer_name} trainer in this build starts from the dataset "
                     "and does not load base weights"
                 ),
             }
