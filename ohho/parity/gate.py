@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from ohho.parity.errors import ParityError
-from ohho.parity.inputs import batches_sha256, load_batches, parse_input_source
+from ohho.parity.inputs import (
+    InputBundle,
+    batches_sha256,
+    load_batches,
+    parse_input_source,
+)
+from ohho.parity.registry import resolve_parity_set
+from ohho.parity.sets import ParitySet, generated_parity_set, unscored_parity_set
 from ohho.parity.metrics import (
     action_chunk_error,
     logits_kl,
@@ -23,6 +30,7 @@ from ohho.parity.metrics import (
 )
 from ohho.parity.report import build_report
 from ohho.parity.runners import (
+    PreparedModel,
     prepare_reference,
     resolve_candidate,
     run_candidate,
@@ -65,6 +73,8 @@ def evaluate(
     submodule: str | None = None,
     display_path: str | None = None,
     unchecked: list[dict[str, Any]] | None = None,
+    parity_set: str | None = None,
+    registry_root: str | None = None,
 ) -> dict[str, Any]:
     """Score ``candidate`` against ``reference``. A numerical fail is ``result: fail``.
 
@@ -88,10 +98,19 @@ def evaluate(
         mean_abs=mean_abs,
         path=thresholds,
     )
-    bundle = load_batches(
-        inputs, prepared.inputs, n=n, seed=seed, record_dir=record_dir
-    )
-    reference_out = run_prepared(prepared, bundle.batches)
+    stored: ParitySet | None = None
+    if parity_set:
+        stored = resolve_parity_set(parity_set, root=registry_root)
+        _require_set_model(stored, prepared, submodule)
+        bundle = _bundle_from_set(stored)
+        reference_out = stored.outputs
+        set_record = stored.report_record()
+    else:
+        bundle = load_batches(
+            inputs, prepared.inputs, n=n, seed=seed, record_dir=record_dir
+        )
+        reference_out = run_prepared(prepared, bundle.batches)
+        set_record = generated_parity_set(bundle.source, bundle.batches, reference_out)
     candidate_out = run_candidate(
         path, fmt, bundle.batches, prepared.inputs, prepared.outputs
     )
@@ -116,6 +135,7 @@ def evaluate(
             "sha256": batches_sha256(bundle.batches),
             "dtype": "float32",
         },
+        parity_set=set_record,
         outputs=rows,
         unchecked=unchecked,
     )
@@ -136,6 +156,8 @@ def compare_export(
     thresholds: str | None,
     submodule: str | None,
     record_dir: str | None,
+    parity_set: str | None = None,
+    registry_root: str | None = None,
 ) -> dict[str, Any]:
     """Score the runnable file in an optimize output directory.
 
@@ -157,6 +179,8 @@ def compare_export(
             mean_abs=mean_abs,
             thresholds=thresholds,
             unchecked=unchecked,
+            parity_set=parity_set,
+            registry_root=registry_root,
         )
     try:
         shown = candidate.resolve().relative_to(out.resolve()).as_posix()
@@ -177,6 +201,8 @@ def compare_export(
         submodule=submodule,
         display_path=shown,
         unchecked=unchecked,
+        parity_set=parity_set,
+        registry_root=registry_root,
     )
 
 
@@ -367,6 +393,8 @@ def _not_runnable(
     mean_abs: float | None,
     thresholds: str | None,
     unchecked: list[dict[str, str]],
+    parity_set: str | None = None,
+    registry_root: str | None = None,
 ) -> dict[str, Any]:
     kind, path = parse_input_source(inputs)
     if kind == "random":
@@ -375,9 +403,25 @@ def _not_runnable(
     elif kind == "recorded":
         source = "recorded"
         source_path = path
+    elif kind == "camera":
+        source = "camera"
+        source_path = path
     else:
         source = "dataset"
         source_path = path
+    stored = resolve_parity_set(parity_set, root=registry_root) if parity_set else None
+    if stored is not None:
+        source = stored.source
+        source_path = stored.path
+        counted = stored.n
+        indices: list[int] | None = list(stored.indices or [])
+        digest = batches_sha256(stored.inputs)
+        set_record = stored.report_record()
+    else:
+        counted = 0
+        indices = None
+        digest = None
+        set_record = unscored_parity_set()
     effective = family or "unknown"
     limits = resolve_thresholds(
         effective, target, precision, mean_abs=mean_abs, path=thresholds
@@ -393,13 +437,64 @@ def _not_runnable(
         inputs={
             "source": source,
             "path": source_path,
-            "seed": seed,
-            "n_requested": n,
-            "n": 0,
-            "indices": None,
-            "sha256": None,
+            "seed": stored.seed if stored is not None else seed,
+            "n_requested": stored.n_requested if stored is not None else n,
+            "n": counted,
+            "indices": indices,
+            "sha256": digest,
             "dtype": "float32",
         },
+        parity_set=set_record,
         outputs=[],
         unchecked=unchecked,
     )
+
+
+def _bundle_from_set(stored: ParitySet) -> InputBundle:
+    """Feed the captured inputs. The stored outputs are the reference."""
+    return InputBundle(
+        source=stored.source,
+        path=stored.path,
+        seed=stored.seed,
+        n_requested=stored.n_requested,
+        indices=None if stored.indices is None else list(stored.indices),
+        batches=stored.inputs,
+    )
+
+
+def _require_set_model(
+    stored: ParitySet, prepared: PreparedModel, submodule: str | None
+) -> None:
+    """Refuse a set that was captured for a different model or submodule."""
+    if not _same_model(prepared.ref, stored.model):
+        raise ParityError(
+            f"Parity set {stored.set_id} belongs to {stored.model}, not {prepared.ref}."
+        )
+    if (stored.submodule or None) != (submodule or None):
+        raise ParityError(
+            f"Parity set {stored.set_id} submodule {stored.submodule!r} "
+            f"does not match {submodule!r}."
+        )
+    expected = {spec.name for spec in prepared.inputs}
+    found = set(stored.inputs)
+    if found != expected:
+        raise ParityError(
+            f"Parity set {stored.set_id} inputs "
+            f"({', '.join(sorted(found)) or '(none)'}) do not match the model "
+            f"({', '.join(sorted(expected)) or '(none)'})."
+        )
+    if not stored.outputs:
+        raise ParityError(f"Parity set {stored.set_id} has no reference outputs.")
+
+
+def _same_model(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    left_path = Path(left)
+    right_path = Path(right)
+    try:
+        if left_path.exists() and right_path.exists():
+            return left_path.resolve() == right_path.resolve()
+    except OSError:
+        return False
+    return False

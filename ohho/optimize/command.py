@@ -48,7 +48,10 @@ def register_optimize(subparsers: Any) -> None:
             "\n"
             "--tasks runs the task-accuracy gate after tensor parity and writes "
             "accuracy.json (ohho.bench/v1). A task miss also refuses to publish "
-            "unless --allow-parity-fail is set."
+            "unless --allow-parity-fail is set.\n"
+            "\n"
+            "--parity-set scores the export on a captured set. Without it, random "
+            "inputs are labelled synthetic in the parity report."
         ),
     )
     parser.add_argument("--model", help="checkpoint path or registry id")
@@ -115,7 +118,17 @@ def register_optimize(subparsers: Any) -> None:
     parser.add_argument(
         "--parity-inputs",
         default="random",
-        help="parity inputs: random, a LeRobot dataset, or recorded",
+        help="parity inputs: random, a LeRobot dataset, recorded, or camera:PATH",
+    )
+    parser.add_argument(
+        "--parity-set",
+        default=None,
+        help="versioned parity set id or path; omit for a synthetic set",
+    )
+    parser.add_argument(
+        "--parity-registry",
+        default=None,
+        help="local parity-set registry (OHHO_PARITY_SETS or ~/.ohho/parity-sets)",
     )
     parser.add_argument(
         "--parity-n", type=int, default=256, help="parity sample count (default 256)"
@@ -240,6 +253,8 @@ def run_optimize(args: argparse.Namespace) -> int:
         task_episodes=args.task_episodes,
         task_detections=args.task_detections,
         task_tokens=args.task_tokens,
+        parity_set=args.parity_set,
+        parity_registry=args.parity_registry,
     )
     try:
         from ohho.optimize.engine import optimize
@@ -284,6 +299,13 @@ def run_optimize(args: argparse.Namespace) -> int:
         print(f"  {item['role']}: {item['path']}")
     parity = document.get("parity") or {}
     print(f"  parity: {parity.get('result', 'unknown')}")
+    parity_set = parity.get("parity_set") or {}
+    if parity_set:
+        print(
+            f"  parity set: {parity_set.get('id')}  "
+            f"sha256={parity_set.get('sha256')}  "
+            f"synthetic={str(parity_set.get('synthetic')).lower()}"
+        )
     accuracy_path = Path(args.out) / "accuracy.json"
     if accuracy_path.is_file():
         task_doc = json.loads(accuracy_path.read_text(encoding="utf-8"))

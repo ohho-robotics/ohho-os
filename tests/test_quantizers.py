@@ -300,11 +300,13 @@ class TestPublishHook(unittest.TestCase):
 
         def _passing_report(*args, **kwargs):
             del args, kwargs
+            from ohho.parity.sets import unscored_parity_set
             from ohho.parity.thresholds import resolve_thresholds
 
             return {
                 "schema": "ohho.parity/v1",
                 "result": "pass",
+                "parity_set": unscored_parity_set(),
                 "reasons": [],
                 "reference": {
                     "ref": "publish-hook-test",

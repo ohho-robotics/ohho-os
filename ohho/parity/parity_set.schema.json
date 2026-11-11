@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ohho-robotics.com/schemas/parity-set.v1.json",
+  "title": "ParitySet",
+  "description": "Versioned golden inputs and FP32 reference outputs for one model. sha256 is the SHA-256 of samples.json (the inputs and reference outputs). Media files are listed and are not part of the hash. synthetic is false for a stored set.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "version",
+    "model",
+    "submodule",
+    "source",
+    "path",
+    "synthetic",
+    "seed",
+    "n_requested",
+    "n",
+    "indices",
+    "dtype",
+    "sha256",
+    "samples",
+    "media"
+  ],
+  "properties": {
+    "schema": {"const": "ohho.parity_set/v1"},
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "model": {"type": "string", "minLength": 1},
+    "submodule": {"type": ["string", "null"]},
+    "source": {"enum": ["dataset", "recorded", "camera"]},
+    "path": {"type": ["string", "null"]},
+    "synthetic": {"const": false},
+    "seed": {"type": "integer"},
+    "n_requested": {"type": "integer", "minimum": 1},
+    "n": {"type": "integer", "minimum": 1},
+    "indices": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0}
+    },
+    "dtype": {"const": "float32"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "samples": {"const": "samples.json"},
+    "media": {
+      "type": "array",
+      "items": {"type": ["string", "null"]}
+    }
+  }
+}
