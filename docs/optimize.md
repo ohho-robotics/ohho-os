@@ -18,6 +18,8 @@ ohho optimize --model reference-act --target x86-cpu --precision fp32 --out buil
 ohho optimize --model policy.pt --submodule actor --target x86-cuda --precision fp16 --tensorrt --workspace-gb 2 --max-batch 4 --dynamic-batch --out build/fp16
 ohho optimize --model policy.pt --target jetson-orin-nx --precision int8 --tensorrt --calib-data calib --calib-batch 8 --calib-max-images 32 --calib-cache build/int8.cache --out build/int8
 ohho optimize --model hf-model/ --target x86-cuda --precision int8 --quant awq --out build/awq
+ohho optimize --model smolvla/ --submodule lm --precision int4-awq --target PROFILE --out build/awq
+ohho optimize --model reference-act --target x86-cpu --precision int8 --out build/int8
 ```
 
 `--model` is a checkpoint path or a registry id. `reference-act` and
@@ -25,7 +27,9 @@ ohho optimize --model hf-model/ --target x86-cuda --precision int8 --quant awq -
 download. A directory may contain `model.json` plus `model.pt`, `model.onnx`,
 or `model.ts`. A Hugging Face directory (a `config.json` and no weight file
 above) is a weight-quant source. `--submodule` is a dotted path or one of
-`vision`, `actor`, `encoder`.
+`vision`, `actor`, `encoder`, `lm`. `lm` selects the SmolVLA text backbone
+(`model.vlm_with_expert.vlm.model.text_model` and the same role on a
+shorter attribute path).
 
 `--target` is a built-in profile id or a `.json` / `.yaml` profile file.
 Precision and the execution provider are checked with `ohho.targets`. FP8 on
@@ -39,8 +43,11 @@ the memory budget are rejected before any export.
 | `fp32` | ONNX opset 17 with a dynamic batch, then an ONNX Runtime session on the selected provider. |
 | `fp16` | A TensorRT engine (`--tensorrt`). The ONNX graph stays FP32. |
 | `int8` + `--tensorrt` | A TensorRT engine. TensorRT 8 and 9 assign the entropy calibrator to `config.int8_calibrator` before the build. TensorRT 10 and newer deprecate that implicit calibrator and build explicit Q/DQ instead. |
+| `int8` on `x86-cpu` or `rpi5-cpu` | ORT static INT8 (QDQ). `--quant awq` still selects AWQ instead. |
 | `int8` or `int4` + `--quant awq\|gptq` | A weight-quant directory when that package is installed. |
-| `fp8` + `--tensorrt` | A TensorRT engine when that builder flag exists. |
+| `int4-awq`, `int4-gptq` | The same INT4 weight quant, without a separate `--quant` flag. |
+| `int4-bnb`, `nf4` | bitsandbytes NF4. Research baseline only. |
+| `fp8` | A TensorRT FP8 engine. Rejected unless the profile is Ada or Hopper (`cloud-l4`, `cloud-h100`). |
 
 ONNX export always uses a dynamic batch axis. `--dynamic-batch` widens the
 TensorRT optimisation profile from batch 1 to `--max-batch`. Without it, the
@@ -96,11 +103,25 @@ An actor checkpoint is a state dict whose Linear weights use keys
 
 ## Weight quantizers
 
-AWQ and GPTQ are `--quant`. Both require a local directory that contains
-`config.json`. GPTQ also needs calibration examples passed to `quantize()`;
-the CLI does not download a dataset. bitsandbytes and FP8 are on the same
-Python interface and need a CUDA device. `probe_quant` reports that without
-importing a missing package.
+Backends register on the `ohho.quantizers` entry-point group. Each one
+implements `requirements`, `supports(target, model)`, and
+`quantize(model, calib)`. `supports` runs against the target profile
+before a checkpoint is exported. A third-party package can add a backend by
+publishing an entry point; the builtins are AWQ, GPTQ, bitsandbytes NF4,
+TensorRT FP8, and ORT static INT8.
+
+`--precision int4-awq` and `--quant awq` both select AWQ. The older
+`--quant` flag still works. AWQ and GPTQ need a local directory that
+contains `config.json`, or a SmolVLA module selected with `--submodule lm`.
+GPTQ also needs calibration examples passed to `quantize()`; the CLI does
+not download a dataset. bitsandbytes NF4 (`int4-bnb`) is a research
+baseline and needs a CUDA device. `probe_quant` reports a missing package
+without importing it.
+
+Every published output, including each quantizer artifact, is passed to
+`ohho.optimize.publish.run_parity`. That calls `ohho.parity.run_parity`
+when OHH-430 is installed. The manifest records `backend` and
+`backend_version` on each output.
 
 ## Manifest
 
@@ -108,8 +129,8 @@ The output directory gets `manifest.json`. The schema id is
 `ohho.optimize_manifest.v1` (`ohho/optimize/optimize_manifest.schema.json`).
 The document records the model, the target, the precision, the execution
 provider, the flags, the torch / ONNX / ONNX Runtime / TensorRT versions, the
-request inputs, the session providers that were actually enabled, the sha256
-and size of each output, and the parity report.
+request inputs, the session providers that were actually enabled, the sha256,
+size, backend name, and backend version of each output, and the parity report.
 
 ## Parity gate
 
