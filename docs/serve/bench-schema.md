@@ -102,6 +102,7 @@ them are required, and none change the type of a field v1 already defined:
 | `comparison` | Per-metric delta against a baseline result. |
 | `gates` | SLO and regression checks. `passed` is false when any check failed. |
 | `batches` | One latency report per requested batch size. |
+| `cost` | Estimated USD from measured throughput. See below. |
 | `pipeline` | Camera-to-action block. Absent on an artifact-only run. Version `ohho.bench.pipeline/v1`. |
 | `environment.world` | `sim`, `recorded`, or `hardware` on a pipeline run. |
 
@@ -116,6 +117,30 @@ run are `decode`, `preprocess`, `h2d`, `inference`, `d2h`, `postprocess`, and
 does not command a robot. Adding this object does not change ohho.bench/v1.
 A break inside the block is a new pipeline version and a converter, not a
 silent edit of these fields.
+
+## Cost estimate
+
+`cost` is optional. When it is present, `cost.schema` is `ohho.bench.cost/v1`,
+`cost.estimate` is true, and `cost.label` is `estimate`. The figures are not
+an invoice. `cost.inputs` records the profile, the price source (`built-in`,
+`file`, or `flag`), the watts source (`measured`, `profile_default`, `user`,
+or `unmeasured`), the control rate, and the throughput used. Changing those
+inputs and recomputing does not rerun the benchmark.
+
+| Path | Meaning |
+|---|---|
+| `cost.usd_per_hour` | Device price per hour from the inputs. |
+| `cost.usd_per_1m_output_tokens` | From measured output tokens per second. Omitted when the run has no token throughput. |
+| `cost.usd_per_1k_actions` | USD per 1000 actions at `control_rate_hz`, from measured action throughput. Omitted when the run has no action rate. |
+| `cost.usd_per_robot_hour` | Hourly cost of one robot at the control rate. |
+| `cost.actions_per_watt` | Measured actions per second divided by watts. |
+| `cost.meets_control_rate` | True when actions per second are at least the control rate. |
+| `cost.robots_per_device` | `actions_per_s / control_rate_hz`. |
+
+The same object may appear on `batches[]`, `llm.points[]`, `llm.precisions[]`,
+`llm.pareto[]`, and `llm.recommendation`. Each row uses that row's throughput
+and the same price inputs. The price table is `ohho/targets/cost_prices.json`
+(`ohho.bench.cost_prices/v1`), labelled `estimate`. See [`bench.md`](bench.md).
 
 `telemetry.gpu_util_percent` and `telemetry.gpu_power_w` are additional
 properties and are JSON `null` when a GPU sample is not available. The typed
