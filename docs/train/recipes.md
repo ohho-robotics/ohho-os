@@ -16,7 +16,7 @@ Its `$id` is `https://ohho-robotics.com/schemas/ohho.recipe/v1.json` and its tit
 | `diffusion.yaml` | `diffusion` | Yes. Calls `ohho.train.il.diffusion_policy.train_diffusion`. |
 | `smolvla.yaml` | `smolvla` | No. |
 | `openvla.yaml` | `openvla` | No. |
-| `ppo.yaml` | `ppo` | No. |
+| `ppo.yaml` | `ppo` | Yes. Built-in CPU PPO, optional rsl_rl or skrl. See [ppo.md](ppo.md). |
 
 ```bash
 ohho train ohho/train/examples/il/act-tiny-cpu.yaml --set dataset.path=/path/to/dataset --set output.dir=/path/to/run
@@ -54,7 +54,7 @@ Relative paths are resolved from the process working directory.
 3. Validate against the published JSON Schema.
 4. Look up `family`. A missing or unavailable family stops here.
 5. Shared precision check, only when the family is available. The runner resolves `device`, reads the family's registry metadata, and refuses a precision that family does not accept or that this device cannot run. Unavailable families are not probed. There is no fallback to another precision.
-6. Family preflight (for ACT and diffusion: precision, hyperparameters, dataset, device, torch).
+6. Family preflight: for ACT and diffusion: precision, hyperparameters, dataset, device, torch. PPO checks precision, hyperparameters, the task, the backend, torch, and onnx. A missing dataset directory does not stop PPO. `version_id` alone still does.
 7. On `train_start`, write `run_manifest.json` with `status: running`. The progress event includes `precision` (the runner fills it when the family omits it).
 8. Call the trainer.
 9. Finalise that file as `succeeded`, `failed`, or `interrupted`, including throughput and peak memory for the precision that ran.
@@ -89,6 +89,8 @@ Parsing rules for the value:
 
 ACT and diffusion hyperparameters, their defaults, and their ranges are listed in [`il-recipes.md`](il-recipes.md). The family checks them before training. `hyperparameters.mock` is rejected. When `train_steps` is omitted and `num_epochs` is set, the step count is `num_epochs * 2`. When both are set, `train_steps` is used. When neither is set, the step count is 200. For ACT, `d_model` must be divisible by `nhead` (defaults `64` and `2` when omitted). `seed` is applied with `torch.manual_seed` and is not forwarded to the optimizer constructor. ACT and diffusion do not run a fake trainer.
 
+PPO hyperparameters are `task`, `backend`, `num_envs`, `rollout_steps`, `updates` (or `train_steps` when `updates` is omitted), `num_epochs`, `batch_size`, `lr`, `clip_coef`, `entropy_coef`, `gae_lambda`, `gamma`, `hidden_size`, `episode_steps`, `reward_weights`, and `seed`. The trainer, the task registry, the reference MuJoCo task, and the ONNX actor file are documented in [ppo.md](ppo.md). PPO does not read the demonstration dataset. A missing `dataset.path` is recorded and does not stop the run. `dataset.version_id` alone still exits `4`.
+
 ## What a successful ACT run writes
 
 `train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command.
@@ -107,7 +109,7 @@ Stdout is one JSON object per line and nothing else. Every object includes `"str
 | `train_start` | Immediately before the trainer. Fields: `family`, `device`, `train_steps`, `precision`, and `val_every` for ACT and diffusion. |
 | `validation` | During ACT or diffusion training, after every `val_every` optimizer step and after the final step. Fields: `family`, `step` (completed updates, starting at 1), `validation_loss`, `best_validation_loss`, `train_loss`. |
 | `early_stop` | Patience stopped ACT or diffusion before `train_steps`. Fields: `family`, `step`, `validation_loss`, `best_validation_loss`, `patience`. The process still exits 0 when the checkpoint is written. |
-| `metrics` | After a successful train. Fields: `path`, `final_loss`. |
+| `metrics` | After a successful train. Fields: `path`, `final_loss`. PPO also emits this event once per update while training, with `episode_reward` and `success`. |
 | `checkpoint` | Checkpoint directory. |
 | `manifest` | `run_manifest.json` path. `status` is `running` at start and `succeeded`, `failed`, or `interrupted` when the file is finalised. |
 | `done` | Success. Fields: `exit_code` 0, `checkpoint_dir`, `manifest`. |
@@ -123,10 +125,10 @@ A run that never starts training emits a single `error` line and no `train_start
 | Code | Name | Meaning |
 | --- | --- | --- |
 | 0 | ok | Checkpoint, metrics, and a final `run_manifest.json` (`status: succeeded`) were written. |
-| 1 | invalid | Parse error, `--set` error, schema error, or ACT/diffusion preflight refusal (unsupported precision, precision the family metadata does not accept, unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, torch missing). The trainer was not called. |
+| 1 | invalid | Parse error, `--set` error, schema error, or preflight refusal. ACT and diffusion refuse unsupported precision, precision the family metadata does not accept, an unknown hyperparameter, value outside its range, `d_model` not divisible by `nhead`, `vision_backbone` other than `none`, device not available, or missing torch. PPO refuses those same precision, hyperparameter, device, and torch problems, plus an unknown or unavailable task, a GPU-only task or backend, a missing onnx package, or an optional backend that is not installed. The trainer was not called. |
 | 2 | usage | The process was invoked incorrectly. This is argparse (the recipe path was missing). No JSON line. |
 | 3 | unavailable | The recipe is schema-valid and the family has no trainer in this build. `message` is `family not available in this build`. The trainer was not called. |
-| 4 | dataset | The family can train, but the dataset is not a local directory (`version_id` only, or `path` is not a directory). The trainer was not called. |
+| 4 | dataset | The family can train, but the dataset cannot be used. `version_id` alone is refused. ACT also refuses a `path` that is not a directory. PPO does not read `dataset.path`, so a missing directory does not use this code. The trainer was not called. |
 | 5 | failed | `train_start` was emitted and the trainer then failed. The manifest is finalised with `status: failed`. |
 
 ## Adding a family
