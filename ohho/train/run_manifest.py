@@ -6,7 +6,8 @@ The file sits in the run directory with the other artifacts.
 
 Database storage is :meth:`RunStore.save` only. This module does not open a
 connection, read credentials, or contact the network. Remote base-weight URIs
-are recorded and are not downloaded.
+are recorded and are not downloaded. ``cloned_from`` is omitted unless
+``ohho run clone`` produced the run.
 """
 
 from __future__ import annotations
@@ -184,8 +185,23 @@ class GpuRecord:
 
 
 @dataclass(frozen=True)
+class ClonedFrom:
+    """Source run a cloned config was derived from."""
+
+    run: str
+    manifest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"run": self.run, "manifest": self.manifest}
+
+
+@dataclass(frozen=True)
 class RunManifest:
-    """One ``ohho.run/v1`` document."""
+    """One ``ohho.run/v1`` document.
+
+    ``cloned_from`` is set only for a run written by ``ohho run clone``.
+    Training manifests omit it.
+    """
 
     schema: str
     status: str
@@ -213,11 +229,12 @@ class RunManifest:
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
     qat: dict[str, Any] | None
+    cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON object, with keys in console-summary order."""
         gpu = None if self.gpu is None else self.gpu.to_dict()
-        return {
+        document = {
             "schema": self.schema,
             "status": self.status,
             "started_at": self.started_at,
@@ -250,6 +267,9 @@ class RunManifest:
             },
             "qat": _copy_qat(self.qat),
         }
+        if self.cloned_from is not None:
+            document["cloned_from"] = self.cloned_from.to_dict()
+        return document
 
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> RunManifest:
@@ -322,6 +342,7 @@ class RunManifest:
             },
             precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
             qat=_copy_qat(document.get("qat")),
+            cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
 
@@ -1100,6 +1121,12 @@ def _format_gpu(value: Any) -> str:
     return " ".join(
         f"{key}={_format_value(value.get(key))}" for key in ("name", "driver", "cuda")
     )
+
+
+def _cloned_from(value: Any) -> ClonedFrom | None:
+    if value is None:
+        return None
+    return ClonedFrom(run=str(value["run"]), manifest=str(value["manifest"]))
 
 
 def _format_precision_metrics(value: Any) -> str:
