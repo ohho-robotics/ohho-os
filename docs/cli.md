@@ -66,6 +66,7 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho optimize --model <path\|id> --target <profile> --precision fp32 --out DIR` | ONNX export, ORT session, TensorRT, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
 | `ohho parity --reference <model> --candidate <artifact> --inputs random\|DATASET\|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
 | `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench --export SPEC` | Optional W&B or Prometheus export; failures are warnings ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
 | `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
