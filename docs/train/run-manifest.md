@@ -41,6 +41,9 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `finished_at` | Finished | `finished_at` |
 | `family` | Family | `family` |
 | `device` | Device | `device` |
+| `precision` | Precision | `precision` |
+| `loss_scaling` | Loss scaling | `loss_scaling` |
+| `precision_backend` | Precision backend | `precision_backend` |
 | `seeds.recipe` | Seed | `seeds.recipe` |
 | `seeds.python` | Python seed | `seeds.python` |
 | `seeds.numpy` | NumPy seed | `seeds.numpy` |
@@ -60,6 +63,8 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 | `library_versions` | Libraries | `library_versions` |
 | `gpu` | GPU | `gpu` |
 | `final_loss` | Final loss | `final_loss` |
+| `precision_metrics` | Precision metrics | `precision_metrics` |
+| `qat` | QAT | `qat` |
 | `error` | Error | `error` |
 | `resolved_config` | Resolved config | `resolved_config` |
 
@@ -71,7 +76,11 @@ The console run page reads `run_manifest.json` from the run directory. The summa
 
 `library_versions` always includes `python` and `ohho` (the `ohho-os` version). `torch`, `numpy`, and `lerobot` are included when those distributions are installed. The version lookup uses package metadata.
 
-The JSON document also carries `recipe_path`, `overrides`, `checkpoint_dir`, `metrics_path`, `declared_hooks`, and `git.root`. Those are available to a details panel. They are not summary fields. `--json` prints them with the summary.
+`precision` is the recipe value the device check accepted (`fp32`, `fp16`, `bf16`, or `fp8`). `loss_scaling` is true only for fp16, where the step uses GradScaler. `precision_backend` is `fp32`, `torch.amp` (fp16 and bf16), or `transformer_engine` (fp8). `precision_metrics` has one key per precision. The precision that ran holds `throughput_steps_per_s` and `peak_memory_bytes`. The others are null. While the run is still going, and when the trainer did not write those keys, the numbers are null. Throughput is training steps per second over the step loop. On CUDA, peak memory is `max_memory_allocated` in bytes after the loop starts. On CPU and MPS it is the process resident set sampled during the loop, which includes the interpreter. Details are in [Mixed precision](precision.md).
+
+`qat` is null when the recipe has no `qat` block. When the block is set, the field is the resolved settings: bit width, scope, granularity, symmetry, calibration length, fine-tune length, and `export_onnx`. Defaults are filled, including activation granularity and symmetry when the recipe omits them. Phase losses and the ONNX path are in `metrics.json`, not in this object. Details are in [Quantisation-aware training](qat.md). A manifest that omits `qat` is still valid.
+
+The JSON document also carries `recipe_path`, `overrides`, `checkpoint_dir`, `metrics_path`, `declared_hooks`, `git.root`, and, when this run was produced by `ohho run clone`, `cloned_from`. Those are available to a details panel. They are not summary fields. `--json` prints them with the summary. `ohho run show` does not add a `cloned_from` line to the summary.
 
 ## Database hook
 
@@ -98,3 +107,103 @@ Outside a container, `container_image_digest` is null. Inside a container (`/.do
 3. the first line of `/.ohho-image-digest`
 
 When none of those is set, the field stays null. `OHHO_IMAGE_DIGEST` on a host that is not a container is ignored.
+
+## Clone and tweak
+
+`ohho run clone` builds a new run config from a source run's `resolved_config`. It does not start training.
+
+```bash
+ohho run clone checkpoints/act --set hyperparameters.lr=0.0003 --set hyperparameters.seed=2
+ohho run clone checkpoints/act --set output.dir=checkpoints/act-lr --dest checkpoints/act-lr
+```
+
+`<id>` is a run directory or a path to `run_manifest.json`, the same paths `ohho run show` accepts. `--set` is repeatable. Keys are dotted, including numeric list indexes (`compression_hooks.0.params.rank`). Values use the same parser as `ohho train --set`: booleans, numbers, `null` (delete a mapping key), JSON arrays and objects, quoted strings, or plain strings. Later repeats of the same key win.
+
+The tweaked document is validated against `ohho.recipe/v1`. Recipe defaults are filled after validation, matching `ohho train`. A config the schema rejects is not written. Exit `1` prints the summary on stderr and the schema errors under it. Exit `2` is an argparse usage error.
+
+The new run directory defaults to a sibling named `<source>-clone`. `--dest DIR` chooses another empty directory. An existing non-empty destination is left untouched. The directory contains:
+
+| File | Contents |
+| --- | --- |
+| `recipe.json` | The new run config. This is the tweaked `resolved_config`. |
+| `run_manifest.json` | An `ohho.run/v1` document. `resolved_config` is that config. `overrides` is the `--set` list used for this clone (the source run's overrides are already baked into its resolved config). `recipe_path` is `recipe.json`. `family` and `device` follow the new config. `cloned_from` points at the source. |
+
+`cloned_from` is an object `{run, manifest}`. `run` is the source run directory and `manifest` is its `run_manifest.json`, both absolute. The field is omitted on a run that was not cloned. Training does not write it.
+
+Status, seeds, git, dataset, base weights, library versions, GPU, loss, checkpoints, and the other execution fields are copied from the source manifest. They describe the source execution, not a new training result. When the new config's `output.dir` is the source run directory, the command prints:
+
+`note: output.dir is the source run; set output.dir before training this recipe`
+
+Training `recipe.json` with `ohho train` writes a separate execution manifest in `output.dir`. That manifest does not copy `cloned_from`.
+
+```python
+from ohho.train.run_clone import clone_run, cloned_config
+
+preview = cloned_config(manifest.resolved_config, ["hyperparameters.lr=0.0003"])
+result = clone_run("checkpoints/act", ["hyperparameters.lr=0.0003"])
+```
+
+`cloned_config` is the pure preview. `clone_run` writes the directory and returns the config, the manifest, and the diff against the source.
+
+## Config diff
+
+`ohho run diff` compares `resolved_config` for any two runs. It does not compare status, loss, or `cloned_from`.
+
+```bash
+ohho run diff checkpoints/act checkpoints/act-clone
+ohho run diff checkpoints/act checkpoints/act-clone --json
+```
+
+The first run is the before side. Exit `0` when both manifests load, including when the configs differ. Exit `1` when a run is missing or invalid. Exit `2` is a usage error.
+
+Text and `--json` are two renderings of one value. The console imports that value directly:
+
+```python
+from ohho.train.run_clone import diff_run_configs, format_config_diff
+
+diff = diff_run_configs("checkpoints/act", "checkpoints/act-clone")
+text = format_config_diff(diff)
+payload = diff.to_dict()
+```
+
+`--json` prints `payload` with two-space indentation. `payload` is `ohho.run.diff/v1`:
+
+```json
+{
+  "schema": "ohho.run.diff/v1",
+  "left": {"run": "/path/act", "manifest": "/path/act/run_manifest.json"},
+  "right": {"run": "/path/act-clone", "manifest": "/path/act-clone/run_manifest.json"},
+  "equal": false,
+  "changes": [
+    {"path": "hyperparameters.lr", "op": "replace", "before": 0.0001, "after": 0.0003}
+  ]
+}
+```
+
+`changes` is empty when `equal` is true. Each change has `path` and `op`:
+
+| `op` | Meaning | Fields |
+| --- | --- | --- |
+| `replace` | Both sides have the path and the values differ | `before`, `after` |
+| `add` | The path exists only on the right | `after` |
+| `remove` | The path exists only on the left | `before` |
+
+Paths match `--set` keys. Nested objects and lists are walked. A list index is a decimal segment (`eval_hooks.0.name`). A dotted key inside one object is not escaped. `before` and `after` are JSON values, so booleans stay booleans and `1` does not match `true`.
+
+The text form prints the same changes, in the same order, after the run paths:
+
+```text
+ohho.run.diff/v1
+left: /path/act
+left_manifest: /path/act/run_manifest.json
+right: /path/act-clone
+right_manifest: /path/act-clone/run_manifest.json
+equal: false
+~ hyperparameters.lr: 0.0001 -> 0.0003
+```
+
+`+` is add, `-` is remove, `~` is replace. Values are compact JSON with object keys sorted. `equal: true` means there are no change lines.
+
+## Artifact retention
+
+Retention does not rewrite this file or `metrics.json`. Checkpoint deletion is recorded in `artifact_index.json` beside the manifest. See [artifacts.md](artifacts.md).

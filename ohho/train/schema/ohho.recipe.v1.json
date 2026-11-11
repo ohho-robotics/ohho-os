@@ -80,12 +80,26 @@
         "seed": {"type": "integer"},
         "horizon": {"type": "integer", "minimum": 1},
         "rollout_steps": {"type": "integer", "minimum": 1},
-        "gamma": {"type": "number", "minimum": 0, "maximum": 1}
+        "gamma": {"type": "number", "minimum": 0, "maximum": 1},
+        "task": {"type": "string", "minLength": 1},
+        "backend": {"type": "string", "minLength": 1},
+        "num_envs": {"type": "integer", "minimum": 1},
+        "updates": {"type": "integer", "minimum": 1},
+        "clip_coef": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "entropy_coef": {"type": "number", "minimum": 0},
+        "gae_lambda": {"type": "number", "minimum": 0, "maximum": 1},
+        "hidden_size": {"type": "integer", "minimum": 1},
+        "episode_steps": {"type": "integer", "minimum": 1},
+        "reward_weights": {
+          "type": "object",
+          "additionalProperties": {"type": "number"}
+        }
       }
     },
     "precision": {
+      "description": "Numeric format for the training step. fp32 is the default and runs on every device. fp16 uses torch.amp autocast and GradScaler loss scaling on CUDA. bf16 uses torch.amp autocast where bfloat16 runs, including CPU when that autocast succeeds. fp8 uses Transformer Engine on a CUDA GPU with compute capability 8.9 or newer. An unsupported choice fails before training. There is no fallback to another precision.",
       "type": "string",
-      "enum": ["fp32", "fp16", "bf16"],
+      "enum": ["fp32", "fp16", "bf16", "fp8"],
       "default": "fp32"
     },
     "device": {
@@ -97,6 +111,34 @@
       "description": "When true, seed batch order, pin DataLoader workers, and request deterministic torch and cuDNN algorithms. Omitted means false.",
       "type": "boolean",
       "default": false
+    },
+    "qat": {
+      "description": "Optional quantisation-aware training block. Absent means QAT does not run. bit_width (8 or 4), granularity (per_tensor or per_channel), calibration_steps, and finetune_steps are plain fields a sweep can set. scope is weight_only (default) or weight_and_activation. Weight-and-activation needs calibration_steps >= 1. symmetric defaults to true; activation_granularity and activation_symmetric default to the weight settings. export_onnx asks for a Q/DQ ONNX file. Family act cannot lower its transformer, so that flag is refused for act.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "default": true},
+        "bit_width": {"type": "integer", "enum": [8, 4], "default": 8},
+        "scope": {
+          "type": "string",
+          "enum": ["weight_only", "weight_and_activation"],
+          "default": "weight_only"
+        },
+        "granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"],
+          "default": "per_channel"
+        },
+        "activation_granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"]
+        },
+        "symmetric": {"type": "boolean", "default": true},
+        "activation_symmetric": {"type": "boolean"},
+        "calibration_steps": {"type": "integer", "minimum": 0, "default": 0},
+        "finetune_steps": {"type": "integer", "minimum": 0, "default": 0},
+        "export_onnx": {"type": "boolean", "default": false}
+      }
     },
     "compression_hooks": {
       "type": "array",

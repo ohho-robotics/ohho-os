@@ -23,15 +23,47 @@ class UnsupportedYaml(YamlError):
     """The text needs YAML features this subset does not parse."""
 
 
+_UNIQUE_LOADER: type | None = None
+
+
 def loads(text: str) -> Any:
     """Parse a YAML document. Returns the top-level value."""
     try:
         return _loads_subset(text)
-    except UnsupportedYaml as exc:
+    except YamlError as exc:
         return _loads_with_pyyaml(text, exc)
 
 
-def _loads_with_pyyaml(text: str, reason: UnsupportedYaml) -> Any:
+def _get_unique_loader(yaml_module: Any) -> type:
+    global _UNIQUE_LOADER
+    if _UNIQUE_LOADER is None:
+
+        class _UniqueSafeLoader(yaml_module.SafeLoader):
+            pass
+
+        def _construct_mapping(
+            loader: Any, node: Any, deep: bool = False
+        ) -> dict[str, Any]:
+            loader.flatten_mapping(node)
+            mapping: dict[str, Any] = {}
+            for key_node, value_node in node.value:
+                key = loader.construct_object(key_node, deep=deep)
+                if key in mapping:
+                    raise yaml_module.constructor.ConstructorError(
+                        f"duplicate key {key!r}"
+                    )
+                mapping[key] = loader.construct_object(value_node, deep=deep)
+            return mapping
+
+        _UniqueSafeLoader.add_constructor(
+            yaml_module.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+            _construct_mapping,
+        )
+        _UNIQUE_LOADER = _UniqueSafeLoader
+    return _UNIQUE_LOADER
+
+
+def _loads_with_pyyaml(text: str, reason: YamlError) -> Any:
     try:
         import yaml
     except ImportError as exc:
@@ -39,13 +71,27 @@ def _loads_with_pyyaml(text: str, reason: UnsupportedYaml) -> Any:
             f"{reason}. Full YAML needs the yaml extra: pip install 'ohho-os[yaml]'"
         ) from exc
     try:
-        return yaml.safe_load(text)
+        loader = _get_unique_loader(yaml)
+        data = yaml.load(text, Loader=loader)
+        if data is None and not text.strip():
+            raise YamlError("recipe YAML is empty")
+        return data
     except Exception as exc:
+        if isinstance(exc, YamlError):
+            raise
         raise YamlError(f"could not parse YAML: {exc}") from exc
 
 
 def _loads_subset(text: str) -> Any:
     lines = _prepare(text)
+    if not lines:
+        raise YamlError("recipe YAML is empty")
+    while lines and lines[0][1] == 0 and lines[0][2] == "---":
+        lines = lines[1:]
+    if not lines:
+        raise YamlError("recipe YAML is empty")
+    if lines and lines[-1][1] == 0 and lines[-1][2] == "...":
+        lines = lines[:-1]
     if not lines:
         raise YamlError("recipe YAML is empty")
     if lines[0][1] != 0:
@@ -80,16 +126,18 @@ def _strip_comment(line: str) -> str:
         if char in {'"', "'"}:
             quote = char
             continue
-        if char == "#":
+        if char == "#" and (index == 0 or line[index - 1] in {" ", "\t"}):
             return line[:index]
     return line
 
 
 def _parse_node(lines: list[tuple[int, int, str]], index: int) -> tuple[Any, int]:
     _lineno, _indent, text = lines[index]
-    if text.startswith("- "):
+    if text.startswith("- ") or text == "-":
         return _parse_list(lines, index, lines[index][1])
-    return _parse_map(lines, index, lines[index][1])
+    if _split_kv(text) is not None:
+        return _parse_map(lines, index, lines[index][1])
+    return _parse_scalar(text, _lineno), index + 1
 
 
 def _parse_map(
@@ -102,7 +150,7 @@ def _parse_map(
             break
         if line_indent > indent:
             raise YamlError(f"line {lineno}: unexpected indent")
-        if text.startswith("- "):
+        if text.startswith("- ") or text == "-":
             raise YamlError(f"line {lineno}: expected a key")
         split = _split_kv(text)
         if split is None:
@@ -140,9 +188,9 @@ def _parse_list(
             break
         if line_indent > indent:
             raise YamlError(f"line {lineno}: unexpected indent")
-        if not text.startswith("- "):
+        if not (text == "-" or text.startswith("- ")):
             break
-        rest = text[2:].strip()
+        rest = "" if text == "-" else text[2:].strip()
         index += 1
         if rest == "":
             child, index = _nested_or_null(lines, index, indent)
@@ -161,7 +209,7 @@ def _parse_list(
         if (
             index < len(lines)
             and lines[index][1] > indent
-            and not lines[index][2].startswith("- ")
+            and not (lines[index][2] == "-" or lines[index][2].startswith("- "))
         ):
             extra, index = _parse_map(lines, index, lines[index][1])
             overlap = set(extra) & set(item)

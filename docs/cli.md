@@ -61,17 +61,53 @@ skills with `ohho.market.skill`; see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 | `ohho profile list` | Hardware deployment profiles |
 | `ohho profile show <name>` | Profile details |
 | `ohho profile detect` | Auto-detect this machine |
+| `ohho targets list --json` | Optimisation target profiles ([`serve/targets.md`](serve/targets.md)) |
+| `ohho targets detect` | Read-only probe; names the profile and missing CUDA or TensorRT |
+| `ohho optimize --model <path|id> --target <profile> --precision fp32|int8|int4-awq|fp8 --out DIR` | ONNX export, ORT static INT8, TensorRT FP8, or AWQ/GPTQ ([`optimize.md`](optimize.md)). Refuses to publish when the parity gate fails unless `--allow-parity-fail` |
+| `ohho parity --reference <model> --candidate <artifact> --inputs random|DATASET|recorded --n 256` | Numerical parity report `ohho.parity/v1` ([`serve/parity.md`](serve/parity.md)). Exit 1 when mean abs diff is above 0.05 |
+| `ohho bench --artifact FILE --target PROFILE --json out.json` | Inference latency bench ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench --export SPEC` | Optional W&B or Prometheus export; failures are warnings ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench --mode generate --target PROFILE --json out.json` | TTFT, TPOT, tokens/s, concurrency, and precision ([`serve/bench.md`](serve/bench.md)) |
+| `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
 | `ohho serve [--mock] [--port 8000]` | FastAPI policy server (`[serve]` extra; `--mock` for CI/sim) |
+| `ohho sweep plan <file>` | Expand an `ohho.sweep/v1` spec (`grid`, `random`, `tpe`, `bayesian`, `multi`). Adaptive strategies print the startup batch. Each trial line includes its derived training seed ([`train/sweeps.md`](train/sweeps.md)) |
+| `ohho sweep start <file> [--id ID] [--backend native\|wandb\|auto]` | Native (the default) persists a run under `OHHO_SWEEP_DIR` or `~/.ohho/sweeps/<id>/run.json` and prints no W&B URL. `wandb` creates a sweep through the W&B API when `WANDB_API_KEY` is set and prints the URL that client returns. `auto` uses W&B only when that key is set |
+| `ohho sweep resume <id> [--count N]` | Propose the next trials of a stopped sweep. Does not repeat a trial index |
+| `ohho job validate <spec>` | Check an `ohho.job/v1` spec ([`serve/job-spec.md`](serve/job-spec.md)) |
+| `ohho job run <spec>` | Run steps this build implements; missing engines exit 2 |
 
-With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`.
+With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /predict`. `ohho job` reads the same spec the console and CI use; the message format is in [`serve/job-spec.md`](serve/job-spec.md).
+
+Serve examples are in [`examples/serve`](../examples/serve/README.md). Each
+README states hardware, runtime, and expected output. CPU examples run in CI
+and on release tags. `ohho optimize`, the vLLM bench, and W&B/Prometheus
+export are not in this tree; those examples are placeholders and do not print
+benchmark numbers.
+
+## Benchmark (`ohho bench`)
+
+| Command | Description |
+|---------|-------------|
+| `ohho bench validate FILE` | Check a result against `ohho.bench/v1` |
+| `ohho bench launch --backend vllm --model ID --dry-run` | Print the external engine command as JSON |
+| `ohho bench version --backend llama-cpp` | Print the engine version, or a clear error when it is not installed |
+| `ohho bench llm --endpoint URL --model ID --output FILE` | Measure TTFT, inter-token latency, tokens/s, and request throughput |
+| `ohho bench --mode generate --target PROFILE` | TTFT, TPOT, tokens/s, concurrency, and 4-bit vs FP16 |
+
+Backends are `vllm`, `sglang`, `tensorrt-llm`, and `llama-cpp`. They are
+external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
 
 ## Training recipes
 
 | Command | Description |
 |---------|-------------|
-| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). |
+| `ohho train <recipe.yaml> [--set k=v]` | Validate and run an `ohho.recipe/v1` recipe. ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). ACT and Diffusion Policy parameters are in [`train/il-recipes.md`](train/il-recipes.md). Exit codes and the JSON-line progress stream are in [`train/recipes.md`](train/recipes.md). An optional `qat` block is described in [`train/qat.md`](train/qat.md). |
 | `ohho run show <run-dir> [--json]` | Print the `ohho.run/v1` manifest in that directory. `--json` prints the whole document. The human summary is the console run page. See [`train/run-manifest.md`](train/run-manifest.md). |
 | `ohho run rerun <id> [--output DIR] [--json]` | Re-run that manifest's resolved recipe into a new directory and compare final metrics. `<id>` is the run directory or `run_manifest.json`. Exit 0 when the final metrics match exactly. See [`train/determinism.md`](train/determinism.md). |
+| `ohho run clone <run> [--set k=v ...] [--dest DIR]` | Write a new run config from that run's resolved recipe. `--set` is repeatable, dotted, and typed like `ohho train`, then validated as `ohho.recipe/v1`. The new manifest records `cloned_from`. Clone does not train. |
+| `ohho run diff <a> <b> [--json]` | Config diff of the two runs' resolved recipes. `--json` is `ohho.run.diff/v1`. Text and JSON both come from `ohho.train.run_clone.diff_run_configs`. |
+| `ohho run retain <path> [--dry-run] [--days N] [--experiment ID] [--json]` | Delete intermediate checkpoints of pruned trials older than N days (default 14). Keeps best, last, logs, eval reports, and pinned or promoted versions. `--dry-run` does not delete. See [`train/artifacts.md`](train/artifacts.md). |
+| `ohho run storage <path> [--experiment ID] [--json]` | Print bytes used by one run or by each run under a directory. |
 
 ## Simulation services
 
@@ -81,7 +117,38 @@ With `--mock`, endpoints include `GET /health`, `POST /load_model`, and `POST /p
 | `ohho sim-serve --backend isaac\|mujoco` | Exit non-zero with `not built` |
 | `ohho sim-loop [--mock]` | Record → validate → train → serve → eval on CPU (see README) |
 | `ohho sim-demo --sim --fast` | Scripted Go2 sim demo and eval log (simulation only; see [`sim-demo.md`](sim-demo.md)) |
+| `ohho eval <checkpoint> --suite gazebo-nav-regression` | Seeded sim episodes and an `ohho.eval/v1` report (see [`eval.md`](eval.md)) |
 | `ohho selftest --sim` | Bench diagnostics against simulated hardware (CI-safe) |
+
+## Dataset versions
+
+`ohho dataset` builds an immutable, content-hashed LeRobot dataset from local
+episodes. The version record (query, filters, split, seed, augmentation,
+content hash, stats, licence) is stored under the version directory. The
+content hash covers the episode rows and the split and augmentation config.
+Pin freezes that directory; a later edit allocates a new version id. Stats
+printed by `ohho dataset stats` are the block stored on the version.
+`--split-strategy` groups episodes by episode, session/day, task, or scene.
+Image crop, colour jitter, blur, temporal stride, and per-camera toggles are
+stored for train time. See [`dataset-versions.md`](dataset-versions.md).
+
+| Command | Description |
+|---------|-------------|
+| `ohho dataset build --source PATH [--source PATH] [--store DIR]` | Materialise a version from local episodes |
+| `ohho dataset pin VERSION [--store DIR]` | Freeze that version |
+| `ohho dataset stats VERSION [--store DIR]` | Print stored episode, frame, and range stats |
+| `ohho dataset import-hf REPO [--revision REV] [--store DIR]` | Import a Hub LeRobot dataset and pin the resolved commit and licence |
+
+`--json` prints the same result as JSON. Paths and the cloud-table mapping are
+in [`dataset-versions.md`](dataset-versions.md). Training code still takes a
+dataset path; `ohho.datasets.resolve_dataset_version` turns a version id into
+that path.
+
+`import-hf` needs the optional `huggingface_hub` package (`pip install
+'ohho-os[datasets]'`). It stores the commit the Hub resolved and the
+dataset-card licence. A non-commercial licence is flagged and printed as
+`warning: licence … is non-commercial`. Episode, run, and model edges are in
+[`dataset-lineage.md`](dataset-lineage.md).
 
 ## Smoke tests
 

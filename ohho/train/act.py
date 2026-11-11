@@ -13,12 +13,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
+from ..model_safety import (
+    UnsafeModelFile,
+    ensure_torch_weights_allowed,
+    managed_worker_mode,
+)
 from .determinism import (
     dataloader_kwargs,
     deterministic_algorithms,
     reseed_runtime,
 )
 from .il.progress import ValTracker, validation_due
+from .precision import PrecisionSession, capabilities_for, require_precision
 
 try:
     import torch
@@ -173,6 +179,7 @@ def train_act(
     dim_feedforward: int = 128,
     latent_dim: int = 16,
     kl_weight: float = 10.0,
+    precision: str = "fp32",
     mock: bool = False,
     log_every: int = 25,
     val_every: int | None = None,
@@ -185,7 +192,14 @@ def train_act(
     seed: int | None = None,
     **kwargs: Any,
 ) -> str:
-    """Train a TinyACTPolicy on a LeRobot v2.0 dataset on CPU."""
+    """Train a TinyACTPolicy on a LeRobot v2.0 dataset.
+
+    ``precision`` is ``fp32``, ``fp16`` (CUDA GradScaler), ``bf16``, or
+    ``fp8`` (Transformer Engine). The check runs before the step loop.
+    ``qat``, when passed, runs quantisation-aware calibration and fine-tune
+    after that loop. The saved ``policy.pt`` stays fp32 master weights.
+    """
+    qat_block = kwargs.pop("qat", None)
     out = Path(output_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
 
@@ -205,6 +219,7 @@ def train_act(
             "policy": "act",
             "mock": True,
             "device": device,
+            "precision": precision,
             "state_dim": state_dim,
             "action_dim": action_dim,
             "chunk_size": chunk_size,
@@ -212,6 +227,8 @@ def train_act(
             "loss_curve": loss_curve,
             "final_loss": loss_curve[-1][1],
         }
+        if qat_block is not None:
+            config["qat"] = _qat_report_without_running(qat_block)
         with open(out / "config.json", "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         with open(out / "metrics.json", "w", encoding="utf-8") as f:
@@ -229,6 +246,12 @@ def train_act(
             "Training ACT policy requires torch: pip install 'ohho-os[train]'. "
             "Use mock=True for the dependency-free sim loop."
         )
+
+    if device == "auto":
+        from ohho.hardware import resolve_device
+
+        device = resolve_device("auto")
+    plan = require_precision(precision, capabilities_for(device, precision))
 
     all_states: List[List[float]] = []
     all_action_chunks: List[List[List[float]]] = []
@@ -258,6 +281,8 @@ def train_act(
             state_dim=state_dim,
             action_dim=action_dim,
             device=device,
+            plan=plan,
+            qat_block=qat_block,
             train_steps=train_steps,
             batch_size=batch_size,
             lr=lr,
@@ -289,6 +314,8 @@ def _train_act_body(
     state_dim: int,
     action_dim: int,
     device: str,
+    plan: Any,
+    qat_block: Any,
     train_steps: int,
     batch_size: int,
     lr: float,
@@ -349,6 +376,8 @@ def _train_act_body(
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    session = PrecisionSession(plan)
+    session.begin()
 
     loss_curve: List[Tuple[int, float]] = []
     validation_curve: List[Tuple[int, float]] = []
@@ -362,14 +391,15 @@ def _train_act_body(
             batch_a = batch_a.to(dev)
 
             optimizer.zero_grad()
-            pred_a, mu, logvar = model(batch_s, batch_a)
-            assert mu is not None and logvar is not None
-            total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
-            total_loss.backward()
-            optimizer.step()
+            with session.autocast():
+                pred_a, mu, logvar = model(batch_s, batch_a)
+                assert mu is not None and logvar is not None
+                total_loss, _l1, _kl = model.compute_loss(pred_a, batch_a, mu, logvar)
+            session.backward(total_loss)
+            session.optimizer_step(optimizer)
 
             if step % log_every == 0 or step == train_steps - 1:
-                loss_val = round(float(total_loss.item()), 4)
+                loss_val = round(float(total_loss.detach().float().item()), 4)
                 loss_curve.append((step, loss_val))
 
             step += 1
@@ -407,6 +437,16 @@ def _train_act_body(
                     break
             if step >= train_steps:
                 break
+    stats = session.end(step)
+    qat_report = _run_qat_phases(
+        model,
+        qat_block,
+        loader=loader,
+        device=dev,
+        lr=lr,
+        example=tensor_s[:1].to(dev),
+        output_dir=out,
+    )
 
     completed_steps = step
     torch.save(model.state_dict(), out / "policy.pt")
@@ -415,6 +455,9 @@ def _train_act_body(
         "policy": "act",
         "mock": False,
         "device": device,
+        "precision": plan.precision,
+        "loss_scaling": plan.loss_scaling,
+        "precision_backend": plan.backend,
         "state_dim": state_dim,
         "action_dim": action_dim,
         "chunk_size": chunk_size,
@@ -434,21 +477,30 @@ def _train_act_body(
         "loss_curve": loss_curve,
         "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
+    if qat_report is not None:
+        config["qat"] = qat_report
     with open(out / "config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+    metrics: dict[str, Any] = {
+        "loss_curve": loss_curve,
+        "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
+        "train_steps": train_steps,
+        "completed_steps": completed_steps,
+        "stopped_early": stopped_early,
+        "precision": plan.precision,
+        "loss_scaling": plan.loss_scaling,
+        "precision_backend": plan.backend,
+        "throughput_steps_per_s": stats["throughput_steps_per_s"],
+        "peak_memory_bytes": stats["peak_memory_bytes"],
+    }
+    if qat_report is not None:
+        metrics["qat"] = qat_report
+    if last_val is not None:
+        metrics["validation_loss"] = last_val
+        metrics["validation_curve"] = validation_curve
     with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        metrics_body: Dict[str, Any] = {
-            "loss_curve": loss_curve,
-            "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
-            "train_steps": train_steps,
-            "completed_steps": completed_steps,
-            "stopped_early": stopped_early,
-            "deterministic": bool(deterministic),
-        }
-        if last_val is not None:
-            metrics_body["validation_loss"] = last_val
-            metrics_body["validation_curve"] = validation_curve
-        json.dump(metrics_body, f, indent=2)
+        metrics["deterministic"] = bool(deterministic)
+        json.dump(metrics, f, indent=2)
 
     return str(out)
 
@@ -466,6 +518,73 @@ def _encoder(layer: Any, num_layers: int, nested_tensor: bool) -> Any:
     except TypeError:
         return nn.TransformerEncoder(layer, num_layers=num_layers)
 
+
+class _BatchCycle:
+    """Walk a dataloader forever. QAT phases are short; the set is small."""
+
+    def __init__(self, loader: Any, device: Any) -> None:
+        self.loader = loader
+        self.device = device
+        self._iter = iter(loader)
+
+    def next(self) -> tuple[Any, Any]:
+        try:
+            state, action = next(self._iter)
+        except StopIteration:
+            self._iter = iter(self.loader)
+            state, action = next(self._iter)
+        return state.to(self.device), action.to(self.device)
+
+
+def _qat_report_without_running(block: Any) -> dict[str, Any]:
+    from ohho.compression.qat import spec_from_mapping
+
+    report = spec_from_mapping(block).to_dict()
+    report["finetune_loss"] = None
+    report["onnx_path"] = None
+    report["ran"] = False
+    return report
+
+
+def _run_qat_phases(
+    model: Any,
+    block: Any,
+    *,
+    loader: Any,
+    device: Any,
+    lr: float,
+    example: Any,
+    output_dir: Path,
+) -> dict[str, Any] | None:
+    """Calibrate and fine-tune when the recipe passed a ``qat`` block."""
+    if block is None:
+        return None
+    from ohho.compression.qat import apply_qat, spec_from_mapping
+
+    spec = spec_from_mapping(block)
+    cycle = _BatchCycle(loader, device)
+
+    def forward() -> None:
+        state, action = cycle.next()
+        model(state, action)
+
+    def loss_fn() -> Any:
+        state, action = cycle.next()
+        pred, mu, logvar = model(state, action)
+        assert mu is not None and logvar is not None
+        total, _l1, _kl = model.compute_loss(pred, action, mu, logvar)
+        return total
+
+    export_path = output_dir / "qdq.onnx" if spec.export_onnx else None
+    return apply_qat(
+        model,
+        spec,
+        calibration_forwards=forward,
+        loss_fn=loss_fn,
+        lr=lr,
+        export_path=export_path,
+        export_example=example,
+    )
 
 def _split_act_tensors(
     states: Any, actions: Any, val_every: int | None, val_fraction: float
@@ -511,6 +630,8 @@ def load_act_checkpoint(
             config = json.load(f)
 
     pt_file = p / "policy.pt" if (p / "policy.pt").exists() else p
+    if pt_file.is_file() and pt_file.suffix.lower() in {".pt", ".pth", ".bin"}:
+        ensure_torch_weights_allowed(pt_file)
     if not TORCH_AVAILABLE or not pt_file.is_file():
         return None, config
 
@@ -527,7 +648,16 @@ def load_act_checkpoint(
         kl_weight=config.get("kl_weight", 10.0),
     )
     dev = torch.device(device)
-    state_dict = torch.load(pt_file, map_location=dev, weights_only=True)
+    try:
+        state_dict = torch.load(pt_file, map_location=dev, weights_only=True)
+    except Exception as exc:
+        if managed_worker_mode():
+            detail = str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__
+            raise UnsafeModelFile(
+                "managed workers refuse this checkpoint because "
+                "torch.load(weights_only=True) failed: " + detail[:200]
+            ) from exc
+        raise
     model.load_state_dict(state_dict)
     model.to(dev)
     model.eval()

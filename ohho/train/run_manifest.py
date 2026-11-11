@@ -6,7 +6,8 @@ The file sits in the run directory with the other artifacts.
 
 Database storage is :meth:`RunStore.save` only. This module does not open a
 connection, read credentials, or contact the network. Remote base-weight URIs
-are recorded and are not downloaded.
+are recorded and are not downloaded. ``cloned_from`` is omitted unless
+``ohho run clone`` produced the run.
 """
 
 from __future__ import annotations
@@ -25,6 +26,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from .precision import (
+    PRECISIONS,
+    backend_for,
+    blank_precision_metrics,
+    normalize_peak,
+    normalize_throughput,
+)
 from .schema_validate import validate_instance
 
 SCHEMA_ID = "ohho.run/v1"
@@ -41,6 +49,9 @@ CONSOLE_FIELDS = (
     "finished_at",
     "family",
     "device",
+    "precision",
+    "loss_scaling",
+    "precision_backend",
     "seeds.recipe",
     "seeds.python",
     "seeds.numpy",
@@ -60,6 +71,8 @@ CONSOLE_FIELDS = (
     "library_versions",
     "gpu",
     "final_loss",
+    "precision_metrics",
+    "qat",
     "error",
     "resolved_config",
 )
@@ -172,8 +185,23 @@ class GpuRecord:
 
 
 @dataclass(frozen=True)
+class ClonedFrom:
+    """Source run a cloned config was derived from."""
+
+    run: str
+    manifest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"run": self.run, "manifest": self.manifest}
+
+
+@dataclass(frozen=True)
 class RunManifest:
-    """One ``ohho.run/v1`` document."""
+    """One ``ohho.run/v1`` document.
+
+    ``cloned_from`` is set only for a run written by ``ohho run clone``.
+    Training manifests omit it.
+    """
 
     schema: str
     status: str
@@ -181,6 +209,9 @@ class RunManifest:
     finished_at: str | None
     family: str
     device: str
+    precision: str
+    loss_scaling: bool
+    precision_backend: str
     resolved_config: dict[str, Any]
     seeds: SeedRecord
     git: GitState
@@ -196,17 +227,23 @@ class RunManifest:
     checkpoint_dir: str | None
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
+    precision_metrics: dict[str, Any]
+    qat: dict[str, Any] | None
+    cloned_from: ClonedFrom | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON object, with keys in console-summary order."""
         gpu = None if self.gpu is None else self.gpu.to_dict()
-        return {
+        document = {
             "schema": self.schema,
             "status": self.status,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "family": self.family,
             "device": self.device,
+            "precision": self.precision,
+            "loss_scaling": self.loss_scaling,
+            "precision_backend": self.precision_backend,
             "resolved_config": self.resolved_config,
             "seeds": self.seeds.to_dict(),
             "git": self.git.to_dict(),
@@ -216,6 +253,7 @@ class RunManifest:
             "library_versions": dict(self.library_versions),
             "gpu": gpu,
             "final_loss": self.final_loss,
+            "precision_metrics": _copy_precision_metrics(self.precision_metrics),
             "error": self.error,
             "recipe_path": self.recipe_path,
             "overrides": list(self.overrides),
@@ -227,7 +265,11 @@ class RunManifest:
                 ),
                 "eval_hooks": list(self.declared_hooks.get("eval_hooks", [])),
             },
+            "qat": _copy_qat(self.qat),
         }
+        if self.cloned_from is not None:
+            document["cloned_from"] = self.cloned_from.to_dict()
+        return document
 
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> RunManifest:
@@ -248,6 +290,9 @@ class RunManifest:
             finished_at=_optional_str(document["finished_at"]),
             family=str(document["family"]),
             device=str(document["device"]),
+            precision=str(document["precision"]),
+            loss_scaling=bool(document["loss_scaling"]),
+            precision_backend=str(document["precision_backend"]),
             resolved_config=dict(document["resolved_config"]),
             seeds=SeedRecord(
                 recipe=seeds["recipe"],
@@ -295,6 +340,9 @@ class RunManifest:
                 "compression_hooks": [str(item) for item in hooks["compression_hooks"]],
                 "eval_hooks": [str(item) for item in hooks["eval_hooks"]],
             },
+            precision_metrics=_copy_precision_metrics(document["precision_metrics"]),
+            qat=_copy_qat(document.get("qat")),
+            cloned_from=_cloned_from(document.get("cloned_from")),
         )
 
 
@@ -307,6 +355,9 @@ class RunCapture:
     overrides: list[str]
     family: str
     device: str
+    precision: str
+    loss_scaling: bool
+    precision_backend: str
     resolved_config: dict[str, Any]
     seeds: SeedRecord
     git: GitState
@@ -318,6 +369,7 @@ class RunCapture:
     gpu: GpuRecord | None
     container_image_digest: str | None
     declared_hooks: dict[str, list[str]]
+    qat: dict[str, Any] | None
 
 
 def schema_path() -> Path:
@@ -358,6 +410,7 @@ def validate_run_manifest(document: Any) -> list[str]:
             not isinstance(error, str) or not error.strip()
         ):
             errors.append("$.error: is required when the run failed or was interrupted")
+    errors.extend(_precision_errors(document))
     return errors
 
 
@@ -534,6 +587,8 @@ def capture_run(
     resolved["device"] = used
     family = recipe.get("family")
     family_id = family if isinstance(family, str) else ""
+    precision = _capture_precision(recipe)
+    loss_scaling, precision_backend = backend_for(precision)
     git = git_state(recipe_file.parent)
     gpu = gpu_snapshot()
     weights_uri, weights_revision, weights_hash = _base_identity(recipe)
@@ -543,6 +598,9 @@ def capture_run(
         overrides=[str(item) for item in overrides],
         family=family_id,
         device=used,
+        precision=precision,
+        loss_scaling=loss_scaling,
+        precision_backend=precision_backend,
         resolved_config=resolved,
         seeds=collect_seeds(recipe),
         git=GitState(commit=git["commit"], dirty=bool(git["dirty"]), root=git["root"]),
@@ -554,6 +612,7 @@ def capture_run(
         gpu=None if gpu is None else GpuRecord(**gpu),
         container_image_digest=container_image_digest(),
         declared_hooks=declared_hooks(recipe),
+        qat=_qat_from_recipe(recipe),
     )
 
 
@@ -568,6 +627,8 @@ def manifest_from_capture(
     final_loss: Any,
     base_weights_loaded: bool,
     device: str | None = None,
+    throughput_steps_per_s: Any = None,
+    peak_memory_bytes: Any = None,
 ) -> RunManifest:
     """Build a manifest from a start snapshot plus the outcome fields."""
     used = device.strip() if isinstance(device, str) and device.strip() else ""
@@ -595,6 +656,9 @@ def manifest_from_capture(
         finished_at=finished_at,
         family=capture.family,
         device=used,
+        precision=capture.precision,
+        loss_scaling=capture.loss_scaling,
+        precision_backend=capture.precision_backend,
         resolved_config=resolved,
         seeds=capture.seeds,
         git=git,
@@ -618,6 +682,12 @@ def manifest_from_capture(
             "compression_hooks": list(capture.declared_hooks["compression_hooks"]),
             "eval_hooks": list(capture.declared_hooks["eval_hooks"]),
         },
+        precision_metrics=blank_precision_metrics(
+            capture.precision,
+            normalize_throughput(throughput_steps_per_s),
+            normalize_peak(peak_memory_bytes),
+        ),
+        qat=_copy_qat(capture.qat),
     )
 
 
@@ -712,6 +782,9 @@ def format_run_text(document: Mapping[str, Any]) -> str:
         f"finished_at: {_format_value(document.get('finished_at'))}",
         f"family: {_format_value(document.get('family'))}",
         f"device: {_format_value(document.get('device'))}",
+        f"precision: {_format_value(document.get('precision'))}",
+        f"loss_scaling: {_format_value(document.get('loss_scaling'))}",
+        f"precision_backend: {_format_value(document.get('precision_backend'))}",
     ]
     for key in ("recipe", "python", "numpy", "torch", "pythonhashseed", "extra"):
         lines.append(f"seeds.{key}: {_format_value(seeds.get(key))}")
@@ -732,6 +805,9 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             + " ".join(f"{key}={versions[key]}" for key in sorted(versions)),
             "gpu: " + _format_gpu(document.get("gpu")),
             f"final_loss: {_format_value(document.get('final_loss'))}",
+            "precision_metrics: "
+            + _format_precision_metrics(document.get("precision_metrics")),
+            f"qat: {_format_value(document.get('qat'))}",
             f"error: {_format_value(document.get('error'))}",
             "resolved_config: "
             + json.dumps(
@@ -1045,6 +1121,92 @@ def _format_gpu(value: Any) -> str:
     return " ".join(
         f"{key}={_format_value(value.get(key))}" for key in ("name", "driver", "cuda")
     )
+
+
+def _cloned_from(value: Any) -> ClonedFrom | None:
+    if value is None:
+        return None
+    return ClonedFrom(run=str(value["run"]), manifest=str(value["manifest"]))
+
+
+def _format_precision_metrics(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "null"
+    parts: list[str] = []
+    for name in PRECISIONS:
+        slot = value.get(name)
+        if not isinstance(slot, dict):
+            parts.append(f"{name}=null")
+            continue
+        throughput = _format_value(slot.get("throughput_steps_per_s"))
+        peak = _format_value(slot.get("peak_memory_bytes"))
+        parts.append(
+            f"{name} throughput_steps_per_s={throughput} peak_memory_bytes={peak}"
+        )
+    return " ".join(parts)
+
+
+def _qat_from_recipe(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    from ohho.compression.qat import settings_from_recipe
+
+    return settings_from_recipe(recipe)
+
+
+def _copy_qat(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return json.loads(json.dumps(dict(value)))
+
+
+def _capture_precision(recipe: Mapping[str, Any]) -> str:
+    precision = recipe.get("precision", "fp32")
+    if isinstance(precision, str) and precision in PRECISIONS:
+        return precision
+    return "fp32"
+
+
+def _copy_precision_metrics(raw: Mapping[str, Any]) -> dict[str, Any]:
+    copied: dict[str, Any] = {}
+    for name in PRECISIONS:
+        slot = raw.get(name) if isinstance(raw, Mapping) else None
+        if not isinstance(slot, dict):
+            copied[name] = None
+            continue
+        copied[name] = {
+            "throughput_steps_per_s": slot.get("throughput_steps_per_s"),
+            "peak_memory_bytes": slot.get("peak_memory_bytes"),
+        }
+    return copied
+
+
+def _precision_errors(document: Mapping[str, Any]) -> list[str]:
+    precision = document.get("precision")
+    if precision not in PRECISIONS:
+        return []
+    errors: list[str] = []
+    loss_scaling, backend = backend_for(str(precision))
+    if document.get("loss_scaling") is not loss_scaling:
+        errors.append(
+            "$.loss_scaling: must be true for fp16 and false for fp32, bf16, and fp8"
+        )
+    if document.get("precision_backend") != backend:
+        errors.append("$.precision_backend: does not match precision")
+    metrics = document.get("precision_metrics")
+    if not isinstance(metrics, dict):
+        return errors
+    for name in PRECISIONS:
+        value = metrics.get(name)
+        if name == precision:
+            if not isinstance(value, dict):
+                errors.append(
+                    f"$.precision_metrics.{name}: record throughput and peak memory "
+                    "for the precision this run used"
+                )
+        elif value is not None:
+            errors.append(
+                f"$.precision_metrics.{name}: must be null for a {precision} run"
+            )
+    return errors
 
 
 def _optional_str(value: Any) -> str | None:

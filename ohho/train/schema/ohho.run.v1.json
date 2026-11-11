@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/ohho.run/v1.json",
   "title": "ohho.run/v1",
-  "description": "Reproducibility record for one training run. ohho train writes this file at run start and finalises it when the run ends. The console run page renders the summary fields documented in docs/train/run-manifest.md.",
+  "description": "Reproducibility record for one training run. ohho train writes this file at run start and finalises it when the run ends. The console run page renders the summary fields documented in docs/train/run-manifest.md. cloned_from is present when ohho run clone wrote this run.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,6 +12,10 @@
     "finished_at",
     "family",
     "device",
+    "precision",
+    "loss_scaling",
+    "precision_backend",
+    "precision_metrics",
     "resolved_config",
     "seeds",
     "git",
@@ -57,6 +61,32 @@
       "description": "Device the trainer used.",
       "type": "string",
       "minLength": 1
+    },
+    "precision": {
+      "description": "Numeric format used for the training step.",
+      "type": "string",
+      "enum": ["fp32", "fp16", "bf16", "fp8"]
+    },
+    "loss_scaling": {
+      "description": "True when fp16 training applies GradScaler. False for fp32, bf16, and fp8.",
+      "type": "boolean"
+    },
+    "precision_backend": {
+      "description": "fp32, torch.amp for fp16 and bf16, or transformer_engine for fp8.",
+      "type": "string",
+      "enum": ["fp32", "torch.amp", "transformer_engine"]
+    },
+    "precision_metrics": {
+      "description": "Throughput and peak memory keyed by precision. Only the precision that ran is an object. The others are null.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fp32", "fp16", "bf16", "fp8"],
+      "properties": {
+        "fp32": {"$ref": "#/$defs/precision_metric"},
+        "fp16": {"$ref": "#/$defs/precision_metric"},
+        "bf16": {"$ref": "#/$defs/precision_metric"},
+        "fp8": {"$ref": "#/$defs/precision_metric"}
+      }
     },
     "resolved_config": {
       "description": "Recipe after overrides and defaults, with the device the run used.",
@@ -179,6 +209,94 @@
         "compression_hooks": {"type": "array", "items": {"type": "string"}},
         "eval_hooks": {"type": "array", "items": {"type": "string"}}
       }
+    },
+    "cloned_from": {
+      "description": "Source run this config was cloned from. Omitted when the run was not cloned. Clone does not start training.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "manifest"],
+      "properties": {
+        "run": {
+          "description": "Directory of the source run.",
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest": {
+          "description": "Path of the source run_manifest.json.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "qat": {
+      "description": "Resolved quantisation-aware training settings from the recipe. Null when the recipe has no qat block. Not required, so a manifest written without this field stays valid.",
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/qat_settings"}
+      ]
+    }
+  },
+  "$defs": {
+    "qat_settings": {
+      "description": "Bit width, granularity, symmetry, and phase lengths for one QAT run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "bit_width",
+        "scope",
+        "granularity",
+        "activation_granularity",
+        "symmetric",
+        "activation_symmetric",
+        "calibration_steps",
+        "finetune_steps",
+        "export_onnx"
+      ],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "bit_width": {"type": "integer", "enum": [8, 4]},
+        "scope": {
+          "type": "string",
+          "enum": ["weight_only", "weight_and_activation"]
+        },
+        "granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"]
+        },
+        "activation_granularity": {
+          "type": "string",
+          "enum": ["per_tensor", "per_channel"]
+        },
+        "symmetric": {"type": "boolean"},
+        "activation_symmetric": {"type": "boolean"},
+        "calibration_steps": {"type": "integer", "minimum": 0},
+        "finetune_steps": {"type": "integer", "minimum": 0},
+        "export_onnx": {"type": "boolean"}
+      }
+    },
+    "precision_metric": {
+      "description": "Throughput and peak memory for one precision, or null when that precision was not used.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["throughput_steps_per_s", "peak_memory_bytes"],
+          "properties": {
+            "throughput_steps_per_s": {
+              "description": "Training steps per second over the step loop. Null until the loop finishes.",
+              "type": ["number", "null"],
+              "minimum": 0
+            },
+            "peak_memory_bytes": {
+              "description": "CUDA allocator peak, or the process resident set on CPU and MPS. Null when it was not sampled.",
+              "type": ["integer", "null"],
+              "minimum": 0
+            }
+          }
+        }
+      ]
     }
   }
 }
