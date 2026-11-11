@@ -60,6 +60,13 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   weight-quant backends. GPU-only paths fail fast when TensorRT, CUDA, or the
   quant package is missing. Writes `manifest.json` (`ohho.optimize_manifest.v1`).
   Docs: [`docs/optimize.md`](docs/optimize.md).
+- **INT8 calibration cache (OHH-467)** — TensorRT 10 and newer build explicit
+  Q/DQ; TensorRT 8 and 9 keep the implicit entropy calibrator on
+  `config.int8_calibrator`. `--calib-max-images` caps how many samples are
+  read. The cache sidecar stores the model sha256 and preprocessing config,
+  is reused on the next build, and is invalidated when either changes. INT8
+  without calibration data is refused unless the ONNX graph already has Q/DQ
+  nodes.
 - **`ohho sweep plan`** — `ohho.sweep/v1` search-space schema (package data) and an
   expander that turns it into trial recipes. Each trial is the opaque base
   recipe plus dotted `path=value` overrides (the same form as
