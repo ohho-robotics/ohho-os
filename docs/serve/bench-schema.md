@@ -43,8 +43,49 @@ git ids and full sha256 digests both fit.
 
 Optional fields already named in the schema (`run.id`, `latency.samples`,
 `throughput.batch_size`, `accuracy.metrics`, resource gauges on `telemetry`,
-host `platform` / `arch` / `cpu` / `accelerator`, and extra version keys)
-may be omitted. Extra version keys are strings.
+host `platform` / `arch` / `cpu` / `accelerator`, the `llm` block, and extra
+version keys) may be omitted. Extra version keys are strings.
+
+## LLM serving block
+
+`llm` is optional. The parent document stays `ohho.bench/v1`. When the object
+is present its own id is `llm.schema` = `ohho.bench.llm/v1`. That id versions
+the block. A breaking change of the block uses a new id. It does not remove
+or retype a v1 field.
+
+| Path | Required on `llm` | Meaning |
+|---|---|---|
+| `llm.schema` | yes | Constant `ohho.bench.llm/v1`. |
+| `llm.backend` | yes | Serving backend id. |
+| `llm.concurrency` | yes | Maximum in-flight requests. |
+| `llm.ttft` | yes | Time to first token. Same fields as a latency distribution. |
+| `llm.inter_token` | yes | Gap between later streamed chunks. |
+| `llm.tokens_per_s` | yes | Output chunks divided by wall-clock seconds. |
+| `llm.requests_per_s` | yes | Completed requests divided by wall-clock seconds. |
+| `llm.tpot` | no | Time per output token. Same fields as `llm.ttft`. |
+| `llm.e2e` | no | End-to-end generate latency for the primary cell. |
+| `llm.tokens_per_request_s` | no | Mean output tokens per second of one request. |
+| `llm.points` | no | One row per precision, prompt length, image size, and concurrency. An `llm --sweep` run stores one row per measured cell. |
+| `llm.precisions` | no | Precision comparison at the primary prompt, image, and concurrency. |
+| `llm.sweep` | no | Grid that was varied. `engine_launched` is false when the command did not start an engine. |
+| `llm.pareto` | no | Non-dominated cells: p95 TTFT against tokens/s, within one workload. |
+| `llm.recommendation` | no | Highest tokens/s at or under `target_p95_ttft_ms` for the shared-prefix workload. `met` is false when none qualify. |
+| `llm.recommendations` | no | The same choice, one row per workload. |
+| `llm.skipped` | no | Options that were not measured, each with a reason. A skip is not a failed run. |
+| `llm.agreement` | no | Top-1 action-token agreement against the FP16 sequence. |
+| `llm.peak_vram_mb` | no | Weight or device memory for the primary precision, in MiB. |
+| `llm.vram_source` | no | How `peak_vram_mb` was obtained. |
+
+The load generator also writes `latency.stages` named `ttft` and
+`inter_token`, and `throughput.unit` of `tokens/s`. `accuracy.primary` for
+that generator is `request_completion_rate` (requests that returned a token
+divided by requests sent). It is not a model-quality score.
+
+`run.model_sha` is the sha256 of the model file when that file is local and
+at most 8 MiB. Otherwise it is the sha256 of the model identifier, and
+`llm.model_sha_of` is `identifier`. `run.artifact_sha_of` =
+`serving-setup` means the artifact digest hashes the backend, version,
+precision, and model id rather than a package file.
 
 The harness (see [`bench.md`](bench.md)) adds more optional v1 fields. None of
 them are required, and none change the type of a field v1 already defined:
@@ -61,6 +102,20 @@ them are required, and none change the type of a field v1 already defined:
 | `comparison` | Per-metric delta against a baseline result. |
 | `gates` | SLO and regression checks. `passed` is false when any check failed. |
 | `batches` | One latency report per requested batch size. |
+| `pipeline` | Camera-to-action block. Absent on an artifact-only run. Version `ohho.bench.pipeline/v1`. |
+| `environment.world` | `sim`, `recorded`, or `hardware` on a pipeline run. |
+
+`pipeline` is optional. Required keys inside it, when the object is present,
+are `version` (`ohho.bench.pipeline/v1`), `world`, `source`, `target_hz`,
+`achieved_hz`, `rate_sustained`, `dropped_frames`, `frames_presented`,
+`frames_published`, `jitter_ms`, `device`, and `live_robot`. `achieved_hz` is
+the paced control rate. `latency.achievable_hz` is still the rate implied by
+the mean latency. `jitter_ms` matches `latency.std`. Stage rows for a pipeline
+run are `decode`, `preprocess`, `h2d`, `inference`, `d2h`, `postprocess`, and
+`publish`. `live_robot` is false: a hardware label replays a recording and
+does not command a robot. Adding this object does not change ohho.bench/v1.
+A break inside the block is a new pipeline version and a converter, not a
+silent edit of these fields.
 
 `telemetry.gpu_util_percent` and `telemetry.gpu_power_w` are additional
 properties and are JSON `null` when a GPU sample is not available. The typed
@@ -68,6 +123,13 @@ gauges `accelerator_util_mean` and `power_w_mean` stay non-null numbers, so
 they are omitted in that case. Making those gauges nullable would be an
 `ohho.bench/v2` change. `telemetry.memory_mb_max` is the peak process
 memory when it can be read.
+
+`telemetry.sensors` is an additional object written by the harness. Power,
+energy, device memory, temperature, and clocks inside it are JSON `null`
+when no source reported them, and `reason` says why. `throttling_events` is
+an array. `sustained` is an additional top-level object present only for
+`--sustained`. Both stay on v1 because they do not change a field v1 already
+defined.
 
 Checked-in results:
 

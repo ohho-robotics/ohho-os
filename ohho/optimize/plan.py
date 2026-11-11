@@ -22,6 +22,7 @@ from ohho.targets.schema import (
 )
 
 from ohho.optimize.errors import OptimizeError
+from ohho.optimize.qdq import MISSING_CALIBRATION, model_has_qdq
 
 _QUANT = frozenset({"awq", "gptq", "bitsandbytes", "fp8", "ort-int8"})
 _WEIGHT = frozenset({"awq", "gptq", "bitsandbytes"})
@@ -67,12 +68,20 @@ class OptimizeRequest:
     calib_data: str | None = None
     calib_batch: int | None = None
     calib_cache: str | None = None
+    calib_max_images: int | None = None
     ort_ep: str | None = None
     quant: str | None = None
     workspace_gb: float | None = None
     max_batch: int = 1
     dynamic_batch: bool = False
     submodule: str | None = None
+    allow_parity_fail: bool = False
+    parity_inputs: str = "random"
+    parity_n: int = 256
+    parity_seed: int = 0
+    parity_mean_abs: float | None = None
+    parity_thresholds: str | None = None
+    parity_family: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,8 +154,22 @@ def build_plan(request: OptimizeRequest) -> OptimizePlan:
     _require_text(request.out_dir, "--out")
     if request.max_batch < 1:
         raise OptimizeError("--max-batch must be at least 1.")
+    if request.parity_n < 1:
+        raise OptimizeError("--parity-n must be at least 1.")
+    if type(request.parity_seed) is not int:
+        raise OptimizeError("--parity-seed must be an integer.")
+    if not isinstance(request.parity_inputs, str) or not request.parity_inputs.strip():
+        raise OptimizeError("--parity-inputs is required.")
+    if request.parity_mean_abs is not None and (
+        isinstance(request.parity_mean_abs, bool)
+        or not isinstance(request.parity_mean_abs, (int, float))
+        or float(request.parity_mean_abs) < 0
+    ):
+        raise OptimizeError("--parity-mean-abs must be >= 0.")
     if request.calib_batch is not None and request.calib_batch < 1:
         raise OptimizeError("--calib-batch must be at least 1.")
+    if request.calib_max_images is not None and request.calib_max_images < 1:
+        raise OptimizeError("--calib-max-images must be at least 1.")
     if request.quant is not None and request.quant not in _QUANT:
         known = ", ".join(sorted(_QUANT))
         raise OptimizeError(
@@ -304,24 +327,30 @@ def _reject_calibration_on_other_precisions(
         request.calib_data is not None
         or request.calib_cache is not None
         or request.calib_batch is not None
+        or request.calib_max_images is not None
     )
     if asked and precision != "INT8":
         raise OptimizeError(
-            "Calibration data, cache, and batch size apply only to INT8 "
-            "TensorRT builds."
+            "Calibration data, cache, batch size, and max images apply only to "
+            "INT8 TensorRT builds."
         )
 
 
 def _calib_batch(request: OptimizeRequest, precision: str) -> int | None:
     if precision != "INT8" or not request.tensorrt:
         return None
-    cache_ready = bool(request.calib_cache) and Path(str(request.calib_cache)).is_file()
-    if not request.calib_data and not cache_ready:
+    batch = request.calib_batch or 1
+    if request.calib_max_images is not None and request.calib_max_images < batch:
         raise OptimizeError(
-            "INT8 TensorRT needs --calib-data DIR or an existing --calib-cache "
-            "file. The entropy calibrator is attached before the engine is built."
+            "--calib-max-images must be at least --calib-batch "
+            f"({request.calib_max_images} < {batch})."
         )
-    return request.calib_batch or 1
+    cache_ready = bool(request.calib_cache) and Path(str(request.calib_cache)).is_file()
+    if request.calib_data or cache_ready:
+        return batch
+    if model_has_qdq(request.model):
+        return request.calib_batch
+    raise OptimizeError(MISSING_CALIBRATION)
 
 
 def _reject_unapplied_precision(

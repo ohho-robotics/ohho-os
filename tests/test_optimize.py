@@ -1,4 +1,4 @@
-"""ONNX, TensorRT, ORT, and weight-quant engine (OHH-429)."""
+"""ONNX, TensorRT, ORT, and weight-quant engine (OHH-429, OHH-467)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 import types
@@ -37,8 +38,16 @@ from ohho.optimize import (
     register_exporter,
     schema_text,
 )
-from ohho.optimize.calibrator import EmptyBatchSource
+from ohho.optimize.calibrator import (
+    EmptyBatchSource,
+    cache_sidecar_path,
+    entropy_scale,
+    preprocessing_config,
+    preprocessing_config_from_dir,
+)
+from ohho.optimize.qdq import insert_qdq, quantization_mode
 from ohho.optimize.exporters import (
+    describe_export,
     exporter_names,
     select_submodule,
     unregister_exporter,
@@ -46,6 +55,7 @@ from ohho.optimize.exporters import (
 from ohho.optimize.manifest import SCHEMA_ID, manifest_problems
 from ohho.optimize.models import (
     REFERENCE_ACT,
+    REFERENCE_MLP,
     LoadedModel,
     build_reference_act,
     build_reference_mlp,
@@ -244,9 +254,15 @@ class _Builder:
         self.api.last_config = config
         calibrator = config.int8_calibrator
         if calibrator is not None and self.api.invoke_calibrator:
-            batch = calibrator.get_batch(["input"])
-            self.api.last_batch = batch
-            calibrator.write_calibration_cache(b"cache-bytes")
+            cached = calibrator.read_calibration_cache()
+            self.api.last_cache_read = cached
+            if cached:
+                self.api.cache_reuses += 1
+            else:
+                self.api.calibration_runs += 1
+                batch = calibrator.get_batch(["input"])
+                self.api.last_batch = batch
+                calibrator.write_calibration_cache(b"cache-bytes")
         return b"engine-bytes"
 
 
@@ -269,16 +285,27 @@ class FakeTensorRT:
         self.input_shape = input_shape
         self.last_config = None
         self.last_batch = None
+        self.last_cache_read = None
+        self.last_builder = None
+        self.last_parser = None
+        self.cache_reuses = 0
+        self.calibration_runs = 0
         self.Logger = _Logger
-        self.OnnxParser = _Parser
         self.NetworkDefinitionCreationFlag = SimpleNamespace(EXPLICIT_BATCH=0)
         self.MemoryPoolType = SimpleNamespace(WORKSPACE="workspace")
         self.BuilderFlag = SimpleNamespace(FP16="fp16", INT8="int8", FP8="fp8")
         self.IInt8EntropyCalibrator2 = _CalibratorBase
 
+    def OnnxParser(self, network, logger) -> _Parser:
+        parser = _Parser(network, logger)
+        self.last_parser = parser
+        return parser
+
     def Builder(self, logger) -> _Builder:
         del logger
-        return _Builder(self)
+        builder = _Builder(self)
+        self.last_builder = builder
+        return builder
 
 
 class TestImportAndSchema(unittest.TestCase):
@@ -306,6 +333,9 @@ class TestImportAndSchema(unittest.TestCase):
         )
         self.assertEqual(document["properties"]["schema"]["const"], SCHEMA_ID)
         self.assertIn("sha256", document["properties"]["outputs"]["items"]["required"])
+        self.assertIn("calib_max_images", document["properties"]["flags"]["required"])
+        self.assertIn("quantization", document["properties"]["flags"]["required"])
+        self.assertIn("calib_max_images", document["properties"]["inputs"]["required"])
 
     def test_help_lists_the_engine_flags(self) -> None:
         out = io.StringIO()
@@ -323,6 +353,7 @@ class TestImportAndSchema(unittest.TestCase):
             "--calib-data",
             "--calib-batch",
             "--calib-cache",
+            "--calib-max-images",
             "--ort-ep",
             "--quant",
             "--workspace-gb",
@@ -331,6 +362,7 @@ class TestImportAndSchema(unittest.TestCase):
             "--out",
             "--json",
             "--submodule",
+            "--allow-parity-fail",
         ):
             self.assertIn(flag, text)
 
@@ -404,7 +436,62 @@ class TestPlanFailFast(unittest.TestCase):
     def test_int8_tensorrt_requires_calibration_data(self) -> None:
         with self.assertRaises(OptimizeError) as caught:
             build_plan(_request(target="x86-cuda", precision="int8", tensorrt=True))
-        self.assertIn("--calib-data", str(caught.exception))
+        text = str(caught.exception)
+        self.assertIn("--calib-data", text)
+        self.assertIn("Q/DQ", text)
+        self.assertIn("no Q/DQ", text)
+
+    def test_int8_qdq_onnx_does_not_need_calibration_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            onnx = Path(tmp) / "model.onnx"
+            onnx.write_bytes(b"QuantizeLinear\nDequantizeLinear\n")
+            plan = build_plan(
+                _request(
+                    model=str(onnx),
+                    target="x86-cuda",
+                    precision="int8",
+                    tensorrt=True,
+                    out_dir=str(Path(tmp) / "out"),
+                )
+            )
+        self.assertEqual(plan.precision, "INT8")
+        self.assertTrue(plan.build_tensorrt)
+        self.assertIsNone(plan.calib_batch)
+
+    def test_plain_onnx_without_qdq_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            onnx = Path(tmp) / "model.onnx"
+            onnx.write_bytes(b"fake-onnx")
+            with self.assertRaises(OptimizeError) as caught:
+                build_plan(
+                    _request(
+                        model=str(onnx),
+                        target="x86-cuda",
+                        precision="int8",
+                        tensorrt=True,
+                        out_dir=str(Path(tmp) / "out"),
+                    )
+                )
+        self.assertIn("no Q/DQ", str(caught.exception))
+
+    def test_calib_max_images_on_fp32_is_rejected(self) -> None:
+        with self.assertRaises(OptimizeError) as caught:
+            build_plan(_request(calib_max_images=4))
+        self.assertIn("INT8", str(caught.exception))
+
+    def test_calib_max_images_must_cover_the_batch(self) -> None:
+        with self.assertRaises(OptimizeError) as caught:
+            build_plan(
+                _request(
+                    target="x86-cuda",
+                    precision="int8",
+                    tensorrt=True,
+                    calib_data="calib",
+                    calib_batch=8,
+                    calib_max_images=4,
+                )
+            )
+        self.assertIn("--calib-max-images", str(caught.exception))
 
     def test_calibration_flags_on_fp32_are_rejected(self) -> None:
         with self.assertRaises(OptimizeError) as caught:
@@ -581,6 +668,7 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
 
     def test_int8_builder_attaches_the_calibrator(self) -> None:
         trt = FakeTensorRT(input_shape=(-1, 4))
+        trt.__version__ = "8.6.1"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_bins(root / "calib", (4,), 4)
@@ -608,6 +696,7 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
             )
             config = trt.last_config
             self.assertIs(config.int8_calibrator, calibrator)
+            self.assertEqual(quantization_mode(trt), "implicit")
             self.assertIn("int8", config.flags)
             self.assertEqual(config.pool, ("workspace", 256 * (1 << 20)))
             self.assertEqual(config.profiles[0].shapes[0][1][0], 1)
@@ -633,6 +722,356 @@ class TestCalibratorAndTensorRT(unittest.TestCase):
                     trt_module=trt,
                 )
         self.assertIn("calibrator", str(caught.exception))
+        self.assertIn("Q/DQ", str(caught.exception))
+
+    def test_versions_choose_implicit_or_explicit_qdq(self) -> None:
+        self.assertEqual(
+            quantization_mode(SimpleNamespace(__version__="8.6.1")), "implicit"
+        )
+        self.assertEqual(
+            quantization_mode(SimpleNamespace(__version__="9.3.0.post12")), "implicit"
+        )
+        self.assertEqual(quantization_mode(SimpleNamespace()), "implicit")
+        self.assertEqual(
+            quantization_mode(SimpleNamespace(__version__="10.0.1")), "explicit"
+        )
+        self.assertEqual(
+            quantization_mode(SimpleNamespace(__version__="10.9.0.34")), "explicit"
+        )
+
+    def test_tensorrt_10_uses_explicit_qdq_and_skips_the_calibrator(self) -> None:
+        trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 4))
+        trt.__version__ = "10.2.0"
+        trt.NetworkDefinitionCreationFlag = SimpleNamespace(
+            EXPLICIT_BATCH=0, STRONGLY_TYPED=1
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            onnx = Path(tmp) / "model.onnx"
+            onnx.write_bytes(b"QuantizeLinear DequantizeLinear")
+            with self.assertLogs("ohho.optimize", level="INFO") as logs:
+                build_engine(
+                    onnx,
+                    Path(tmp) / "model.engine",
+                    precision="INT8",
+                    workspace_bytes=1024,
+                    max_batch=1,
+                    dynamic_batch=False,
+                    calibrator=None,
+                    trt_module=trt,
+                )
+        self.assertIsNone(trt.last_config.int8_calibrator)
+        self.assertNotIn("int8", trt.last_config.flags)
+        self.assertEqual(trt.last_builder.flags, 1 << 1)
+        self.assertIsNotNone(trt.last_parser)
+        self.assertIn(b"QuantizeLinear", trt.last_parser.data)
+        self.assertTrue(any("explicit Q/DQ" in line for line in logs.output))
+
+    def test_explicit_int8_without_calibration_or_qdq_is_refused(self) -> None:
+        trt = FakeTensorRT(invoke_calibrator=False)
+        trt.__version__ = "10.1.0"
+        with tempfile.TemporaryDirectory() as tmp:
+            onnx = Path(tmp) / "model.onnx"
+            onnx.write_bytes(b"not-quantized")
+            with self.assertRaises(OptimizeError) as caught:
+                build_engine(
+                    onnx,
+                    Path(tmp) / "model.engine",
+                    precision="INT8",
+                    workspace_bytes=1024,
+                    max_batch=1,
+                    dynamic_batch=False,
+                    calibrator=None,
+                    trt_module=trt,
+                )
+        text = str(caught.exception)
+        self.assertIn("Q/DQ", text)
+        self.assertIn("--calib-data", text)
+
+    def test_cache_written_reused_and_invalidated(self) -> None:
+        trt = FakeTensorRT(input_shape=(-1, 4))
+        trt.__version__ = "8.6.1"
+        sha = "a" * 64
+        other = "b" * 64
+        preprocessing = preprocessing_config(shape=(4,), max_images=4)
+        changed = preprocessing_config(shape=(4,), max_images=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_bins(root / "calib", (4,), 4)
+            cache = root / "int8.cache"
+            source = load_calibration_source(
+                root / "calib", batch_size=2, sample_shape=(4,), max_images=4
+            )
+            onnx = root / "model.onnx"
+            onnx.write_bytes(b"fake-onnx")
+
+            def _build(model_sha: str, prep: dict) -> None:
+                calibrator = make_entropy_calibrator(
+                    source,
+                    batch_size=2,
+                    cache_path=cache,
+                    trt_module=trt,
+                    model_sha256=model_sha,
+                    preprocessing=prep,
+                )
+                build_engine(
+                    onnx,
+                    root / "model.engine",
+                    precision="INT8",
+                    workspace_bytes=1024,
+                    max_batch=1,
+                    dynamic_batch=False,
+                    calibrator=calibrator,
+                    trt_module=trt,
+                )
+
+            with self.assertLogs("ohho.optimize", level="INFO") as first:
+                _build(sha, preprocessing)
+            sidecar = json.loads(cache_sidecar_path(cache).read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["model_sha256"], sha)
+            self.assertEqual(sidecar["preprocessing"]["max_images"], 4)
+            self.assertEqual(sidecar["preprocessing"]["shape"], [4])
+            self.assertEqual(sidecar["quantization"], "implicit")
+            self.assertEqual(cache.read_bytes(), b"cache-bytes")
+            self.assertTrue(
+                any("Wrote INT8 calibration cache" in line for line in first.output)
+            )
+            self.assertEqual(trt.calibration_runs, 1)
+            self.assertEqual(trt.cache_reuses, 0)
+
+            trt.last_batch = None
+            with self.assertLogs("ohho.optimize", level="INFO") as second:
+                _build(sha, preprocessing)
+            self.assertTrue(
+                any("Reusing INT8 calibration cache" in line for line in second.output)
+            )
+            self.assertIsNone(trt.last_batch)
+            self.assertEqual(trt.calibration_runs, 1)
+            self.assertEqual(trt.cache_reuses, 1)
+
+            with self.assertLogs("ohho.optimize", level="INFO") as third:
+                _build(other, preprocessing)
+            self.assertTrue(
+                any("model sha256 changed" in line for line in third.output)
+            )
+            self.assertEqual(trt.calibration_runs, 2)
+
+            with self.assertLogs("ohho.optimize", level="INFO") as fourth:
+                _build(other, changed)
+            self.assertTrue(
+                any("preprocessing config changed" in line for line in fourth.output)
+            )
+            self.assertEqual(trt.calibration_runs, 3)
+
+    def test_max_images_limits_samples_and_preprocessing_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_bins(root, (4,), 6)
+            source = load_calibration_source(
+                root, batch_size=2, sample_shape=(4,), max_images=4
+            )
+            self.assertEqual(source.nbatches, 2)
+            with self.assertRaises(OptimizeError) as caught:
+                load_calibration_source(
+                    root, batch_size=4, sample_shape=(4,), max_images=2
+                )
+            self.assertIn("--calib-max-images", str(caught.exception))
+            meta = json.loads((root / "calib.json").read_text(encoding="utf-8"))
+            meta["preprocessing"] = {
+                "mean": [0.5],
+                "std": [0.25],
+                "resize": [8, 8],
+                "layout": "nchw",
+            }
+            (root / "calib.json").write_text(json.dumps(meta), encoding="utf-8")
+            prep = preprocessing_config_from_dir(
+                root, shape=(4,), max_images=4, submodule="vision"
+            )
+            self.assertEqual(prep["mean"], [0.5])
+            self.assertEqual(prep["std"], [0.25])
+            self.assertEqual(prep["resize"], [8, 8])
+            self.assertEqual(prep["layout"], "nchw")
+            self.assertEqual(prep["submodule"], "vision")
+            meta["preprocessing"] = {"crop": 1}
+            (root / "calib.json").write_text(json.dumps(meta), encoding="utf-8")
+            with self.assertRaises(OptimizeError) as caught:
+                load_calibration_source(root, batch_size=2, sample_shape=(4,))
+            self.assertIn("preprocessing", str(caught.exception))
+
+    def test_entropy_scale_is_positive_and_bounded(self) -> None:
+        zeros = array.array("f", [0.0, 0.0, 0.0])
+        self.assertEqual(entropy_scale(zeros), 1.0)
+        values = array.array("f", [1.0, -1.0, 0.5, -0.25, 0.0])
+        scale = entropy_scale(values)
+        self.assertGreater(scale, 0.0)
+        self.assertLessEqual(scale, (1.0 / 127.0) + 1e-12)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("onnx") is not None, "onnx package is not installed"
+    )
+    def test_insert_qdq_adds_quantize_and_dequantize(self) -> None:
+        import onnx
+        from onnx import TensorProto, helper
+
+        weight = helper.make_tensor(
+            "W", TensorProto.FLOAT, [2, 2], [1.0, 0.0, 0.0, 1.0]
+        )
+        graph = helper.make_graph(
+            [helper.make_node("Gemm", ["input", "W"], ["output"])],
+            "gemm",
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 2])],
+            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 2])],
+            [weight],
+        )
+        model = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
+        )
+        rewritten = insert_qdq(model.SerializeToString(), 0.02)
+        parsed = onnx.load_from_string(rewritten)
+        ops = {node.op_type for node in parsed.graph.node}
+        self.assertIn("QuantizeLinear", ops)
+        self.assertIn("DequantizeLinear", ops)
+        self.assertIn("Gemm", ops)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("onnx") is not None, "onnx package is not installed"
+    )
+    def test_tensorrt_10_inserts_qdq_and_reuses_the_scale_cache(self) -> None:
+        from onnx import TensorProto, helper
+
+        weight = helper.make_tensor(
+            "W", TensorProto.FLOAT, [2, 2], [1.0, 0.0, 0.0, 1.0]
+        )
+        graph = helper.make_graph(
+            [helper.make_node("Gemm", ["input", "W"], ["output"])],
+            "gemm",
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 2])],
+            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 2])],
+            [weight],
+        )
+        model = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
+        )
+        trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 2))
+        trt.__version__ = "10.2.0"
+        trt.NetworkDefinitionCreationFlag = SimpleNamespace(
+            EXPLICIT_BATCH=0, STRONGLY_TYPED=1
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            onnx = root / "gemm.onnx"
+            onnx.write_bytes(model.SerializeToString())
+            _write_bins(root / "calib", (2,), 2)
+            cache = root / "int8.cache"
+            request = _request(
+                model=str(onnx),
+                target="x86-cuda",
+                precision="int8",
+                tensorrt=True,
+                calib_data=str(root / "calib"),
+                calib_batch=1,
+                calib_max_images=2,
+                calib_cache=str(cache),
+                out_dir=str(root / "out1"),
+            )
+            with self.assertLogs("ohho.optimize", level="INFO") as first:
+                optimize(request, backends=OptimizeBackends(trt_module=trt, cuda=False))
+            self.assertIsNone(trt.last_config.int8_calibrator)
+            self.assertIsNotNone(trt.last_parser)
+            self.assertIn(b"QuantizeLinear", trt.last_parser.data)
+            self.assertIn(b"DequantizeLinear", trt.last_parser.data)
+            sidecar = json.loads(cache_sidecar_path(cache).read_text(encoding="utf-8"))
+            self.assertEqual(sidecar["quantization"], "explicit")
+            self.assertIsInstance(sidecar["activation_scale"], float)
+            self.assertTrue(
+                any("Wrote INT8 calibration cache" in line for line in first.output)
+            )
+            self.assertTrue(any("explicit Q/DQ" in line for line in first.output))
+            second = _request(
+                model=str(onnx),
+                target="x86-cuda",
+                precision="int8",
+                tensorrt=True,
+                calib_data=str(root / "calib"),
+                calib_batch=1,
+                calib_max_images=2,
+                calib_cache=str(cache),
+                out_dir=str(root / "out2"),
+            )
+            with self.assertLogs("ohho.optimize", level="INFO") as reused:
+                optimize(second, backends=OptimizeBackends(trt_module=trt, cuda=False))
+            self.assertTrue(
+                any("Reusing INT8 calibration cache" in line for line in reused.output)
+            )
+            self.assertFalse(
+                any("Wrote INT8 calibration cache" in line for line in reused.output)
+            )
+            self.assertIsNone(trt.last_config.int8_calibrator)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("onnx") is not None, "onnx package is not installed"
+    )
+    def test_qdq_onnx_engine_does_not_attach_a_calibrator(self) -> None:
+        from onnx import TensorProto, helper
+
+        trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 2))
+        trt.__version__ = "10.2.0"
+        trt.NetworkDefinitionCreationFlag = SimpleNamespace(
+            EXPLICIT_BATCH=0, STRONGLY_TYPED=1
+        )
+        weight = helper.make_tensor(
+            "W", TensorProto.FLOAT, [2, 2], [1.0, 0.0, 0.0, 1.0]
+        )
+        graph = helper.make_graph(
+            [helper.make_node("Gemm", ["input", "W"], ["output"])],
+            "gemm",
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, 2])],
+            [helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 2])],
+            [weight],
+        )
+        model = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=10
+        )
+        qdq_bytes = insert_qdq(model.SerializeToString(), 1.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            onnx = root / "model.onnx"
+            onnx.write_bytes(qdq_bytes)
+            document = optimize(
+                _request(
+                    model=str(onnx),
+                    target="x86-cuda",
+                    precision="int8",
+                    tensorrt=True,
+                    out_dir=str(root / "out"),
+                ),
+                backends=OptimizeBackends(trt_module=trt, cuda=False),
+            )
+        self.assertIsNone(trt.last_config.int8_calibrator)
+        self.assertEqual(document["flags"]["quantization"], "explicit")
+        self.assertIsNone(document["flags"]["calib_max_images"])
+        self.assertIsNone(document["inputs"]["calib_max_images"])
+        roles = {item["role"] for item in document["outputs"]}
+        self.assertEqual(roles, {"onnx", "engine"})
+
+    def test_cli_int8_without_calibration_or_qdq_fails_clearly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _text, err = _run(
+                [
+                    "optimize",
+                    "--model",
+                    "reference-act",
+                    "--target",
+                    "x86-cuda",
+                    "--precision",
+                    "int8",
+                    "--tensorrt",
+                    "--out",
+                    str(Path(tmp) / "out"),
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("--calib-data", err)
+        self.assertIn("Q/DQ", err)
 
     def test_fp16_flag_and_missing_fast_fp16(self) -> None:
         trt = FakeTensorRT(invoke_calibrator=False, input_shape=(-1, 4))
@@ -971,6 +1410,8 @@ class TestOptimizeInt8Wiring(unittest.TestCase):
                 document["execution_provider"], "TensorrtExecutionProvider"
             )
             self.assertEqual(document["flags"]["calib_batch"], 2)
+            self.assertEqual(document["flags"]["quantization"], "implicit")
+            self.assertIsNone(document["flags"]["calib_max_images"])
             self.assertEqual(document["session_providers"], [])
 
 
@@ -1041,6 +1482,130 @@ class TestLiveTensorRT(unittest.TestCase):
             )
             self.assertEqual(code, 0, err + text)
             self.assertTrue((out / "model.engine").is_file())
+
+    @unittest.skipUnless(
+        _live_tensorrt(),
+        "GPU follow-up: SmolVLA vision-encoder INT8 cache reuse was not run "
+        "(needs TensorRT and a CUDA device)",
+    )
+    def test_smolvla_vision_encoder_int8_cache_reuse(self) -> None:
+        """GPU follow-up. Not run in CPU CI.
+
+        Builds the SmolVLA vision encoder at INT8, writes a calibration cache,
+        then builds again and reuses that cache.
+        """
+        checkpoint = os.environ.get("OHHO_SMOLVLA_CHECKPOINT", "").strip()
+        if not checkpoint or not Path(checkpoint).exists():
+            self.skipTest("Set OHHO_SMOLVLA_CHECKPOINT to a local SmolVLA checkpoint.")
+        if not _has_export_stack():
+            self.skipTest("optimize extra is not installed")
+        loaded = load_model(checkpoint, submodule="vision")
+        shape_text = os.environ.get("OHHO_SMOLVLA_SHAPE", "").strip()
+        if shape_text:
+            shape = tuple(int(part) for part in shape_text.split(",") if part)
+        else:
+            spec = describe_export(loaded)
+            shape = tuple(spec.inputs[0].shape[1:])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calib = root / "calib"
+            _write_bins(calib, shape, 2)
+            cache = root / "vision.cache"
+            common = [
+                "optimize",
+                "--model",
+                checkpoint,
+                "--submodule",
+                "vision",
+                "--target",
+                "x86-cuda",
+                "--precision",
+                "int8",
+                "--tensorrt",
+                "--calib-data",
+                str(calib),
+                "--calib-batch",
+                "1",
+                "--calib-max-images",
+                "2",
+                "--calib-cache",
+                str(cache),
+            ]
+            with self.assertLogs("ohho.optimize", level="INFO") as first:
+                code, text, err = _run([*common, "--out", str(root / "out1"), "--json"])
+            self.assertEqual(code, 0, err + text)
+            self.assertTrue(cache.is_file())
+            self.assertTrue(cache_sidecar_path(cache).is_file())
+            self.assertTrue(
+                any("Wrote INT8 calibration cache" in line for line in first.output)
+            )
+            with self.assertLogs("ohho.optimize", level="INFO") as second:
+                code, text, err = _run([*common, "--out", str(root / "out2"), "--json"])
+            self.assertEqual(code, 0, err + text)
+            self.assertTrue(
+                any("Reusing INT8 calibration cache" in line for line in second.output)
+            )
+
+    @unittest.skipUnless(
+        _live_tensorrt(),
+        "GPU follow-up: INT8 parity gate was not run "
+        "(needs TensorRT and a CUDA device)",
+    )
+    def test_int8_parity_gate(self) -> None:
+        """GPU follow-up. Not run in CPU CI.
+
+        Builds reference-mlp INT8 and calls ``ohho.parity`` when that module
+        is present (OHH-430). This file does not define the parity gate.
+        """
+        if not _has_export_stack():
+            self.skipTest("optimize extra is not installed")
+        if importlib.util.find_spec("ohho.parity") is None:
+            self.skipTest("ohho.parity is not available")
+        import ohho.parity as parity
+
+        gate = None
+        for name in ("check_parity", "parity_gate", "run_parity_gate", "gate"):
+            candidate = getattr(parity, name, None)
+            if callable(candidate):
+                gate = candidate
+                break
+        if gate is None:
+            self.fail("ohho.parity does not expose a parity gate")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_bins(root / "calib", (int(REFERENCE_MLP["obs_dim"]),), 2)
+            out = root / "out"
+            code, text, err = _run(
+                [
+                    "optimize",
+                    "--model",
+                    "reference-mlp",
+                    "--target",
+                    "x86-cuda",
+                    "--precision",
+                    "int8",
+                    "--tensorrt",
+                    "--calib-data",
+                    str(root / "calib"),
+                    "--calib-batch",
+                    "1",
+                    "--calib-max-images",
+                    "2",
+                    "--calib-cache",
+                    str(root / "int8.cache"),
+                    "--out",
+                    str(out),
+                    "--json",
+                ]
+            )
+            self.assertEqual(code, 0, err + text)
+            result = gate(
+                model="reference-mlp",
+                onnx=str(out / "model.onnx"),
+                engine=str(out / "model.engine"),
+                precision="int8",
+            )
+        self.assertTrue(bool(getattr(result, "ok", result)))
 
 
 if __name__ == "__main__":

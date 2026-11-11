@@ -92,7 +92,11 @@ class TestStrategySchema(unittest.TestCase):
         self.assertEqual(board["properties"]["strategy"]["enum"], list(STRATEGIES))
         state = load_sampler_schema()
         self.assertEqual(state["title"], SAMPLER_SCHEMA_ID)
-        for name in ("sweep.leaderboard.v1.json", "sweep.sampler.v1.json"):
+        for name in (
+            "sweep.leaderboard.v1.json",
+            "sweep.sampler.v1.json",
+            "sweep.run.v1.json",
+        ):
             packaged = (
                 files("ohho.train")
                 .joinpath("schemas", name)

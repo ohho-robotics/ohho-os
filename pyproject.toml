@@ -45,6 +45,7 @@ dji = ["pymavlink>=2.4"]                      # DJI / MAVLink adapter (drones)
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "websockets>=11.0", "httpx>=0.27,<0.28"]  # Starlette TestClient (pre-0.37)
 sim-serve = ["websockets>=11.0"]              # sim-serve WebSocket server
 train = ["torch>=2.1", "numpy>=1.24"]        # training pipelines (delegates to lerobot_engine)
+wandb = ["wandb>=0.16"]                      # optional W&B sweep backend (imported only when used)
 optimize = ["torch>=2.1", "numpy>=1.24", "onnx>=1.15", "onnxruntime>=1.16"]  # ONNX export and ORT sessions
 bench = ["numpy>=1.24", "onnxruntime>=1.16"]  # `ohho bench` ONNX artifacts; schema checks stay dependency-free
 humanoid-sim = [
@@ -74,6 +75,7 @@ all = [
   "uvicorn>=0.27",
   "websockets>=11.0",
   "httpx>=0.27,<0.28",
+  "wandb>=0.16",
 ]
 
 [project.urls]
@@ -104,6 +106,11 @@ smolvla = "ohho.train.builtin_recipes:SMOLVLA"
 openvla = "ohho.train.builtin_recipes:OPENVLA"
 ppo = "ohho.train.builtin_recipes:PPO"
 
+[project.entry-points."ohho.rl_tasks"]
+cartpole = "ohho.train.rl_tasks:CARTPOLE"
+mujoco-inverted-pendulum = "ohho.train.rl_tasks:MUJOCO_INVERTED_PENDULUM"
+isaac-velocity = "ohho.train.rl_tasks:ISAAC_VELOCITY"
+
 [tool.setuptools.packages.find]
 include = ["ohho", "ohho.*"]
 
@@ -116,8 +123,10 @@ ohho = [
   "targets/profiles/*.json",
   "targets/*.json",
   "optimize/*.json",
+  "parity/*.json",
   "train/schema/*.json",
   "train/examples/*.yaml",
+  "train/examples/il/*.yaml",
   "train/schemas/*.json",
   "train/schemas/examples/*.json",
   "train/schemas/examples/*.yaml",

@@ -27,6 +27,7 @@ _REQUIRED = (
     "inputs",
     "outputs",
     "session_providers",
+    "parity",
 )
 _FLAG_KEYS = (
     "onnx",
@@ -38,8 +39,11 @@ _FLAG_KEYS = (
     "max_batch",
     "dynamic_batch",
     "calib_batch",
+    "calib_max_images",
+    "quantization",
     "opset",
     "submodule",
+    "allow_parity_fail",
 )
 _MODEL_KEYS = ("ref", "kind", "submodule", "source")
 _TARGET_KEYS = ("id", "arch", "accelerator")
@@ -58,7 +62,9 @@ _INPUT_KEYS = (
     "calib_data",
     "calib_cache",
     "calib_batch",
+    "calib_max_images",
     "submodule",
+    "allow_parity_fail",
 )
 _OUTPUT_KEYS = ("role", "path", "sha256", "bytes", "backend", "backend_version")
 _ROLES = frozenset(
@@ -177,6 +183,7 @@ def build_manifest(
     inputs: dict[str, Any],
     outputs: list[dict[str, Any]],
     session_providers: list[str],
+    parity: dict[str, Any],
     versions: dict[str, str | None] | None = None,
     created: str | None = None,
 ) -> dict[str, Any]:
@@ -197,6 +204,7 @@ def build_manifest(
         "inputs": inputs,
         "outputs": outputs,
         "session_providers": session_providers,
+        "parity": parity,
     }
     problems = manifest_problems(document)
     if problems:
@@ -268,6 +276,19 @@ def manifest_problems(document: object) -> list[str]:
                     problems.append(
                         f"outputs[{index}].bytes must be a non-negative integer"
                     )
+    inputs = document.get("inputs")
+    if (
+        isinstance(inputs, dict)
+        and "allow_parity_fail" in inputs
+        and type(inputs.get("allow_parity_fail")) is not bool
+    ):
+        problems.append("inputs.allow_parity_fail must be a boolean")
+    parity = document.get("parity")
+    if "parity" in document:
+        from ohho.parity.report import report_problems
+
+        for problem in report_problems(parity):
+            problems.append("parity: " + problem)
     providers = document.get("session_providers")
     if not isinstance(providers, list) or not all(
         isinstance(item, str) for item in providers
@@ -282,6 +303,11 @@ def manifest_problems(document: object) -> list[str]:
             problems.append("flags.onnx and flags.tensorrt must be booleans")
         if type(flags.get("dynamic_batch")) is not bool:
             problems.append("flags.dynamic_batch must be a boolean")
+        if (
+            "allow_parity_fail" in flags
+            and type(flags.get("allow_parity_fail")) is not bool
+        ):
+            problems.append("flags.allow_parity_fail must be a boolean")
         if type(flags.get("max_batch")) is not int or flags.get("max_batch") < 1:
             problems.append("flags.max_batch must be an integer >= 1")
         if (

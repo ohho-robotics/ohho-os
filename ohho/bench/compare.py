@@ -63,6 +63,10 @@ _ALIASES = {
 }
 for _name in HIGHER_IS_WORSE | HIGHER_IS_BETTER:
     _ALIASES.setdefault(_name, _name)
+_ALIASES["ttft_p95"] = "llm.ttft.p95"
+_ALIASES["tpot_p95"] = "llm.tpot.p95"
+_ALIASES["llm.ttft.p95"] = "llm.ttft.p95"
+_ALIASES["llm.tpot.p95"] = "llm.tpot.p95"
 
 
 def canonical_metric(name: str) -> str:

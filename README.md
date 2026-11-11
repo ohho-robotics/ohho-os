@@ -18,9 +18,9 @@ ohho sim --robot omnibot --seconds 2
 ohho sim --robot unitree-go2 --seconds 2
 ```
 
-`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). `ohho optimize` exports ONNX and, on a TensorRT machine, builds an engine for one of those profiles ([`docs/optimize.md`](docs/optimize.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
+`ohho doctor --agent` reports AI-agent setup; `ohho verify --sim` drives the simulator only. `ohho rules install` writes the agent safety rules for the same clients ([`docs/rules.md`](docs/rules.md)). `ohho targets` lists optimisation profiles ([`docs/serve/targets.md`](docs/serve/targets.md)). `ohho optimize` exports ONNX and, on a TensorRT machine, builds an engine for one of those profiles ([`docs/optimize.md`](docs/optimize.md)). `ohho parity` compares that artifact to the reference model and `ohho optimize` will not publish a result that misses the numerical limit ([`docs/serve/parity.md`](docs/serve/parity.md)). Full CLI reference: [`docs/cli.md`](docs/cli.md). `ohho job validate` and `ohho job run` share the `ohho.job/v1` spec ([`docs/serve/job-spec.md`](docs/serve/job-spec.md)).
 
-`ohho train <recipe.yaml>` runs a training recipe ([`docs/train/recipes.md`](docs/train/recipes.md)).
+`ohho train <recipe.yaml>` runs a training recipe ([`docs/train/recipes.md`](docs/train/recipes.md)). `ohho run show <run-dir>` prints the `ohho.run/v1` manifest ([`docs/train/run-manifest.md`](docs/train/run-manifest.md)). `ohho run retain` applies checkpoint retention ([`docs/train/artifacts.md`](docs/train/artifacts.md)).
 
 `pip install ohho-os` installs the dependency-free base (stdlib only) and the
 `ohho` console script. `ohho doctor` prints the interpreter, the runtimes and
@@ -190,7 +190,7 @@ python scripts/sim_loop.py --episodes 5 --steps-per-episode 20 --train-steps 200
 
 The nightly CI workflow (`.github/workflows/sim-loop.yml`) is designed to run this pipeline on CPU-only runners, verify LeRobotDataset loading, and upload the trained checkpoint and dataset artifacts (first run pending).
 
-`ohho sweep plan` expands an `ohho.sweep/v1` spec (grid, random, TPE, or multi-objective) into trial recipes and an estimated GPU-hour total. Adaptive strategies plan a startup batch; `SweepSampler` proposes the rest and records a Pareto set. See [`docs/train/sweeps.md`](docs/train/sweeps.md).
+`ohho sweep plan` expands an `ohho.sweep/v1` spec (grid, random, TPE, or multi-objective) into trial recipes and an estimated GPU-hour total. Adaptive strategies plan a startup batch; `SweepSampler` proposes the rest and records a Pareto set. ASHA and median early stopping are configured on that spec; the trial runner reports intermediate metrics and `SweepRun.decide` returns continue or stop. See [`docs/train/sweeps.md`](docs/train/sweeps.md).
 
 ## Simulation WebSocket Server (`sim-serve`)
 
@@ -304,6 +304,20 @@ future v2 converter are in
 `ohho bench --artifact model.onnx --target x86-cpu --json out.json` runs the
 harness: latency stats, per-stage timing, an optional baseline comparison,
 and SLO / regression gates. See [`docs/serve/bench.md`](docs/serve/bench.md).
+
+`ohho bench launch --backend vllm --model <id> --dry-run` prints the engine
+command. `ohho bench llm --endpoint http://127.0.0.1:8000/v1 --model <id>
+--output result.json` measures a running OpenAI-compatible server (time to
+first token, inter-token latency, tokens/s, request throughput) and writes
+`ohho.bench/v1` with an optional `ohho.bench.llm/v1` block. vLLM, SGLang,
+TensorRT-LLM, and llama.cpp are external programs, not package dependencies.
+See [`docs/serve/llm-backends.md`](docs/serve/llm-backends.md).
+`ohho bench --mode generate --target x86-cpu` measures time to first token,
+time per output token, and tokens/s for an autoregressive model. The default
+backend is a CPU stand-in. It sweeps concurrency and prompt length, and it
+compares FP16 with 4-bit precisions (latency, weight memory, and top-1
+action-token agreement). `--slo ttft_p95<=50ms,tpot_p95<=20ms` gates the
+primary cell. See [`docs/serve/bench.md`](docs/serve/bench.md).
 
 Runnable Serve examples, with the hardware, runtime, and expected output for
 each one, are in [`examples/serve`](examples/serve/README.md). CPU examples

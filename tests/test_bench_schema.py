@@ -365,6 +365,20 @@ class TestBenchCli(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("file not found", stderr.getvalue())
 
+    def test_llm_block_is_optional_and_versioned(self) -> None:
+        schema = load_schema()
+        self.assertNotIn("llm", schema["required"])
+        block = schema["$defs"]["llm"]
+        self.assertEqual(block["title"], "LlmBench")
+        self.assertEqual(block["properties"]["schema"]["const"], "ohho.bench.llm/v1")
+        self.assertTrue(block["additionalProperties"])
+        document = _example("llm")
+        self.assertNotIn("llm", document)
+        self.assertEqual(_errors(document), [])
+        document["llm"] = {"schema": "ohho.bench.llm/v2"}
+        errors = _errors(document)
+        self.assertTrue(any(item.startswith("$.llm.schema:") for item in errors))
+
     def test_bench_requires_a_subcommand(self) -> None:
         stderr = StringIO()
         with redirect_stderr(stderr):

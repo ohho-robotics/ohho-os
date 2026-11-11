@@ -11,9 +11,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from ohho import __version__
 from ohho.cli import main as cli_main
 from ohho.sim_loop import record_sim_episodes
-from ohho.train.builtin_recipes import ACT
+from ohho.train.builtin_recipes import ACT, DIFFUSION, PPO
 from ohho.train.recipe_registry import (
     RecipeRegistryError,
     TrainResult,
@@ -22,6 +23,13 @@ from ohho.train.recipe_registry import (
     get_family,
     register,
     unregister,
+)
+from ohho.train.run_manifest import (
+    SCHEMA_ID as RUN_SCHEMA_ID,
+    container_image_digest,
+    git_state,
+    hash_tree,
+    validate_run_manifest,
 )
 from ohho.train.recipe_schema import (
     SCHEMA_ID,
@@ -274,9 +282,13 @@ class TestRegistry(unittest.TestCase):
             {"act", "diffusion", "smolvla", "openvla", "ppo"} <= set(family_ids())
         )
         self.assertTrue(get_family("act").available())
-        for family in ("diffusion", "smolvla", "openvla", "ppo"):
-            self.assertFalse(get_family(family).available())
+        self.assertTrue(get_family("diffusion").available())
+        self.assertTrue(get_family("ppo").available())
         self.assertIs(get_family("act"), ACT)
+        self.assertIs(get_family("diffusion"), DIFFUSION)
+        self.assertIs(get_family("ppo"), PPO)
+        for family in ("smolvla", "openvla"):
+            self.assertFalse(get_family(family).available())
         register(ACT, source="again")
 
         class Other:
@@ -339,10 +351,14 @@ class TestRegistry(unittest.TestCase):
                 manifest = json.loads(
                     (out / "run_manifest.json").read_text(encoding="utf-8")
                 )
+                self.assertEqual(manifest["schema"], RUN_SCHEMA_ID)
+                self.assertEqual(validate_run_manifest(manifest), [])
                 self.assertEqual(manifest["family"], "custom_policy")
                 self.assertEqual(manifest["status"], "succeeded")
-                self.assertEqual(manifest["recipe"]["hyperparameters"]["lr"], 0.2)
-                self.assertFalse(manifest["base_weights_loaded"])
+                self.assertEqual(
+                    manifest["resolved_config"]["hyperparameters"]["lr"], 0.2
+                )
+                self.assertFalse(manifest["base_weights"]["loaded"])
                 self.assertTrue(_events_of(events, "train_start"))
                 self.assertEqual(_events_of(events, "done")[-1]["exit_code"], 0)
                 self.assertTrue(all(event["stream"] == STREAM for event in events))
@@ -357,7 +373,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(caught.exception.code, EXIT_USAGE)
 
     def test_unavailable_families_do_not_train(self) -> None:
-        for family in ("diffusion", "smolvla", "openvla", "ppo"):
+        for family in ("smolvla", "openvla"):
             with self.subTest(family=family):
                 code, events, err = _run(example_path(family))
                 self.assertEqual(code, EXIT_UNAVAILABLE, err)
@@ -376,7 +392,7 @@ class TestTrainCommand(unittest.TestCase):
                     "train",
                     str(example_path("act")),
                     "--set",
-                    "family=diffusion",
+                    "family=smolvla",
                     "--set",
                     "dataset.path=null",
                     "--set",
@@ -386,7 +402,7 @@ class TestTrainCommand(unittest.TestCase):
         self.assertEqual(code, EXIT_UNAVAILABLE, stderr.getvalue())
         event = json.loads(stdout.getvalue().strip().splitlines()[-1])
         self.assertEqual(event["message"], UNAVAILABLE_MESSAGE)
-        self.assertEqual(event["family"], "diffusion")
+        self.assertEqual(event["family"], "smolvla")
 
     def test_invalid_config_fails_before_training(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -396,7 +412,7 @@ class TestTrainCommand(unittest.TestCase):
                 (example_path("ppo"), ["hyperparameters.gamma=1.5"], "gamma"),
                 (
                     example_path("act"),
-                    ["precision=bf16", f"output.dir={out}"],
+                    ["precision=fp8", f"output.dir={out}"],
                     "precision",
                 ),
                 (
@@ -535,9 +551,15 @@ class TestActRun(unittest.TestCase):
             self.assertIn("boom", err)
             self.assertTrue(_events_of(events, "train_start"))
             self.assertFalse(_events_of(events, "done"))
-            self.assertFalse((out / "run_manifest.json").exists())
+            manifest = json.loads(
+                (out / "run_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["status"], "failed")
+            self.assertEqual(validate_run_manifest(manifest), [])
+            self.assertIn("boom", manifest["error"])
+            self.assertIsNotNone(manifest["finished_at"])
 
-    @unittest.skipUnless(_has_torch(), "torch not installed — [train] extra")
+    @unittest.skipUnless(_has_torch(), "needs torch (pip install 'ohho-os[train]')")
     def test_tiny_act_recipe_on_cpu(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
@@ -573,13 +595,64 @@ class TestActRun(unittest.TestCase):
             manifest = json.loads(
                 (out / "run_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["schema"], "ohho.train.run_manifest/v0")
+            self.assertEqual(manifest["schema"], RUN_SCHEMA_ID)
+            self.assertEqual(validate_run_manifest(manifest), [])
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["family"], "act")
             self.assertEqual(manifest["device"], "cpu")
-            self.assertFalse(manifest["base_weights_loaded"])
-            self.assertEqual(manifest["recipe"]["hyperparameters"]["train_steps"], 2)
+            self.assertEqual(manifest["precision"], "fp32")
+            self.assertIs(manifest["loss_scaling"], False)
+            self.assertEqual(manifest["precision_backend"], "fp32")
+            fp32_metrics = manifest["precision_metrics"]["fp32"]
+            self.assertEqual(
+                fp32_metrics["throughput_steps_per_s"],
+                metrics["throughput_steps_per_s"],
+            )
+            self.assertEqual(
+                fp32_metrics["peak_memory_bytes"], metrics["peak_memory_bytes"]
+            )
+            self.assertGreater(fp32_metrics["throughput_steps_per_s"], 0)
+            self.assertIsInstance(fp32_metrics["peak_memory_bytes"], int)
+            self.assertGreaterEqual(fp32_metrics["peak_memory_bytes"], 0)
+            self.assertIsNone(manifest["precision_metrics"]["fp16"])
+            self.assertIsNone(manifest["precision_metrics"]["bf16"])
+            self.assertIsNone(manifest["precision_metrics"]["fp8"])
+            self.assertEqual(_events_of(events, "train_start")[0]["precision"], "fp32")
+            self.assertFalse(manifest["base_weights"]["loaded"])
+            self.assertIsNone(manifest["base_weights"]["hash"])
+            self.assertEqual(manifest["base_weights"]["uri"], "local:act-init")
+            self.assertEqual(
+                manifest["resolved_config"]["hyperparameters"]["train_steps"], 2
+            )
             self.assertEqual(manifest["final_loss"], metrics["final_loss"])
+            self.assertEqual(manifest["seeds"]["recipe"], 0)
+            self.assertEqual(manifest["seeds"]["python"], 0)
+            self.assertEqual(manifest["seeds"]["torch"], 0)
+            if importlib.util.find_spec("numpy") is not None:
+                self.assertEqual(manifest["seeds"]["numpy"], 0)
+            else:
+                self.assertIsNone(manifest["seeds"]["numpy"])
+            self.assertIsNone(manifest["dataset"]["version_id"])
+            self.assertEqual(manifest["dataset"]["hash"], hash_tree(Path(self.dataset)))
+            self.assertEqual(manifest["library_versions"]["ohho"], __version__)
+            self.assertIn("python", manifest["library_versions"])
+            self.assertEqual(
+                manifest["container_image_digest"], container_image_digest()
+            )
+            git = git_state(example_path("act").parent)
+            self.assertEqual(manifest["git"]["commit"], git["commit"])
+            self.assertEqual(manifest["git"]["dirty"], git["dirty"])
+            shown = io.StringIO()
+            with redirect_stdout(shown), redirect_stderr(io.StringIO()):
+                show_code = cli_main(["run", "show", str(out)])
+            self.assertEqual(show_code, 0, shown.getvalue())
+            self.assertIn("status: succeeded", shown.getvalue())
+            self.assertIn("family: act", shown.getvalue())
+            json_out = io.StringIO()
+            with redirect_stdout(json_out), redirect_stderr(io.StringIO()):
+                show_code = cli_main(["run", "show", str(out), "--json"])
+            self.assertEqual(show_code, 0)
+            self.assertEqual(json.loads(json_out.getvalue())["schema"], RUN_SCHEMA_ID)
             self.assertEqual(stderr.getvalue(), "")
 
 

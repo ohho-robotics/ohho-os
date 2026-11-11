@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ohho-robotics.com/schemas/optimize-manifest.v1.json",
   "title": "OptimizeManifest",
-  "description": "One ohho optimize run: the target profile, the flags that were applied, package versions, and sha256 of each output file.",
+  "description": "One ohho optimize run: the target profile, the flags that were applied, package versions, sha256 of each output file, and the ohho.parity/v1 gate result.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,8 @@
     "versions",
     "inputs",
     "outputs",
-    "session_providers"
+    "session_providers",
+    "parity"
   ],
   "properties": {
     "schema": {"const": "ohho.optimize_manifest.v1"},
@@ -59,8 +60,11 @@
         "max_batch",
         "dynamic_batch",
         "calib_batch",
+        "calib_max_images",
+        "quantization",
         "opset",
-        "submodule"
+        "submodule",
+        "allow_parity_fail"
       ],
       "properties": {
         "onnx": {"type": "boolean"},
@@ -72,8 +76,11 @@
         "max_batch": {"type": "integer", "minimum": 1},
         "dynamic_batch": {"type": "boolean"},
         "calib_batch": {"type": ["integer", "null"]},
+        "calib_max_images": {"type": ["integer", "null"]},
+        "quantization": {"type": ["string", "null"], "enum": ["implicit", "explicit", null]},
         "opset": {"type": ["integer", "null"]},
-        "submodule": {"type": ["string", "null"]}
+        "submodule": {"type": ["string", "null"]},
+        "allow_parity_fail": {"type": "boolean"}
       }
     },
     "versions": {
@@ -104,7 +111,9 @@
         "calib_data",
         "calib_cache",
         "calib_batch",
-        "submodule"
+        "calib_max_images",
+        "submodule",
+        "allow_parity_fail"
       ],
       "properties": {
         "model": {"type": "string"},
@@ -120,7 +129,9 @@
         "calib_data": {"type": ["string", "null"]},
         "calib_cache": {"type": ["string", "null"]},
         "calib_batch": {"type": ["integer", "null"]},
-        "submodule": {"type": ["string", "null"]}
+        "calib_max_images": {"type": ["integer", "null"]},
+        "submodule": {"type": ["string", "null"]},
+        "allow_parity_fail": {"type": "boolean"}
       }
     },
     "outputs": {
@@ -145,6 +156,18 @@
     "session_providers": {
       "type": "array",
       "items": {"type": "string"}
+    },
+    "parity": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "ohho.parity/v1 report. The full schema is ohho/parity/parity_report.schema.json.",
+      "required": ["schema", "result", "allow_parity_fail", "reasons", "inputs", "outputs"],
+      "properties": {
+        "schema": {"const": "ohho.parity/v1"},
+        "result": {"enum": ["pass", "fail"]},
+        "allow_parity_fail": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string"}}
+      }
     }
   }
 }
