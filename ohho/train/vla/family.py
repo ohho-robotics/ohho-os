@@ -40,6 +40,11 @@ class _VLARecipe:
         """True so preflight runs. The trainer that loads base weights is absent."""
         return True
 
+    def preflight(self, recipe: dict[str, Any]) -> None:
+        """Validate parameters, then stop before any weight download."""
+        prepare(self.id, recipe)
+        raise FamilyUnavailable(self.id)
+
     def run(self, recipe: dict[str, Any], emit: Emit) -> TrainResult:
         """Validate parameters, then stop before any weight download."""
         del emit

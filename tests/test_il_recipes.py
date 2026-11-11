@@ -588,7 +588,8 @@ class TestTinyCpuTrain(unittest.TestCase):
                 device="cpu",
                 auto_load=True,
             )
-        with TestClient(app) as client:
+        client = TestClient(app)
+        try:
             health = client.get("/health")
             self.assertEqual(health.status_code, 200)
             self.assertTrue(health.json()["model_loaded"])
@@ -599,6 +600,8 @@ class TestTinyCpuTrain(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             vector = response.json()["action"]["vector"]
             self.assertEqual(len(vector), action_dim)
+        finally:
+            client.close()
 
 
 def events_validation_last(events: list[dict]) -> float:

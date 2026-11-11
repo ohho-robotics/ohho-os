@@ -1,0 +1,35 @@
+# ohho.job/v1 — optimize, then parity, then bench.
+schema_version: ohho.job/v1
+model:
+  version: repo/model@v1
+targets:
+  - edge-cpu
+  - workstation
+steps:
+  - optimize
+  - parity
+  - bench
+precision: fp16
+backend: onnx
+parity:
+  max_abs_error: 0.001
+  max_rel_error: 0.01
+  min_cosine: 0.999
+  samples: 8
+bench:
+  iterations: 50
+  warmup: 10
+  batch_size: 1
+  timeout_s: 30
+budget:
+  max_seconds: 600
+  max_usd: 2.5
+  max_gpu_seconds: 120
+outputs:
+  wandb:
+    enabled: true
+    project: ohho-serve
+  prometheus:
+    enabled: true
+    port: 9090
+    job_name: serve-job
