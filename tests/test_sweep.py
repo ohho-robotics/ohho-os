@@ -64,6 +64,7 @@ class TestSchemaPackage(unittest.TestCase):
             "constrained.json",
             "tpe.json",
             "multi.json",
+            "dataset_3x2.json",
             "asha.json",
         )
         for name in names:

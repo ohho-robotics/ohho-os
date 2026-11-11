@@ -15,6 +15,7 @@ or PyTorch. :meth:`SweepSampler.dump_state` is JSON. Loading that state and
 asking again proposes the same next trials as the sampler that kept running.
 Each proposed trial records the training seed derived from the sweep seed
 and the trial index. That seed does not advance the proposal generator.
+A trial that applies a dataset dimension also records ``dataset_version_id``.
 
 A batch returned by one :meth:`SweepSampler.ask` shares the model built from
 trials :meth:`SweepSampler.tell` has already recorded.
@@ -51,6 +52,7 @@ from .sweep import (
     _sample_one,
     _trial_hours,
     _validate,
+    dataset_version_for,
     load_sweep,
     validate_sweep,
 )
@@ -360,6 +362,7 @@ class SweepSampler:
             recipe=recipe,
             estimated_gpu_hours=hours,
             seed=trial_training_seed(self.spec.seed, self._cursor),
+            dataset_version_id=dataset_version_for(self.spec, assigned),
         )
 
     def _over_budget_hours(self, trial: Trial) -> bool:
@@ -369,16 +372,17 @@ class SweepSampler:
         return self._hours + float(trial.estimated_gpu_hours) > float(limit) + 1e-9
 
     def _remember(self, trial: Trial) -> None:
-        self._trials.append(
-            {
-                "index": trial.index,
-                "seed": trial.seed,
-                "overrides": copy.deepcopy(trial.overrides),
-                "sets": list(trial.sets),
-                "estimated_gpu_hours": float(trial.estimated_gpu_hours),
-                "values": None,
-            }
-        )
+        remembered = {
+            "index": trial.index,
+            "seed": trial.seed,
+            "overrides": copy.deepcopy(trial.overrides),
+            "sets": list(trial.sets),
+            "estimated_gpu_hours": float(trial.estimated_gpu_hours),
+            "values": None,
+        }
+        if trial.dataset_version_id is not None:
+            remembered["dataset_version_id"] = trial.dataset_version_id
+        self._trials.append(remembered)
         self._hours += float(trial.estimated_gpu_hours)
         self._cursor += 1
 
@@ -436,6 +440,9 @@ def _leaderboard_row(
         "overrides": copy.deepcopy(item["overrides"]),
         "sets": list(item["sets"]),
     }
+    version_id = item.get("dataset_version_id")
+    if version_id is not None:
+        row["dataset_version_id"] = version_id
     if dominated is not None:
         row["dominated"] = dominated
     return row
@@ -443,7 +450,7 @@ def _leaderboard_row(
 
 def _state_trial(item: Mapping[str, Any]) -> dict[str, Any]:
     values = item["values"]
-    return {
+    row = {
         "index": item["index"],
         "seed": item["seed"],
         "overrides": copy.deepcopy(item["overrides"]),
@@ -451,6 +458,10 @@ def _state_trial(item: Mapping[str, Any]) -> dict[str, Any]:
         "estimated_gpu_hours": item["estimated_gpu_hours"],
         "values": None if values is None else dict(values),
     }
+    version_id = item.get("dataset_version_id")
+    if version_id is not None:
+        row["dataset_version_id"] = version_id
+    return row
 
 
 def _restore_trial(
@@ -479,7 +490,16 @@ def _restore_trial(
     overrides = raw.get("overrides")
     if not isinstance(overrides, dict):
         raise SweepError("sampler trial overrides must be an object")
-    return {
+    expected_version = dataset_version_for(spec, overrides)
+    if "dataset_version_id" in raw:
+        version_id = raw.get("dataset_version_id")
+    else:
+        version_id = None
+    if version_id != expected_version:
+        raise SweepError(
+            f"trial {expected} dataset version does not match its overrides"
+        )
+    restored_row = {
         "index": index,
         "seed": seed,
         "overrides": copy.deepcopy(overrides),
@@ -487,6 +507,9 @@ def _restore_trial(
         "estimated_gpu_hours": float(hours),
         "values": restored,
     }
+    if version_id is not None:
+        restored_row["dataset_version_id"] = version_id
+    return restored_row
 
 
 def _coerce_values(spec: SweepSpec, values: Mapping[str, Any]) -> dict[str, Any]:

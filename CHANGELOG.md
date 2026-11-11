@@ -112,6 +112,12 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   status. A 32-trial synthetic ASHA benchmark uses under half the
   trial-steps of the same sweep with no stopping rule.
   Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
+- **Dataset version sweep axis** — `type: dataset` on `ohho.sweep/v1` lists
+  content-hashed dataset version ids. A grid of 3 versions and 2 models
+  yields 6 trials, and each trial records `dataset_version_id` on the plan,
+  the sampler state, and `ohho.sweep.run/v1`. A worker cache keyed by that
+  id fetches and copies a version once. `ohho sweep group` groups the trial
+  table by version id. Docs: [`docs/train/sweeps.md`](docs/train/sweeps.md).
 - **Optional W&B sweep backend** — `to_wandb_sweep_config` maps an
   `ohho.sweep/v1` spec to a W&B sweep config (method, metric, parameters).
   `ohho sweep start --backend native` (the default) stores a local run and
