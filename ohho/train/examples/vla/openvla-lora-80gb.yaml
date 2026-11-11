@@ -1,0 +1,29 @@
+schema: ohho.recipe/v1
+name: openvla-lora-80gb
+family: openvla
+base_weights:
+  uri: openvla/openvla-7b
+dataset:
+  path: datasets/vla-demos
+hyperparameters:
+  train_steps: 200000
+  batch_size: 16
+  lr: 0.0005
+  precision: bf16
+  gradient_checkpointing: true
+  tune_mode: lora
+  lora_rank: 32
+  lora_alpha: 16
+  lora_dropout: 0.0
+  lora_target_modules: all-linear
+  grad_accumulation_steps: 1
+  warmup_steps: 0
+  max_grad_norm: 1.0
+  seed: 0
+  log_every: 25
+precision: bf16
+device: cuda
+compression_hooks: []
+eval_hooks: []
+output:
+  dir: checkpoints/openvla-lora-80gb

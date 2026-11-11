@@ -160,6 +160,8 @@ def _manifest(report: dict, *, allow: bool) -> dict:
         "max_batch": 1,
         "dynamic_batch": False,
         "calib_batch": None,
+        "calib_max_images": None,
+        "quantization": None,
         "opset": 17,
         "submodule": None,
         "allow_parity_fail": allow,
@@ -178,6 +180,7 @@ def _manifest(report: dict, *, allow: bool) -> dict:
         "calib_data": None,
         "calib_cache": None,
         "calib_batch": None,
+        "calib_max_images": None,
         "submodule": None,
         "allow_parity_fail": allow,
     }

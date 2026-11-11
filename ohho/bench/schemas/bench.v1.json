@@ -20,12 +20,47 @@
       "const": "ohho.bench/v1",
       "description": "Schema id. A breaking change uses a new id and a converter."
     },
-    "run": {"$ref": "#/$defs/run"},
-    "latency": {"$ref": "#/$defs/latency_report"},
-    "throughput": {"$ref": "#/$defs/throughput"},
-    "accuracy": {"$ref": "#/$defs/accuracy"},
-    "telemetry": {"$ref": "#/$defs/telemetry"},
-    "environment": {"$ref": "#/$defs/environment"}
+    "run": {
+      "$ref": "#/$defs/run"
+    },
+    "latency": {
+      "$ref": "#/$defs/latency_report"
+    },
+    "throughput": {
+      "$ref": "#/$defs/throughput"
+    },
+    "accuracy": {
+      "$ref": "#/$defs/accuracy"
+    },
+    "telemetry": {
+      "$ref": "#/$defs/telemetry"
+    },
+    "environment": {
+      "$ref": "#/$defs/environment"
+    },
+    "comparison": {
+      "$ref": "#/$defs/comparison"
+    },
+    "gates": {
+      "$ref": "#/$defs/gates"
+    },
+    "batches": {
+      "type": "array",
+      "description": "Every measured batch. Top-level latency and throughput repeat the primary batch.",
+      "items": {
+        "$ref": "#/$defs/batch_result"
+      }
+    },
+    "llm": {
+      "$ref": "#/$defs/llm"
+    },
+    "cost": {
+      "$ref": "#/$defs/cost"
+    },
+    "pipeline": {
+      "$ref": "#/$defs/pipeline",
+      "description": "Camera-to-action pipeline block (ohho.bench.pipeline/v1). Absent on an artifact-only run."
+    }
   },
   "$defs": {
     "host": {
@@ -33,17 +68,31 @@
       "description": "Machine that executed the run.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "properties": {
         "name": {
           "type": "string",
           "minLength": 1,
           "description": "Host name or CI runner id."
         },
-        "platform": {"type": "string", "minLength": 1},
-        "arch": {"type": "string", "minLength": 1},
-        "cpu": {"type": "string", "minLength": 1},
-        "accelerator": {"type": "string", "minLength": 1}
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cpu": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accelerator": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "run": {
@@ -51,7 +100,13 @@
       "description": "Identity of the model, artifact, workload, manifest, and host.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["model_sha", "artifact_sha", "target", "manifest_ref", "host"],
+      "required": [
+        "model_sha",
+        "artifact_sha",
+        "target",
+        "manifest_ref",
+        "host"
+      ],
       "properties": {
         "model_sha": {
           "type": "string",
@@ -67,17 +122,32 @@
           "type": "string",
           "minLength": 1,
           "description": "Workload class. Common values are vision, vla, and llm.",
-          "examples": ["vision", "vla", "llm"]
+          "examples": [
+            "vision",
+            "vla",
+            "llm"
+          ]
         },
         "manifest_ref": {
           "type": "string",
           "minLength": 1,
           "description": "Manifest the run was launched from (path, URI, or digest)."
         },
-        "host": {"$ref": "#/$defs/host"},
-        "id": {"type": "string", "minLength": 1},
-        "started_at": {"type": "string", "minLength": 1},
-        "finished_at": {"type": "string", "minLength": 1}
+        "host": {
+          "$ref": "#/$defs/host"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "finished_at": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "metric": {
@@ -85,11 +155,22 @@
       "description": "One named accuracy figure.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["name", "value"],
+      "required": [
+        "name",
+        "value"
+      ],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
-        "value": {"type": "number"},
-        "unit": {"type": "string", "minLength": 1}
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "latency_stats": {
@@ -97,23 +178,64 @@
       "description": "Latency distribution for one sample set.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["mean", "median", "p50", "p90", "p95", "p99", "min", "max", "std", "unit"],
+      "required": [
+        "mean",
+        "median",
+        "p50",
+        "p90",
+        "p95",
+        "p99",
+        "min",
+        "max",
+        "std",
+        "unit"
+      ],
       "properties": {
-        "mean": {"type": "number", "minimum": 0},
-        "median": {"type": "number", "minimum": 0},
-        "p50": {"type": "number", "minimum": 0},
-        "p90": {"type": "number", "minimum": 0},
-        "p95": {"type": "number", "minimum": 0},
-        "p99": {"type": "number", "minimum": 0},
-        "min": {"type": "number", "minimum": 0},
-        "max": {"type": "number", "minimum": 0},
-        "std": {"type": "number", "minimum": 0},
+        "mean": {
+          "type": "number",
+          "minimum": 0
+        },
+        "median": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p50": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p90": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p99": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max": {
+          "type": "number",
+          "minimum": 0
+        },
+        "std": {
+          "type": "number",
+          "minimum": 0
+        },
         "unit": {
           "type": "string",
           "minLength": 1,
           "description": "Scale for every number in this object. Examples use ms."
         },
-        "samples": {"type": "integer", "minimum": 0}
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "latency_stage": {
@@ -122,11 +244,15 @@
       "type": "object",
       "additionalProperties": true,
       "allOf": [
-        {"$ref": "#/$defs/latency_stats"},
+        {
+          "$ref": "#/$defs/latency_stats"
+        },
         {
           "type": "object",
           "additionalProperties": true,
-          "required": ["name"],
+          "required": [
+            "name"
+          ],
           "properties": {
             "name": {
               "type": "string",
@@ -143,99 +269,69 @@
       "type": "object",
       "additionalProperties": true,
       "allOf": [
-        {"$ref": "#/$defs/latency_stats"},
+        {
+          "$ref": "#/$defs/latency_stats"
+        },
         {
           "type": "object",
           "additionalProperties": true,
-          "required": ["stages"],
+          "required": [
+            "stages"
+          ],
           "properties": {
             "stages": {
               "type": "array",
               "description": "Per-stage latency. An empty array means only the end-to-end distribution was recorded.",
-              "items": {"$ref": "#/$defs/latency_stage"}
+              "items": {
+                "$ref": "#/$defs/latency_stage"
+              }
             }
           }
         }
-      ]
+      ],
+      "properties": {
+        "cold_start_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "First iteration before warmup, in milliseconds."
+        },
+        "achievable_hz": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Iterations per second implied by the mean latency. Zero when the mean is zero."
+        }
+      }
     },
     "throughput": {
       "title": "Throughput",
       "description": "Work completed per unit of time.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["value", "unit"],
+      "required": [
+        "value",
+        "unit"
+      ],
       "properties": {
-        "value": {"type": "number", "minimum": 0},
+        "value": {
+          "type": "number",
+          "minimum": 0
+        },
         "unit": {
           "type": "string",
           "minLength": 1,
           "description": "Unit such as frames/s, steps/s, or tokens/s."
         },
-        "samples": {"type": "integer", "minimum": 0},
-        "batch_size": {"type": "integer", "minimum": 1},
-        "duration_s": {"type": "number", "minimum": 0}
-      }
-    },
-    "joint_accuracy": {
-      "title": "JointAccuracy",
-      "description": "Reference and optimised error for one action joint.",
-      "type": "object",
-      "additionalProperties": true,
-      "required": ["index", "reference", "optimized", "delta"],
-      "properties": {
-        "index": {"type": "integer", "minimum": 0},
-        "name": {"type": "string", "minLength": 1},
-        "reference": {"type": "number"},
-        "optimized": {"type": "number"},
-        "delta": {"type": "number"}
-      }
-    },
-    "accuracy_comparison": {
-      "title": "AccuracyComparison",
-      "description": "Reference versus optimised score for one task metric, and whether the delta is inside the tolerance.",
-      "type": "object",
-      "additionalProperties": true,
-      "required": ["task", "metric", "reference", "optimized", "delta", "tolerance", "result"],
-      "properties": {
-        "task": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Evaluator name, such as action_error, sim_success, detection_map, or token_match."
+        "samples": {
+          "type": "integer",
+          "minimum": 0
         },
-        "metric": {"type": "string", "minLength": 1},
-        "reference": {
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "duration_s": {
           "type": "number",
-          "description": "Score of the reference model on this metric."
-        },
-        "optimized": {
-          "type": "number",
-          "description": "Score of the optimised model on this metric."
-        },
-        "delta": {
-          "type": "number",
-          "description": "optimized minus reference. Negative means the optimised score is lower."
-        },
-        "tolerance": {
-          "type": "number",
-          "minimum": 0,
-          "description": "Largest allowed regression. A value equal to the tolerance passes."
-        },
-        "result": {"type": "string", "enum": ["pass", "fail"]},
-        "direction": {
-          "type": "string",
-          "enum": ["lower_is_better", "higher_is_better"],
-          "description": "lower_is_better passes when delta is at most the tolerance. higher_is_better passes when the drop (reference minus optimized) is at most the tolerance."
-        },
-        "unit": {"type": "string", "minLength": 1},
-        "samples": {"type": "integer", "minimum": 0},
-        "per_joint": {
-          "type": "array",
-          "items": {"$ref": "#/$defs/joint_accuracy"}
-        },
-        "seeds": {
-          "type": "array",
-          "description": "Fixed sim or episode seeds that were scored, in order.",
-          "items": {"type": "integer"}
+          "minimum": 0
         }
       }
     },
@@ -244,28 +340,29 @@
       "description": "Quality of the model on the bench set. A task gate may add reference-versus-optimised comparisons; primary stays the headline figure.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["primary"],
+      "required": [
+        "primary"
+      ],
       "properties": {
-        "primary": {"$ref": "#/$defs/metric"},
+        "primary": {
+          "$ref": "#/$defs/metric"
+        },
         "metrics": {
           "type": "array",
-          "items": {"$ref": "#/$defs/metric"}
+          "items": {
+            "$ref": "#/$defs/metric"
+          }
         },
-        "samples": {"type": "integer", "minimum": 0},
-        "result": {
-          "type": "string",
-          "enum": ["pass", "fail"],
-          "description": "Task-gate result. Omitted when this run did not record a task gate."
-        },
-        "reasons": {
-          "type": "array",
-          "description": "Why the task gate failed. Empty when result is pass.",
-          "items": {"type": "string", "minLength": 1}
+        "samples": {
+          "type": "integer",
+          "minimum": 0
         },
         "comparisons": {
           "type": "array",
           "description": "One reference-versus-optimised row per task metric.",
-          "items": {"$ref": "#/$defs/accuracy_comparison"}
+          "items": {
+            "$ref": "#/$defs/accuracy_comparison"
+          }
         }
       }
     },
@@ -274,23 +371,58 @@
       "description": "Resource and runtime measurements for the run.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["duration_s", "samples"],
+      "required": [
+        "duration_s",
+        "samples"
+      ],
       "properties": {
-        "duration_s": {"type": "number", "minimum": 0},
-        "samples": {"type": "integer", "minimum": 0},
-        "cpu_percent_mean": {"type": "number", "minimum": 0},
-        "memory_mb_max": {"type": "number", "minimum": 0},
-        "accelerator_memory_mb_max": {"type": "number", "minimum": 0},
-        "accelerator_util_mean": {"type": "number", "minimum": 0},
-        "power_w_mean": {"type": "number", "minimum": 0}
+        "duration_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_percent_mean": {
+          "type": "number",
+          "minimum": 0
+        },
+        "memory_mb_max": {
+          "type": "number",
+          "minimum": 0
+        },
+        "accelerator_memory_mb_max": {
+          "type": "number",
+          "minimum": 0
+        },
+        "accelerator_util_mean": {
+          "type": "number",
+          "minimum": 0
+        },
+        "power_w_mean": {
+          "type": "number",
+          "minimum": 0
+        },
+        "memory_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How memory_mb_max was measured, when it is present."
+        }
       }
     },
     "environment_versions": {
       "title": "EnvironmentVersions",
       "description": "Component name to version string. python and ohho are required.",
       "type": "object",
-      "additionalProperties": {"type": "string", "minLength": 1},
-      "required": ["python", "ohho"],
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      },
+      "required": [
+        "python",
+        "ohho"
+      ],
       "properties": {
         "python": {
           "type": "string",
@@ -309,9 +441,1105 @@
       "description": "Software environment the run executed in.",
       "type": "object",
       "additionalProperties": true,
-      "required": ["versions"],
+      "required": [
+        "versions"
+      ],
       "properties": {
-        "versions": {"$ref": "#/$defs/environment_versions"}
+        "versions": {
+          "$ref": "#/$defs/environment_versions"
+        },
+        "target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Hardware target profile id, such as x86-cpu."
+        },
+        "git_sha": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Git commit of the tree that ran the bench, or unknown."
+        },
+        "timing_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Clock used for stage timing: perf_counter, cuda_event, or virtual."
+        },
+        "timing_note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "driver": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GPU driver version when a driver is visible."
+        },
+        "world": {
+          "type": "string",
+          "enum": [
+            "sim",
+            "recorded",
+            "hardware"
+          ],
+          "description": "Where a pipeline run executed. sim is the in-process simulator. Omitted on an artifact-only run."
+        }
+      }
+    },
+    "comparison_metric": {
+      "title": "ComparisonMetric",
+      "description": "One baseline delta. Latency metrics treat an increase as a regression.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "baseline",
+        "current",
+        "delta",
+        "regression"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseline": {
+          "type": "number"
+        },
+        "current": {
+          "type": "number"
+        },
+        "delta": {
+          "type": "number"
+        },
+        "pct_change": {
+          "type": "number"
+        },
+        "regression": {
+          "type": "boolean"
+        },
+        "higher_is_worse": {
+          "type": "boolean"
+        }
+      }
+    },
+    "comparison": {
+      "title": "Comparison",
+      "description": "Per-metric delta against a baseline ohho.bench/v1 result.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "baseline_ref",
+        "metrics"
+      ],
+      "properties": {
+        "baseline_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/comparison_metric"
+          }
+        }
+      }
+    },
+    "gate_check": {
+      "title": "GateCheck",
+      "description": "One SLO or regression gate.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "expr",
+        "passed"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "gates": {
+      "title": "Gates",
+      "description": "SLO and regression gates for the primary batch.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "passed",
+        "checks"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gate_check"
+          }
+        }
+      }
+    },
+    "batch_result": {
+      "title": "BatchResult",
+      "description": "Latency and throughput for one batch size.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "batch_size",
+        "latency",
+        "throughput"
+      ],
+      "properties": {
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "latency": {
+          "$ref": "#/$defs/latency_report"
+        },
+        "throughput": {
+          "$ref": "#/$defs/throughput"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    },
+    "llm": {
+      "title": "LlmBench",
+      "description": "LLM serving measurements (ohho.bench.llm/v1). Optional on the parent ohho.bench/v1 result. Required fields are the primary point: time to first token, inter-token latency, token throughput, and request throughput at one concurrency. Optional tpot, points, and precisions record a generate-mode sweep. Optional sweep, pareto, recommendation, recommendations, and skipped record an llm --sweep run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema",
+        "backend",
+        "concurrency",
+        "ttft",
+        "inter_token",
+        "tokens_per_s",
+        "requests_per_s"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "ohho.bench.llm/v1",
+          "description": "LLM block id. A breaking change of this block uses a new id. The parent result stays ohho.bench/v1."
+        },
+        "backend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Serving backend id, such as vllm, sglang, tensorrt-llm, or llama-cpp."
+        },
+        "backend_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "precision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_sha_of": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What run.model_sha hashes: file when the weights were read, otherwise identifier."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of requests in flight."
+        },
+        "ttft": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "inter_token": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Output token chunks divided by wall-clock seconds."
+        },
+        "requests_per_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Completed requests divided by wall-clock seconds."
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requests_ok": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workload": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Autoregressive workload: llm, vlm, or vla."
+        },
+        "tpot": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "e2e": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "tokens_per_request_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Mean output tokens per second of one request."
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peak_vram_mb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Peak weight or device memory for the primary precision, in MiB."
+        },
+        "vram_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How peak_vram_mb was obtained."
+        },
+        "agreement": {
+          "$ref": "#/$defs/metric"
+        },
+        "points": {
+          "type": "array",
+          "description": "One row per precision, prompt length, image size, and concurrency. An llm --sweep run stores one row per measured cell.",
+          "items": {
+            "$ref": "#/$defs/llm_point"
+          }
+        },
+        "precisions": {
+          "type": "array",
+          "description": "Precision comparison at the primary prompt, image size, and concurrency.",
+          "items": {
+            "$ref": "#/$defs/llm_precision"
+          }
+        },
+        "sweep": {
+          "$ref": "#/$defs/llm_sweep"
+        },
+        "pareto": {
+          "type": "array",
+          "description": "Non-dominated cells: lower p95 TTFT and higher tokens/s, compared within one workload.",
+          "items": {
+            "$ref": "#/$defs/llm_pareto_point"
+          }
+        },
+        "recommendation": {
+          "$ref": "#/$defs/llm_recommendation"
+        },
+        "recommendations": {
+          "type": "array",
+          "description": "Best throughput under the TTFT target, one row per workload.",
+          "items": {
+            "$ref": "#/$defs/llm_recommendation"
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "description": "Sweep options the backend did not run, each with a reason. A skip is not a failed run.",
+          "items": {
+            "$ref": "#/$defs/llm_skip"
+          }
+        }
+      }
+    },
+    "llm_point": {
+      "title": "LlmPoint",
+      "description": "One generate-mode cell: latency, throughput, and optional memory and agreement.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "concurrency",
+        "prompt_tokens",
+        "image_tokens",
+        "precision",
+        "ttft",
+        "tpot",
+        "e2e",
+        "tokens_per_s",
+        "tokens_per_request_s"
+      ],
+      "properties": {
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "precision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ttft": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "tpot": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "e2e": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_per_request_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "requests_per_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peak_vram_mb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "vram_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agreement": {
+          "$ref": "#/$defs/metric"
+        },
+        "workload": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prefix_cache": {
+          "type": "boolean"
+        },
+        "max_batch_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "chunked_prefill": {
+          "type": "boolean"
+        },
+        "speculative_decoding": {
+          "type": "boolean"
+        },
+        "pareto": {
+          "type": "boolean"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    },
+    "llm_precision": {
+      "title": "LlmPrecision",
+      "description": "One precision compared at the primary prompt, image size, and concurrency.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "precision",
+        "ttft",
+        "tpot",
+        "e2e",
+        "tokens_per_s",
+        "tokens_per_request_s"
+      ],
+      "properties": {
+        "precision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ttft": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "tpot": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "e2e": {
+          "$ref": "#/$defs/latency_stats"
+        },
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_per_request_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "peak_vram_mb": {
+          "type": "number",
+          "minimum": 0
+        },
+        "vram_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agreement": {
+          "$ref": "#/$defs/metric"
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    },
+    "llm_sweep": {
+      "title": "LlmSweep",
+      "description": "Batching, prefix-cache, chunked-prefill, and speculative-decoding grid. engine_launched is false when this command did not start an engine.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "workloads",
+        "cells",
+        "timing_source",
+        "engine_launched"
+      ],
+      "properties": {
+        "workloads": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "cells": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timing_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "engine_launched": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "primary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chart": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrencies": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "max_batch_tokens": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "prefix_cache": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "chunked_prefill": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          }
+        },
+        "speculative_decoding": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "llm_pareto_point": {
+      "title": "LlmParetoPoint",
+      "description": "One non-dominated cell: p95 time to first token against tokens/s.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "workload",
+        "ttft_p95_ms",
+        "tokens_per_s"
+      ],
+      "properties": {
+        "workload": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ttft_p95_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_batch_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prefix_cache": {
+          "type": "boolean"
+        },
+        "chunked_prefill": {
+          "type": "boolean"
+        },
+        "speculative_decoding": {
+          "type": "boolean"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    },
+    "llm_recommendation": {
+      "title": "LlmRecommendation",
+      "description": "The configuration at or under a p95 TTFT target with the highest tokens/s. met is false when no cell qualifies.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "target_p95_ttft_ms",
+        "met",
+        "workload",
+        "reason"
+      ],
+      "properties": {
+        "target_p95_ttft_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "met": {
+          "type": "boolean"
+        },
+        "workload": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_batch_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prefix_cache": {
+          "type": "boolean"
+        },
+        "chunked_prefill": {
+          "type": "boolean"
+        },
+        "speculative_decoding": {
+          "type": "boolean"
+        },
+        "ttft_p95_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_per_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      }
+    },
+    "cost_inputs": {
+      "title": "CostInputs",
+      "description": "Price inputs used for one estimate. Edit them and recompute without rerunning the benchmark. Every cost is an estimate, not an invoice.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "target_profile",
+        "profile_source",
+        "pricing",
+        "price_source",
+        "control_rate_hz",
+        "watts_source",
+        "electricity_applied",
+        "electricity_usd_per_kwh",
+        "throughput_value",
+        "throughput_unit",
+        "note"
+      ],
+      "properties": {
+        "target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target profile id whose price row was applied."
+        },
+        "profile_source": {
+          "type": "string",
+          "enum": ["run", "flag", "default"],
+          "description": "run uses the profile on the result. flag is an override. default is the CPU profile when the result names none."
+        },
+        "measured_target_profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Profile recorded on the result when the run stored one."
+        },
+        "pricing": {
+          "type": "string",
+          "enum": ["cloud_gpu_hour", "edge_amortised"],
+          "description": "cloud_gpu_hour is USD per GPU-hour. edge_amortised is purchase price over amortisation hours plus watts times the electricity rate."
+        },
+        "price_source": {
+          "type": "string",
+          "enum": ["built-in", "file", "flag"],
+          "description": "built-in is the shipped table. file is --prices. flag is a CLI override."
+        },
+        "pricing_detail": {"type": "string", "minLength": 1},
+        "control_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Robot action rate used for meets_control_rate and robots_per_device."
+        },
+        "watts": {"type": "number", "minimum": 0},
+        "watts_source": {
+          "type": "string",
+          "enum": ["measured", "profile_default", "user", "unmeasured"],
+          "description": "measured reads telemetry power. profile_default is the table's typical watts. user is --watts. unmeasured adds no electricity."
+        },
+        "gpu_hour_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per GPU-hour when pricing is cloud_gpu_hour."
+        },
+        "hardware_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Purchase price amortised for an edge profile."
+        },
+        "amortisation_hours": {"type": "number", "exclusiveMinimum": 0},
+        "hardware_usd_per_hour": {"type": "number", "minimum": 0},
+        "electricity_usd_per_kwh": {"type": "number", "minimum": 0},
+        "electricity_usd_per_hour": {"type": "number", "minimum": 0},
+        "electricity_applied": {
+          "type": "boolean",
+          "description": "True when watts times the electricity rate were added. Cloud GPU-hour prices do not add electricity on top."
+        },
+        "tokens_per_s": {"type": "number", "minimum": 0},
+        "actions_per_s": {"type": "number", "minimum": 0},
+        "throughput_value": {"type": "number", "minimum": 0},
+        "throughput_unit": {"type": "string", "minLength": 1},
+        "note": {"type": "string", "minLength": 1}
+      }
+    },
+    "cost": {
+      "title": "BenchCost",
+      "description": "Estimated USD from measured throughput and a user-editable price. estimate is always true. label is estimate. These figures are not an invoice, a cloud bill, or a hardware quote.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["schema", "estimate", "label", "inputs", "usd_per_hour"],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "ohho.bench.cost/v1",
+          "description": "Cost block id. A breaking change of this block uses a new id. The parent result stays ohho.bench/v1."
+        },
+        "estimate": {
+          "type": "boolean",
+          "const": true,
+          "description": "Always true. Costs are estimates."
+        },
+        "label": {
+          "type": "string",
+          "const": "estimate",
+          "description": "Always estimate, so a reader can mark the figures without inferring it."
+        },
+        "inputs": {"$ref": "#/$defs/cost_inputs"},
+        "usd_per_hour": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Device price per hour from the inputs."
+        },
+        "usd_per_1m_output_tokens": {
+          "type": "number",
+          "minimum": 0,
+          "description": "usd_per_hour * 1000000 / (tokens_per_s * 3600), from measured output-token throughput."
+        },
+        "usd_per_1k_actions": {
+          "type": "number",
+          "minimum": 0,
+          "description": "USD per 1000 actions at control_rate_hz. The device is shared across robots_per_device streams, so this equals usd_per_hour * 1000 / (actions_per_s * 3600) from measured action throughput."
+        },
+        "usd_per_robot_hour": {
+          "type": "number",
+          "minimum": 0,
+          "description": "usd_per_hour * control_rate_hz / actions_per_s. Hourly cost of one robot at the control rate."
+        },
+        "actions_per_watt": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Measured actions per second divided by watts."
+        },
+        "meets_control_rate": {
+          "type": "boolean",
+          "description": "True when measured actions per second are at least control_rate_hz."
+        },
+        "robots_per_device": {
+          "type": "number",
+          "minimum": 0,
+          "description": "actions_per_s / control_rate_hz. How many control-rate streams one device can feed."
+        }
+      }
+    },
+    "llm_skip": {
+      "title": "LlmSkip",
+      "description": "One sweep option that was not measured, with the reason. A skip does not fail the run.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "option",
+        "reason"
+      ],
+      "properties": {
+        "option": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pipeline": {
+      "title": "PipelineBench",
+      "description": "End-to-end camera-to-action pipeline (ohho.bench.pipeline/v1). Additive on ohho.bench/v1: a new field here stays on v1, and a break is a new pipeline version plus a converter.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "version",
+        "world",
+        "source",
+        "target_hz",
+        "achieved_hz",
+        "rate_sustained",
+        "dropped_frames",
+        "frames_presented",
+        "frames_published",
+        "jitter_ms",
+        "device",
+        "live_robot"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "ohho.bench.pipeline/v1",
+          "description": "Pipeline block version. Independent of the ohho.bench/v1 document id."
+        },
+        "world": {
+          "type": "string",
+          "enum": [
+            "sim",
+            "recorded",
+            "hardware"
+          ],
+          "description": "sim is the in-process simulator. hardware is a replay labelled hardware and is never a live robot in this block."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "sim, lerobot, rosbag, fixture, or hardware."
+        },
+        "target_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Configured control rate."
+        },
+        "achieved_hz": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Published frames per second across the paced window. This is the control rate, not latency.achievable_hz."
+        },
+        "rate_sustained": {
+          "type": "boolean",
+          "description": "True when no frame was dropped and every published frame finished inside its control period."
+        },
+        "dropped_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Frames skipped because the previous frame was still running at the target Hz."
+        },
+        "frames_presented": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frames_published": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "jitter_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Population standard deviation of measured end-to-end latencies, in milliseconds. Same value as latency.std."
+        },
+        "interval_jitter_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Population standard deviation of inter-publish intervals, in milliseconds."
+        },
+        "control_period_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sink": {
+          "type": "string",
+          "minLength": 1
+        },
+        "device": {
+          "type": "string",
+          "enum": [
+            "cpu",
+            "cuda"
+          ],
+          "description": "cpu when H2D and D2H were host copies."
+        },
+        "live_robot": {
+          "type": "boolean",
+          "description": "True only if this process commanded a real robot. The pipeline bench writes false."
+        },
+        "gpu_follow_up": {
+          "type": "array",
+          "description": "Stages that stayed on the host because CUDA copies are not timed here.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "gpu_note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "episode": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frame_origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "camera, sim, or state-raster when a LeRobot episode has no stored image."
+        },
+        "recording": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "accuracy_comparison": {
+      "title": "AccuracyComparison",
+      "description": "Reference versus optimised score for one task metric, and whether the delta is inside the tolerance.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "task",
+        "metric",
+        "reference",
+        "optimized",
+        "delta",
+        "tolerance",
+        "result"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Evaluator name, such as action_error, sim_success, detection_map, or token_match."
+        },
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference": {
+          "type": "number",
+          "description": "Score of the reference model on this metric."
+        },
+        "optimized": {
+          "type": "number",
+          "description": "Score of the optimised model on this metric."
+        },
+        "delta": {
+          "type": "number",
+          "description": "optimized minus reference. Negative means the optimised score is lower."
+        },
+        "tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Largest allowed regression. A value equal to the tolerance passes."
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "lower_is_better",
+            "higher_is_better"
+          ],
+          "description": "lower_is_better passes when delta is at most the tolerance. higher_is_better passes when the drop (reference minus optimized) is at most the tolerance."
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "per_joint": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/joint_accuracy"
+          }
+        },
+        "seeds": {
+          "type": "array",
+          "description": "Fixed sim or episode seeds that were scored, in order.",
+          "items": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "joint_accuracy": {
+      "title": "JointAccuracy",
+      "description": "Reference and optimised error for one action joint.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "index",
+        "reference",
+        "optimized",
+        "delta"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference": {
+          "type": "number"
+        },
+        "optimized": {
+          "type": "number"
+        },
+        "delta": {
+          "type": "number"
+        }
       }
     }
   }
