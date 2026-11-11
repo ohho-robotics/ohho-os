@@ -244,6 +244,55 @@ export interface Gates {
 }
 
 /**
+ * Price inputs used for one estimate. Edit them and recompute without
+ * rerunning the benchmark. Every cost is an estimate, not an invoice.
+ * Additional properties are allowed.
+ */
+export interface CostInputs {
+  target_profile: string;
+  profile_source: "run" | "flag" | "default";
+  measured_target_profile?: string;
+  pricing: "cloud_gpu_hour" | "edge_amortised";
+  price_source: "built-in" | "file" | "flag";
+  pricing_detail?: string;
+  control_rate_hz: number;
+  watts?: number;
+  watts_source: "measured" | "profile_default" | "user" | "unmeasured";
+  gpu_hour_usd?: number;
+  hardware_usd?: number;
+  amortisation_hours?: number;
+  hardware_usd_per_hour?: number;
+  electricity_usd_per_kwh: number;
+  electricity_usd_per_hour?: number;
+  electricity_applied: boolean;
+  tokens_per_s?: number;
+  actions_per_s?: number;
+  throughput_value: number;
+  throughput_unit: string;
+  note: string;
+}
+
+/**
+ * Estimated USD from measured throughput and a user-editable price. estimate
+ * is always true. label is estimate. These figures are not an invoice, a cloud
+ * bill, or a hardware quote.
+ * Additional properties are allowed.
+ */
+export interface BenchCost {
+  schema: "ohho.bench.cost/v1";
+  estimate: true;
+  label: "estimate";
+  inputs: CostInputs;
+  usd_per_hour: number;
+  usd_per_1m_output_tokens?: number;
+  usd_per_1k_actions?: number;
+  usd_per_robot_hour?: number;
+  actions_per_watt?: number;
+  meets_control_rate?: boolean;
+  robots_per_device?: number;
+}
+
+/**
  * Latency and throughput for one batch size.
  * Additional properties are allowed.
  */
@@ -251,6 +300,7 @@ export interface BatchResult {
   batch_size: number;
   latency: LatencyReport;
   throughput: Throughput;
+  cost?: BenchCost;
 }
 
 /**
@@ -268,6 +318,7 @@ export interface LlmParetoPoint {
   prefix_cache?: boolean;
   chunked_prefill?: boolean;
   speculative_decoding?: boolean;
+  cost?: BenchCost;
 }
 
 /**
@@ -298,6 +349,7 @@ export interface LlmPoint {
   chunked_prefill?: boolean;
   speculative_decoding?: boolean;
   pareto?: boolean;
+  cost?: BenchCost;
 }
 
 /**
@@ -317,6 +369,7 @@ export interface LlmPrecision {
   concurrency?: number;
   prompt_tokens?: number;
   image_tokens?: number;
+  cost?: BenchCost;
 }
 
 /**
@@ -336,6 +389,7 @@ export interface LlmRecommendation {
   speculative_decoding?: boolean;
   ttft_p95_ms?: number;
   tokens_per_s?: number;
+  cost?: BenchCost;
 }
 
 /**
@@ -459,5 +513,6 @@ export interface BenchResult {
   gates?: Gates;
   batches?: BatchResult[];
   llm?: LlmBench;
+  cost?: BenchCost;
   pipeline?: PipelineBench;
 }

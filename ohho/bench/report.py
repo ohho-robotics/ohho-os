@@ -154,6 +154,7 @@ def render_markdown(document: dict[str, Any]) -> str:
     sustained = document.get("sustained")
     if isinstance(sustained, dict):
         lines.extend(_sustained_rows(sustained))
+    _append_cost(lines, document)
     gates = document.get("gates")
     if isinstance(gates, dict):
         lines.append("")
@@ -253,6 +254,21 @@ def render_prometheus(document: dict[str, Any]) -> str:
             lines.append(
                 f'{name}{{target="{profile}",workload="{workload}"}} {float(value)}'
             )
+    cost = document.get("cost")
+    if isinstance(cost, dict):
+        for name, key in (
+            ("ohho_bench_usd_per_hour", "usd_per_hour"),
+            ("ohho_bench_usd_per_1m_output_tokens", "usd_per_1m_output_tokens"),
+            ("ohho_bench_usd_per_1k_actions", "usd_per_1k_actions"),
+            ("ohho_bench_actions_per_watt", "actions_per_watt"),
+        ):
+            value = cost.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            lines.append(
+                f'{name}{{target="{profile}",workload="{workload}",estimate="true"}} '
+                f"{float(value)}"
+            )
     gates = document.get("gates")
     if isinstance(gates, dict):
         lines.append(
@@ -350,6 +366,63 @@ def _load_wandb() -> Any:
     import wandb
 
     return wandb
+
+
+def _append_cost(lines: list[str], document: dict[str, Any]) -> None:
+    """Markdown table of the estimate and the inputs that produced it."""
+    cost = document.get("cost")
+    if not isinstance(cost, dict):
+        return
+    inputs = cost.get("inputs") if isinstance(cost.get("inputs"), dict) else {}
+    lines.append("")
+    lines.append("### Cost (estimate)")
+    lines.append("")
+    lines.append(
+        "These figures are estimates, not an invoice, a cloud bill, or a hardware quote."
+    )
+    lines.append("")
+    lines.append("| Field | Value |")
+    lines.append("| --- | --- |")
+    lines.append("| estimate | true |")
+    for key in (
+        "target_profile",
+        "profile_source",
+        "measured_target_profile",
+        "pricing",
+        "price_source",
+        "pricing_detail",
+        "gpu_hour_usd",
+        "hardware_usd",
+        "amortisation_hours",
+        "hardware_usd_per_hour",
+        "electricity_usd_per_kwh",
+        "electricity_usd_per_hour",
+        "electricity_applied",
+        "watts",
+        "watts_source",
+        "control_rate_hz",
+        "tokens_per_s",
+        "actions_per_s",
+        "throughput_value",
+        "throughput_unit",
+        "note",
+    ):
+        if key in inputs:
+            lines.append(f"| {key} | {_cell(inputs[key])} |")
+    for key, label in (
+        ("usd_per_hour", "USD per hour"),
+        ("usd_per_1m_output_tokens", "USD per 1M output tokens"),
+        ("usd_per_1k_actions", "USD per 1k actions"),
+        ("usd_per_robot_hour", "USD per robot-hour"),
+        ("actions_per_watt", "actions per watt"),
+        ("meets_control_rate", "meets control rate"),
+        ("robots_per_device", "robots per device"),
+    ):
+        if key not in cost:
+            continue
+        value = cost[key]
+        rendered = _cell(value) if isinstance(value, bool) else _num(value)
+        lines.append(f"| {label} | {rendered} |")
 
 
 def _sensor_rows(sensors: dict[str, Any]) -> list[str]:

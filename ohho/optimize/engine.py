@@ -296,6 +296,9 @@ def _gate_and_publish(
         (out / "accuracy.json").write_text(
             json.dumps(task_document, indent=2) + "\n", encoding="utf-8"
         )
+    from ohho.optimize.publish import run_parity
+
+    run_parity(document, out)
     write_manifest(out, document)
     return document
 

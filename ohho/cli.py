@@ -2178,7 +2178,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             and not getattr(args, "pipeline", False)
         ):
             parser.error(
-                "bench needs `validate FILE`, `--artifact PATH --target PROFILE`, "
+                "bench needs `validate FILE`, `cost FILE`, `prices`, "
+                "`--artifact PATH --target PROFILE`, "
                 "`--mode generate --target PROFILE`, or `--pipeline`"
             )
         if not (
