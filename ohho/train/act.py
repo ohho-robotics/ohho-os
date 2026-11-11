@@ -233,7 +233,9 @@ def train_act(
                 (train_steps, 0.0412),
             ]
             for step, loss in loss_curve:
-                log(int(step), {"loss": float(loss)})
+                if step < train_steps:
+                    log(int(step), {"loss": float(loss)})
+            log(int(train_steps), {"loss": float(loss_curve[-1][1])})
             config = {
                 "policy": "act",
                 "mock": True,
