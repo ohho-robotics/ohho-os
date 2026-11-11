@@ -408,7 +408,7 @@ class TestTrainCommand(unittest.TestCase):
                 (example_path("ppo"), ["hyperparameters.gamma=1.5"], "gamma"),
                 (
                     example_path("act"),
-                    ["precision=bf16", f"output.dir={out}"],
+                    ["precision=fp8", f"output.dir={out}"],
                     "precision",
                 ),
                 (
@@ -596,6 +596,24 @@ class TestActRun(unittest.TestCase):
             self.assertEqual(manifest["status"], "succeeded")
             self.assertEqual(manifest["family"], "act")
             self.assertEqual(manifest["device"], "cpu")
+            self.assertEqual(manifest["precision"], "fp32")
+            self.assertIs(manifest["loss_scaling"], False)
+            self.assertEqual(manifest["precision_backend"], "fp32")
+            fp32_metrics = manifest["precision_metrics"]["fp32"]
+            self.assertEqual(
+                fp32_metrics["throughput_steps_per_s"],
+                metrics["throughput_steps_per_s"],
+            )
+            self.assertEqual(
+                fp32_metrics["peak_memory_bytes"], metrics["peak_memory_bytes"]
+            )
+            self.assertGreater(fp32_metrics["throughput_steps_per_s"], 0)
+            self.assertIsInstance(fp32_metrics["peak_memory_bytes"], int)
+            self.assertGreaterEqual(fp32_metrics["peak_memory_bytes"], 0)
+            self.assertIsNone(manifest["precision_metrics"]["fp16"])
+            self.assertIsNone(manifest["precision_metrics"]["bf16"])
+            self.assertIsNone(manifest["precision_metrics"]["fp8"])
+            self.assertEqual(_events_of(events, "train_start")[0]["precision"], "fp32")
             self.assertFalse(manifest["base_weights"]["loaded"])
             self.assertIsNone(manifest["base_weights"]["hash"])
             self.assertEqual(manifest["base_weights"]["uri"], "local:act-init")
