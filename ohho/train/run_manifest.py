@@ -223,7 +223,6 @@ class RunManifest:
     library_versions: dict[str, str]
     gpu: GpuRecord | None
     final_loss: int | float | None
-    wandb_url: str | None
     error: str | None
     recipe_path: str
     overrides: list[str]
@@ -231,6 +230,7 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
+    wandb_url: str | None = None
     pruning: dict[str, Any] | None = None
     qat: dict[str, Any] | None = None
     lineage: dict[str, Any] | None = None

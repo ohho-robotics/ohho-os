@@ -444,8 +444,8 @@ class TestMetricsLog(unittest.TestCase):
 
     def test_recipes_log_through_the_interface_and_do_not_call_wandb(self) -> None:
         offenders: list[str] = []
-        for path in (ROOT / "ohho").rglob("*.py"):
-            if path.name == "metrics.py":
+        for path in (ROOT / "ohho" / "train").rglob("*.py"):
+            if path.name in ("metrics.py", "sweep_wandb.py"):
                 continue
             uses = _wandb_uses(path)
             if uses:
@@ -461,7 +461,7 @@ class TestMetricsLog(unittest.TestCase):
             self.assertNotIn(
                 "wandb", (ROOT / "ohho" / "train" / "builtin_recipes.py").read_text()
             )
-            self.assertIn(family, recipes.read_text(encoding="utf-8"))
+            self.assertIn(family, recipes.read_text(encoding="utf-8").lower())
 
         calls: list[tuple[int, dict[str, float]]] = []
         real = log

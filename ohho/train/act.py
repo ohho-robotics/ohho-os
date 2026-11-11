@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
-from ..metrics import log, open_metrics
+from ..metrics import log, open_metrics, summary_path
 from ..model_safety import (
     UnsafeModelFile,
     ensure_torch_weights_allowed,
@@ -243,22 +243,28 @@ def train_act(
                 "action_dim": action_dim,
                 "chunk_size": chunk_size,
                 "train_steps": train_steps,
-                "loss_curve": loss_curve,
-                "final_loss": loss_curve[-1][1],
             }
             if qat_block is not None:
                 config["qat"] = _qat_report_without_running(qat_block)
             with open(out / "config.json", "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
-            with open(out / "metrics.json", "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "loss_curve": loss_curve,
-                        "final_loss": loss_curve[-1][1],
-                    },
-                    f,
-                    indent=2,
-                )
+            summary_file = summary_path(out)
+            mock_metrics: dict[str, Any] = {}
+            if summary_file.is_file():
+                try:
+                    loaded = json.loads(summary_file.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        mock_metrics.update(loaded)
+                except Exception:
+                    pass
+            mock_metrics.update(
+                {
+                    "loss_curve": loss_curve,
+                    "final_loss": loss_curve[-1][1],
+                }
+            )
+            with open(summary_file, "w", encoding="utf-8") as f:
+                json.dump(mock_metrics, f, indent=2)
             with open(out / "checkpoint.json", "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
             return str(out)
@@ -508,8 +514,6 @@ def _train_act_body(
         "vision_backbone": vision_backbone,
         "deterministic": bool(deterministic),
         "val_every": val_every,
-        "loss_curve": loss_curve,
-        "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
     if report is not None:
         config["pruning"] = {
@@ -541,9 +545,19 @@ def _train_act_body(
     if last_val is not None:
         metrics["validation_loss"] = last_val
         metrics["validation_curve"] = validation_curve
-    with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        metrics["deterministic"] = bool(deterministic)
-        json.dump(metrics, f, indent=2)
+    summary_file = summary_path(out)
+    merged_metrics: dict[str, Any] = {}
+    if summary_file.is_file():
+        try:
+            loaded = json.loads(summary_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                merged_metrics.update(loaded)
+        except Exception:
+            pass
+    merged_metrics.update(metrics)
+    merged_metrics["deterministic"] = bool(deterministic)
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(merged_metrics, f, indent=2)
 
     return str(out)
 

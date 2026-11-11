@@ -470,7 +470,21 @@ def _append_records(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def _write_summary(path: Path, document: Mapping[str, Any]) -> None:
-    payload = json.dumps(document, indent=2, allow_nan=False) + "\n"
+    merged: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                merged.update(existing)
+        except Exception:
+            pass
+    for k, v in document.items():
+        if k == "final_loss" and v is None and "final_loss" in merged:
+            continue
+        if k == "loss_curve" and not v and merged.get("loss_curve"):
+            continue
+        merged[k] = v
+    payload = json.dumps(merged, indent=2, allow_nan=False) + "\n"
     temporary = path.with_name(f"{path.name}.tmp")
     temporary.write_text(payload, encoding="utf-8", newline="\n")
     temporary.replace(path)
