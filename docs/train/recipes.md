@@ -45,7 +45,7 @@ Required fields are `schema`, `family`, `dataset`, and `output`. `schema` is the
 | `compression_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `eval_hooks` | List of `{name, params}`. Recorded. Not executed. |
 | `distillation` | Optional. Teacher reference, loss, mix weight, and temperature. See [Knowledge distillation](distillation.md). Absent means ordinary training. |
-| `output.dir` | Directory for the checkpoint, `metrics.json`, and `run_manifest.json`. |
+| `output.dir` | Directory for the checkpoint, `metrics.jsonl`, `metrics.json`, and `run_manifest.json`. |
 
 `dataset.version_id` is not resolved in this build. A family that has a trainer, and a recipe that sets only `version_id`, exits `4` before training.
 
@@ -99,7 +99,7 @@ PPO hyperparameters are `task`, `backend`, `num_envs`, `rollout_steps`, `updates
 
 ## What a successful ACT run writes
 
-`train_act` writes the checkpoint directory (`policy.pt`, `config.json`, `metrics.json`). `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command.
+`train_act` writes the checkpoint directory (`policy.pt`, `config.json`). Loss samples go through [`ohho.log`](metrics.md), which writes `metrics.jsonl` and `metrics.json` in that directory. `ohho train` writes `run_manifest.json` in the output directory when ACT emits `train_start`, then finalises that file in the checkpoint directory when training ends. `config.json` has `"mock": false` for this command. `wandb_url` on the manifest is null unless a configured W&B client returned a run link.
 
 The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, the pruning report when a `pruning` block was set, every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. `metrics.json` carries the same precision, throughput, peak memory, and pruning report. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
 The manifest is an [`ohho.run/v1`](run-manifest.md) document. It records the resolved recipe, the precision and its throughput and peak memory, the resolved `qat` block (or null), every seed, the git commit and dirty flag for the checkout that contains the recipe, the dataset version id and content hash, the base-weights hash, the container image digest, library versions, GPU name / driver / CUDA, UTC start and finish times, and the status. When `qat` is enabled, ACT runs the calibration warm-up and the fake-quant fine-tune after the precision loop. `policy.pt` stays fp32. See [Quantisation-aware training](qat.md). `metrics.json` carries the same precision, throughput, and peak memory. `base_weights.loaded` is false for ACT in this build, including when `base_weights.uri` is set. Remote weight URIs are not downloaded, so their hash stays null. Hook names are listed under `declared_hooks`. The runner does not execute them. The progress stream says `status: "skipped"` for each one.
@@ -140,9 +140,11 @@ A run that never starts training emits a single `error` line and no `train_start
 
 ## Adding a family
 
-Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. Optional `metadata()` returns `{"precisions": [...]}`. Omit it, or list `fp32`, `fp16`, `bf16`, and `fp8`, and the shared runner applies the device check before `run`. A shorter list refuses the other precisions before training. `run` trains for real, writes `metrics.json`, and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest. Put `throughput_steps_per_s` and `peak_memory_bytes` in `metrics.json` (a `PrecisionSession` from `ohho.train.precision` measures them) and the manifest records those numbers under the precision that ran. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines. SmolVLA and OpenVLA set `available()` true so parameter preflight runs, then `run` raises `FamilyUnavailable` because this build does not load their base weights.
+Register an object with `id`, `available()`, and `run(recipe, emit)`. `available()` returns false when this build cannot train that family. Optional `metadata()` returns `{"precisions": [...]}`. Omit it, or list `fp32`, `fp16`, `bf16`, and `fp8`, and the shared runner applies the device check before `run`. A shorter list refuses the other precisions before training. `run` trains for real, records metrics with [`ohho.log`](metrics.md) which writes `metrics.jsonl` and `metrics.json`, and returns a `TrainResult`. Emit `train_start` before training. The runner writes `run_manifest.json` on that event and finalises it when `run` returns or raises. The family does not write the manifest and does not call W&B itself. Put `throughput_steps_per_s` and `peak_memory_bytes` in `metrics.json` (a `PrecisionSession` from `ohho.train.precision` measures them) and the manifest records those numbers under the precision that ran. Use `emit` for progress objects. Do not print to stdout. That stream is JSON lines. SmolVLA and OpenVLA set `available()` true so parameter preflight runs, then `run` raises `FamilyUnavailable` because this build does not load their base weights.
 
 ```python
+from ohho import log
+from ohho.metrics import open_metrics, summary_path
 from ohho.train.recipe_registry import TrainResult, register
 
 class MyFamily:
@@ -153,8 +155,10 @@ class MyFamily:
 
     def run(self, recipe, emit):
         emit({"event": "train_start", "family": self.id, "device": "cpu"})
-        # Train, then write metrics.json under recipe["output"]["dir"].
-        raise NotImplementedError
+        output = recipe["output"]["dir"]
+        with open_metrics(output):
+            log(0, {"loss": 1.0})
+        return TrainResult(output, str(summary_path(output)), "cpu", False)
 
 register(MyFamily(), source="my_package")
 ```

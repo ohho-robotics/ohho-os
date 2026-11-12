@@ -40,6 +40,14 @@ is done. Pushing a `v*` tag runs `.github/workflows/release.yml`.
   the manifest. An engine is refused when the host GPU architecture or
   TensorRT version differs from the manifest. `RegistryCache` is the hook
   for a console registry.
+- **Training metric log** — `ohho.log(step, metrics)` (OHH-544). Built-in
+  trainers buffer samples and flush an append-only `metrics.jsonl` plus a
+  `metrics.json` snapshot next to the run. A `MetricsUploader` can receive
+  each flushed batch; ohho-os does not upload it. W&B is an optional mirror:
+  `wandb` is imported only when `WANDB_API_KEY` is set and the mode is not
+  offline or disabled. `run_manifest.json` stores `wandb_url` only when the
+  W&B client returns a link. The native run id is `ohho_run_id` on that W&B
+  run. Docs: [`docs/train/metrics.md`](docs/train/metrics.md).
 - **LLM cost model** (OHH-477) — `ohho bench` writes an `ohho.bench.cost/v1`
   estimate on every inference, generate (`llm`, `vlm`, `vla`), and
   `ohho bench llm` result, including a serving sweep. Cloud profiles use a

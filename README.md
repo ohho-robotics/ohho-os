@@ -166,7 +166,7 @@ ohho sim-loop
 This single command executes the full five-stage CPU sim loop end-to-end:
 1. **Record**: Connects to the simulated robot (`omnibot` over `sim://`), captures >= 5 scripted teleoperation episodes (100 total frames), and writes a standardized LeRobot v2.0 dataset (`meta/info.json`, `meta/tasks.jsonl`, `meta/episodes.jsonl`, `meta/stats.json`, `data/chunk-000/episode_*.parquet`).
 2. **Validate**: Validates the dataset against the LeRobot v2.0 schema and loads it via `LeRobotDataset`.
-3. **Train**: Trains a tiny Action Chunking Transformer (ACT, CVAE + Transformer) policy on CPU for 200 steps and saves the checkpoint (`policy.pt`, `config.json`, `metrics.json`).
+3. **Train**: Trains a tiny Action Chunking Transformer (ACT, CVAE + Transformer) policy on CPU for 200 steps and saves the checkpoint (`policy.pt`, `config.json`, `metrics.jsonl`, `metrics.json`).
 4. **Serve & Evaluate**: Boots the FastAPI inference endpoint, loads the trained ACT checkpoint, and executes >= 50 policy-driven closed-loop steps on the simulated robot without errors.
 5. **Summary**: Computes serve request latency percentiles (p50 and p95) and formats the run metrics and train loss curve. In GitHub Actions, the summary is published to `$GITHUB_STEP_SUMMARY`.
 

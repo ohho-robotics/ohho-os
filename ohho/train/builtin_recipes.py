@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..metrics import open_metrics, summary_path
 from ohho.compression.qat import QatError, prepare_qat_recipe
 from .il.family import DiffusionRecipe, prepare_il_run
 from .precision import PRECISIONS, prepare_precision
@@ -106,45 +107,49 @@ class ActRecipe:
                 "deterministic": prepared.deterministic,
             }
         )
-        try:
-            from ohho.train.act import train_act
+        output_dir = Path(recipe["output"]["dir"]).expanduser()
+        with open_metrics(output_dir):
+            try:
+                from ohho.train.act import train_act
 
-            checkpoint = train_act(
-                dataset=str(prepared.dataset),
-                output_dir=str(Path(recipe["output"]["dir"]).expanduser()),
-                device=plan.device,
-                precision=plan.precision,
-                mock=False,
-                pruning=pruning,
-                qat=recipe.get("qat"),
-                train_steps=train_steps,
-                batch_size=int(prepared.resolved["batch_size"]),
-                lr=float(prepared.resolved["lr"]),
-                chunk_size=int(prepared.resolved["chunk_size"]),
-                d_model=int(prepared.resolved["d_model"]),
-                nhead=int(prepared.resolved["nhead"]),
-                num_encoder_layers=int(prepared.resolved["num_encoder_layers"]),
-                num_decoder_layers=int(prepared.resolved["num_decoder_layers"]),
-                dim_feedforward=int(prepared.resolved["dim_feedforward"]),
-                latent_dim=int(prepared.resolved["latent_dim"]),
-                kl_weight=float(prepared.resolved["kl_weight"]),
-                log_every=int(prepared.resolved["log_every"]),
-                val_every=int(prepared.resolved["val_every"]),
-                val_fraction=float(prepared.resolved["val_fraction"]),
-                early_stop_patience=int(prepared.resolved["early_stop_patience"]),
-                early_stop_min_delta=float(prepared.resolved["early_stop_min_delta"]),
-                vision_backbone=str(prepared.resolved["vision_backbone"]),
-                on_event=_on_event(self.id, emit),
-                deterministic=prepared.deterministic,
-                seed=prepared.seed,
-            )
-        except (QatError, TrainFailed):
-            raise
-        except Exception as exc:
-            raise TrainFailed(f"ACT training failed: {exc}") from exc
-        metrics = Path(checkpoint) / "metrics.json"
-        if not metrics.is_file():
-            raise TrainFailed(f"ACT training did not write {metrics}")
+                checkpoint = train_act(
+                    dataset=str(prepared.dataset),
+                    output_dir=str(output_dir),
+                    device=plan.device,
+                    precision=plan.precision,
+                    mock=False,
+                    pruning=pruning,
+                    qat=recipe.get("qat"),
+                    train_steps=train_steps,
+                    batch_size=int(prepared.resolved["batch_size"]),
+                    lr=float(prepared.resolved["lr"]),
+                    chunk_size=int(prepared.resolved["chunk_size"]),
+                    d_model=int(prepared.resolved["d_model"]),
+                    nhead=int(prepared.resolved["nhead"]),
+                    num_encoder_layers=int(prepared.resolved["num_encoder_layers"]),
+                    num_decoder_layers=int(prepared.resolved["num_decoder_layers"]),
+                    dim_feedforward=int(prepared.resolved["dim_feedforward"]),
+                    latent_dim=int(prepared.resolved["latent_dim"]),
+                    kl_weight=float(prepared.resolved["kl_weight"]),
+                    log_every=int(prepared.resolved["log_every"]),
+                    val_every=int(prepared.resolved["val_every"]),
+                    val_fraction=float(prepared.resolved["val_fraction"]),
+                    early_stop_patience=int(prepared.resolved["early_stop_patience"]),
+                    early_stop_min_delta=float(
+                        prepared.resolved["early_stop_min_delta"]
+                    ),
+                    vision_backbone=str(prepared.resolved["vision_backbone"]),
+                    on_event=_on_event(self.id, emit),
+                    deterministic=prepared.deterministic,
+                    seed=prepared.seed,
+                )
+            except (QatError, TrainFailed):
+                raise
+            except Exception as exc:
+                raise TrainFailed(f"ACT training failed: {exc}") from exc
+            metrics = summary_path(checkpoint)
+            if not metrics.is_file():
+                raise TrainFailed(f"ACT training did not write {metrics}")
         return TrainResult(
             checkpoint_dir=str(Path(checkpoint)),
             metrics_path=str(metrics),

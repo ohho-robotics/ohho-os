@@ -32,6 +32,7 @@ from .recipe_schema import (
     TrainFailed,
     load_recipe_file,
 )
+from ..metrics import clear_last_metrics_run, wandb_url_for
 from .compression.distillation import (
     distillation_requested,
     prepare_distillation,
@@ -102,6 +103,7 @@ class _RunSession:
             metrics_path=None,
             final_loss=None,
             base_weights_loaded=False,
+            wandb_url=None,
         )
         path = self.output_dir / MANIFEST_NAME
         write_run_manifest(path, manifest)
@@ -133,6 +135,7 @@ class _RunSession:
             final_loss=final_loss,
             base_weights_loaded=result.base_weights_loaded,
             device=result.device,
+            wandb_url=wandb_url_for(checkpoint_dir) or wandb_url_for(self.output_dir),
             throughput_steps_per_s=throughput,
             peak_memory_bytes=peak,
             pruning_report=None if pruning is _NO_PRUNING else pruning,
@@ -158,6 +161,7 @@ class _RunSession:
                 metrics_path=None,
                 final_loss=None,
                 base_weights_loaded=False,
+                wandb_url=wandb_url_for(self.output_dir),
             )
             write_run_manifest(self.path, manifest)
             self.final = True
@@ -178,6 +182,7 @@ class _RunSession:
 
 def execute(recipe: str, overrides: Sequence[str] | None = None) -> int:
     """Validate ``recipe``, run its family, and return a process exit code."""
+    clear_last_metrics_run()
     family_id = ""
     run = _RunSession()
     try:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..data.reader import DatasetReader
+from ..metrics import log, open_metrics, summary_path
 from ..model_safety import (
     UnsafeModelFile,
     ensure_torch_weights_allowed,
@@ -214,39 +215,7 @@ def train_act(
     state_dim = reader.state_dim or 9
     action_dim = reader.action_dim or 9
 
-    if mock:
-        loss_curve = [
-            (0, 0.8421),
-            (50, 0.4312),
-            (100, 0.1854),
-            (150, 0.0891),
-            (train_steps, 0.0412),
-        ]
-        config = {
-            "policy": "act",
-            "mock": True,
-            "device": device,
-            "precision": precision,
-            "state_dim": state_dim,
-            "action_dim": action_dim,
-            "chunk_size": chunk_size,
-            "train_steps": train_steps,
-            "loss_curve": loss_curve,
-            "final_loss": loss_curve[-1][1],
-        }
-        if qat_block is not None:
-            config["qat"] = _qat_report_without_running(qat_block)
-        with open(out / "config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        with open(out / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump(
-                {"loss_curve": loss_curve, "final_loss": loss_curve[-1][1]}, f, indent=2
-            )
-        with open(out / "checkpoint.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        return str(out)
-
-    if not TORCH_AVAILABLE:
+    if not mock and not TORCH_AVAILABLE:
         from . import TrainUnavailable
 
         raise TrainUnavailable(
@@ -254,64 +223,111 @@ def train_act(
             "Use mock=True for the dependency-free sim loop."
         )
 
-    if device == "auto":
-        from ohho.hardware import resolve_device
+    with open_metrics(out):
+        if mock:
+            loss_curve = [
+                (0, 0.8421),
+                (50, 0.4312),
+                (100, 0.1854),
+                (150, 0.0891),
+                (train_steps, 0.0412),
+            ]
+            for step, loss in loss_curve:
+                if step < train_steps:
+                    log(int(step), {"loss": float(loss)})
+            log(int(train_steps), {"loss": float(loss_curve[-1][1])})
+            config = {
+                "policy": "act",
+                "mock": True,
+                "device": device,
+                "precision": precision,
+                "state_dim": state_dim,
+                "action_dim": action_dim,
+                "chunk_size": chunk_size,
+                "train_steps": train_steps,
+            }
+            if qat_block is not None:
+                config["qat"] = _qat_report_without_running(qat_block)
+            with open(out / "config.json", "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            summary_file = summary_path(out)
+            mock_metrics: dict[str, Any] = {}
+            if summary_file.is_file():
+                try:
+                    loaded = json.loads(summary_file.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        mock_metrics.update(loaded)
+                except Exception:
+                    pass
+            mock_metrics.update(
+                {
+                    "loss_curve": loss_curve,
+                    "final_loss": loss_curve[-1][1],
+                }
+            )
+            with open(summary_file, "w", encoding="utf-8") as f:
+                json.dump(mock_metrics, f, indent=2)
+            with open(out / "checkpoint.json", "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+            return str(out)
 
-        device = resolve_device("auto")
-    plan = require_precision(precision, capabilities_for(device, precision))
+        if device == "auto":
+            from ohho.hardware import resolve_device
 
-    all_states: List[List[float]] = []
-    all_action_chunks: List[List[List[float]]] = []
-    for _ep_meta, frames in reader.iter_episodes():
-        if not frames:
-            continue
-        for i in range(len(frames)):
-            s = frames[i].observation_state
-            chunk: List[List[float]] = []
-            for k in range(chunk_size):
-                idx = min(i + k, len(frames) - 1)
-                chunk.append(frames[idx].action)
-            all_states.append(s)
-            all_action_chunks.append(chunk)
+            device = resolve_device("auto")
+        plan = require_precision(precision, capabilities_for(device, precision))
 
-    if not all_states:
-        raise ValueError(f"no recorded frames found in dataset at {dataset}")
+        all_states: List[List[float]] = []
+        all_action_chunks: List[List[List[float]]] = []
+        for _ep_meta, frames in reader.iter_episodes():
+            if not frames:
+                continue
+            for i in range(len(frames)):
+                s = frames[i].observation_state
+                chunk: List[List[float]] = []
+                for k in range(chunk_size):
+                    idx = min(i + k, len(frames) - 1)
+                    chunk.append(frames[idx].action)
+                all_states.append(s)
+                all_action_chunks.append(chunk)
 
-    tensor_s = torch.tensor(all_states, dtype=torch.float32)
-    tensor_a = torch.tensor(all_action_chunks, dtype=torch.float32)
+        if not all_states:
+            raise ValueError(f"no recorded frames found in dataset at {dataset}")
 
-    with deterministic_algorithms(torch, enabled=deterministic):
-        return _train_act_body(
-            out,
-            tensor_s,
-            tensor_a,
-            state_dim=state_dim,
-            action_dim=action_dim,
-            device=device,
-            plan=plan,
-            qat_block=qat_block,
-            pruning=pruning,
-            train_steps=train_steps,
-            batch_size=batch_size,
-            lr=lr,
-            chunk_size=chunk_size,
-            d_model=d_model,
-            nhead=nhead,
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
-            dim_feedforward=dim_feedforward,
-            latent_dim=latent_dim,
-            kl_weight=kl_weight,
-            log_every=log_every,
-            val_every=val_every,
-            val_fraction=val_fraction,
-            early_stop_patience=early_stop_patience,
-            early_stop_min_delta=early_stop_min_delta,
-            vision_backbone=vision_backbone,
-            on_event=on_event,
-            deterministic=deterministic,
-            seed=seed,
-        )
+        tensor_s = torch.tensor(all_states, dtype=torch.float32)
+        tensor_a = torch.tensor(all_action_chunks, dtype=torch.float32)
+        with deterministic_algorithms(torch, enabled=deterministic):
+            return _train_act_body(
+                out,
+                tensor_s,
+                tensor_a,
+                state_dim=state_dim,
+                action_dim=action_dim,
+                device=device,
+                plan=plan,
+                qat_block=qat_block,
+                pruning=pruning,
+                train_steps=train_steps,
+                batch_size=batch_size,
+                lr=lr,
+                chunk_size=chunk_size,
+                d_model=d_model,
+                nhead=nhead,
+                num_encoder_layers=num_encoder_layers,
+                num_decoder_layers=num_decoder_layers,
+                dim_feedforward=dim_feedforward,
+                latent_dim=latent_dim,
+                kl_weight=kl_weight,
+                log_every=log_every,
+                val_every=val_every,
+                val_fraction=val_fraction,
+                early_stop_patience=early_stop_patience,
+                early_stop_min_delta=early_stop_min_delta,
+                vision_backbone=vision_backbone,
+                on_event=on_event,
+                deterministic=deterministic,
+                seed=seed,
+            )
 
 
 def _train_act_body(
@@ -425,6 +441,7 @@ def _train_act_body(
             if step % log_every == 0 or step == train_steps - 1:
                 loss_val = round(float(total_loss.detach().float().item()), 4)
                 loss_curve.append((step, loss_val))
+                log(step, {"loss": loss_val})
 
             step += 1
             if val_every is not None and validation_due(
@@ -499,8 +516,6 @@ def _train_act_body(
         "vision_backbone": vision_backbone,
         "deterministic": bool(deterministic),
         "val_every": val_every,
-        "loss_curve": loss_curve,
-        "final_loss": loss_curve[-1][1] if loss_curve else 0.0,
     }
     if report is not None:
         config["pruning"] = {
@@ -532,12 +547,21 @@ def _train_act_body(
     if last_val is not None:
         metrics["validation_loss"] = last_val
         metrics["validation_curve"] = validation_curve
-    with open(out / "metrics.json", "w", encoding="utf-8") as f:
-        metrics["deterministic"] = bool(deterministic)
-        json.dump(metrics, f, indent=2)
+    summary_file = summary_path(out)
+    merged_metrics: dict[str, Any] = {}
+    if summary_file.is_file():
+        try:
+            loaded = json.loads(summary_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                merged_metrics.update(loaded)
+        except Exception:
+            pass
+    merged_metrics.update(metrics)
+    merged_metrics["deterministic"] = bool(deterministic)
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(merged_metrics, f, indent=2)
 
     return str(out)
-
 
 def _encoder(layer: Any, num_layers: int, nested_tensor: bool) -> Any:
     """Build the ACT encoder. Deterministic runs turn the nested-tensor path off."""

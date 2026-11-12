@@ -71,6 +71,7 @@ CONSOLE_FIELDS = (
     "library_versions",
     "gpu",
     "final_loss",
+    "wandb_url",
     "precision_metrics",
     "pruning",
     "qat",
@@ -229,6 +230,7 @@ class RunManifest:
     metrics_path: str | None
     declared_hooks: dict[str, list[str]]
     precision_metrics: dict[str, Any]
+    wandb_url: str | None = None
     pruning: dict[str, Any] | None = None
     qat: dict[str, Any] | None = None
     lineage: dict[str, Any] | None = None
@@ -256,6 +258,7 @@ class RunManifest:
             "library_versions": dict(self.library_versions),
             "gpu": gpu,
             "final_loss": self.final_loss,
+            "wandb_url": self.wandb_url,
             "precision_metrics": _copy_precision_metrics(self.precision_metrics),
             "error": self.error,
             "recipe_path": self.recipe_path,
@@ -337,6 +340,7 @@ class RunManifest:
                 cuda=_optional_str(gpu["cuda"]),
             ),
             final_loss=document["final_loss"],
+            wandb_url=_text(document.get("wandb_url")),
             error=_optional_str(document["error"]),
             recipe_path=str(document["recipe_path"]),
             overrides=[str(item) for item in document["overrides"]],
@@ -687,6 +691,7 @@ def manifest_from_capture(
     final_loss: Any,
     base_weights_loaded: bool,
     device: str | None = None,
+    wandb_url: str | None = None,
     throughput_steps_per_s: Any = None,
     peak_memory_bytes: Any = None,
     pruning_report: Any = None,
@@ -735,6 +740,7 @@ def manifest_from_capture(
         library_versions=dict(capture.library_versions),
         gpu=capture.gpu,
         final_loss=_json_number(final_loss),
+        wandb_url=_text(wandb_url),
         error=error,
         recipe_path=capture.recipe_path,
         overrides=list(capture.overrides),
@@ -878,6 +884,7 @@ def format_run_text(document: Mapping[str, Any]) -> str:
             + " ".join(f"{key}={versions[key]}" for key in sorted(versions)),
             "gpu: " + _format_gpu(document.get("gpu")),
             f"final_loss: {_format_value(document.get('final_loss'))}",
+            f"wandb_url: {_format_value(document.get('wandb_url'))}",
             "precision_metrics: "
             + _format_precision_metrics(document.get("precision_metrics")),
             "pruning: " + _format_pruning(document.get("pruning")),

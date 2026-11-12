@@ -116,6 +116,8 @@ external programs. See [`serve/llm-backends.md`](serve/llm-backends.md).
 | `ohho run retain <path> [--dry-run] [--days N] [--experiment ID] [--json]` | Delete intermediate checkpoints of pruned trials older than N days (default 14). Keeps best, last, logs, eval reports, and pinned or promoted versions. `--dry-run` does not delete. See [`train/artifacts.md`](train/artifacts.md). |
 | `ohho run storage <path> [--experiment ID] [--json]` | Print bytes used by one run or by each run under a directory. |
 
+Training metrics go through `ohho.log`. The on-disk format is [`train/metrics.md`](train/metrics.md). `ohho run show` prints `wandb_url` from the manifest.
+
 ## Simulation services
 
 | Command | Description |
