@@ -56,6 +56,7 @@ humanoid-sim = [
   "torch>=2.1",
 ]                                            # humanoid-mujoco backend, ONNX and TorchScript policies, CPU
 ros2 = []                                    # rclpy ships with your ROS 2 distro — source it, then install this extra
+crazyflie = ["cflib>=0.1.18"]                # Crazyradio via cflib; Crazyswarm2 uses the distro's rclpy
 dev = ["pytest>=7", "coverage>=7", "httpx>=0.27,<0.28"]
 all = [
   "pyyaml>=6.0",

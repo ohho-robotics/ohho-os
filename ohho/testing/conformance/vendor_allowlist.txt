@@ -24,6 +24,8 @@ ohho/adapters/_link_resilience.py	yahboom	R-01
 ohho/adapters/_yahboom_proto.py	yahboom	R-01
 ohho/adapters/drone_sim.py	crazyflie	R-03
 ohho/adapters/drone_sim.py	px4	R-03
+ohho/adapters/crazyflie.py	crazyflie	R-03
+ohho/adapters/crazyflie.py	px4	R-03
 ohho/adapters/composite.py	feetech	R-01
 ohho/adapters/composite.py	omnibot	R-01
 ohho/adapters/composite.py	yahboom	R-01
@@ -97,6 +99,7 @@ ohho/serve/go2.py	go2	R-02
 ohho/sim_demo.py	go2	R-02
 ohho/sim_demo.py	unitree	R-02
 ohho/verify.py	omnibot	R-01
+pyproject.toml	crazyflie	R-03
 pyproject.toml	feetech	R-01
 pyproject.toml	go2	R-02
 pyproject.toml	omnibot	R-01

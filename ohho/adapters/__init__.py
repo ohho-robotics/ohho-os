@@ -2,11 +2,12 @@
 
 Adapters connect the unified Transport interface to a robot's native protocol.
 This build bundles: ``sim`` (always), ``feetech`` (SO-101 arm, needs ``[arm]``),
-and ``composite`` (base+arm merge). ``serial://`` is provided by the
-mobile-manipulator plugin: a spec with ``manipulation`` composes a base link
-and an arm link. ``dds://`` is provided by the quadruped plugin.
-``sim://`` for robot ids
-``px4-sitl`` and ``crazyflie-sim`` selects the kinematic ``drone-sim`` backend.
+``composite`` (base+arm merge), and the Crazyflie backend. ``crazyflie://``
+(cflib) and ``crazyflie+ros2://`` (Crazyswarm2) select that backend.
+``serial://`` is provided by the mobile-manipulator plugin: a spec with
+``manipulation`` composes a base link and an arm link. ``dds://`` is provided
+by the quadruped plugin. ``sim://`` for robot ids ``px4-sitl`` and
+``crazyflie-sim`` selects the kinematic ``drone-sim`` backend.
 ``px4-x500`` is a registry spec only; nothing in this build connects to it.
 
 Policy: **auto (no explicit transport) runs in simulation** so zero-config use and
@@ -26,6 +27,7 @@ from typing import Optional
 
 from ..registry import RobotSpec
 from ..transport import Transport
+from .crazyflie import CrazyflieTransport
 from .drone_sim import DroneSimTransport
 from .errors import AdapterUnavailable
 from .feetech import FeetechTransport
@@ -61,6 +63,9 @@ def available_adapters() -> list[str]:
             out.append(scheme)
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
+        out.append("crazyflie+ros2")
+    if importlib.util.find_spec("cflib") is not None:
+        out.append("crazyflie")
     return out
 
 
@@ -123,6 +128,8 @@ def resolve_transport(
       (defaults ``dds://lo?domain=1`` for a local simulator).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
+    - ``uri="crazyflie://radio://…"`` → Crazyflie radio via cflib.
+    - ``uri="crazyflie+ros2://<name>"`` → Crazyswarm2 services for that robot.
     - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
     - ``read_only=True`` is only valid for ``dds://`` and a plugin scheme whose
@@ -167,13 +174,23 @@ def resolve_transport(
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
 
+    if scheme == "crazyflie":
+        if spec is None:
+            raise AdapterUnavailable("crazyflie:// needs a robot spec")
+        return CrazyflieTransport(spec, address, kind="cflib", runtime=runtime)
+    if scheme == "crazyflie+ros2":
+        if spec is None:
+            raise AdapterUnavailable("crazyflie+ros2:// needs a robot spec")
+        return CrazyflieTransport(spec, address, kind="crazyswarm2", runtime=runtime)
+
     cls = _HARDWARE.get(scheme)
     if cls is None:
         from ..plugins import describe_plugin_schemes
 
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation. "
+            f"dds, ros2, crazyflie, crazyflie+ros2 — or omit the transport to "
+            f"run in simulation. "
             f"{describe_plugin_schemes()}"
         )
     return cls(spec, address)
@@ -184,6 +201,7 @@ __all__ = [
     "DroneSimTransport",
     "FeetechTransport",
     "Ros2Transport",
+    "CrazyflieTransport",
     "AdapterUnavailable",
     "resolve_transport",
     "available_adapters",
