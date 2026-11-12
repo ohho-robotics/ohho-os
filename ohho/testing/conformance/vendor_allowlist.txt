@@ -17,6 +17,8 @@ ohho/adapters/__init__.py	feetech	R-01
 ohho/adapters/__init__.py	go2	R-02
 ohho/adapters/__init__.py	omnibot	R-01
 ohho/adapters/__init__.py	px4	R-03
+ohho/adapters/px4_dds.py	crazyflie	R-03
+ohho/adapters/px4_dds.py	px4	R-03
 ohho/adapters/__init__.py	unitree	R-02
 ohho/adapters/__init__.py	yahboom	R-01
 ohho/adapters/_link_resilience.py	feetech	R-01
@@ -58,6 +60,7 @@ ohho/safety.py	omnibot	R-01
 ohho/safety.py	px4	R-03
 ohho/safety.py	unitree	R-02
 ohho/safety_policy.py	go2	R-02
+ohho/safety_policy.py	px4	R-03
 ohho/safety_policy.py	omnibot	R-01
 ohho/safety_policy.py	unitree	R-02
 ohho/selftest.py	go2	R-02
@@ -100,6 +103,7 @@ ohho/verify.py	omnibot	R-01
 pyproject.toml	feetech	R-01
 pyproject.toml	go2	R-02
 pyproject.toml	omnibot	R-01
+pyproject.toml	px4	R-03
 pyproject.toml	unitree	R-02
 pyproject.toml	yahboom	R-01
 ohho/hil.py	feetech	R-01

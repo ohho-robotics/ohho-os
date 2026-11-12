@@ -2,10 +2,11 @@
 
 Adapters connect the unified Transport interface to a robot's native protocol.
 This build bundles: ``sim`` (always), ``feetech`` (SO-101 arm, needs ``[arm]``),
-and ``composite`` (base+arm merge). ``serial://`` is provided by the
-mobile-manipulator plugin: a spec with ``manipulation`` composes a base link
-and an arm link. ``dds://`` is provided by the quadruped plugin.
-``sim://`` for robot ids
+``composite`` (base+arm merge), and ``px4+dds`` (PX4 v1.17 uXRCE-DDS, needs a
+ROS 2 graph and ``px4_msgs`` release/1.17 at connect time). ``serial://`` is
+provided by the mobile-manipulator plugin: a spec with ``manipulation``
+composes a base link and an arm link. ``dds://`` is provided by the quadruped
+plugin. ``sim://`` for robot ids
 ``px4-sitl`` and ``crazyflie-sim`` selects the kinematic ``drone-sim`` backend.
 ``px4-x500`` is a registry spec only; nothing in this build connects to it.
 
@@ -29,6 +30,7 @@ from ..transport import Transport
 from .drone_sim import DroneSimTransport
 from .errors import AdapterUnavailable
 from .feetech import FeetechTransport
+from .px4_dds import Px4DdsTransport
 from .ros2 import Ros2Transport
 from .sim import SimTransport
 
@@ -61,6 +63,11 @@ def available_adapters() -> list[str]:
             out.append(scheme)
     if importlib.util.find_spec("rclpy") is not None:
         out.append("ros2")
+    if (
+        importlib.util.find_spec("rclpy") is not None
+        and importlib.util.find_spec("px4_msgs") is not None
+    ):
+        out.append("px4+dds")
     return out
 
 
@@ -123,6 +130,10 @@ def resolve_transport(
       (defaults ``dds://lo?domain=1`` for a local simulator).
     - ``uri="ros2://<namespace>"`` → ROS 2 transport (bridges to /cmd_vel, /odom,
       /arm/joint_states; requires ``runtime="ros2"``).
+    - ``uri="px4+dds://HOST:PORT?ns=NAME"`` → PX4 uXRCE-DDS transport. This is
+      not ``dds://`` (that scheme stays the quadruped plugin). ``Robot.connect`` wraps the
+      result in ``SafetyGate``. Loopback hosts set ``sim_target``, which is
+      how the gate tells a sim agent from a vehicle.
     - a scheme a plugin registered → that plugin's factory.
     - any other scheme → ``AdapterUnavailable``.
     - ``read_only=True`` is only valid for ``dds://`` and a plugin scheme whose
@@ -133,8 +144,8 @@ def resolve_transport(
     if spec is not None and spec.id in _SPEC_ONLY_IDS:
         raise AdapterUnavailable(
             f"{spec.id} is a registry spec only; this build does not connect to it. "
-            "requires_hardware_arming applies to non-loopback px4+dds:// and "
-            "mavlink+serial:// URIs, which are not implemented."
+            "requires_hardware_arming applies to a non-loopback px4+dds:// URI "
+            "and to mavlink+serial://, which is not implemented."
         )
     scheme = _uri_scheme(uri)
     read_only_ok = scheme in _READ_ONLY_SCHEMES
@@ -167,13 +178,16 @@ def resolve_transport(
     if scheme == "ros2":
         return Ros2Transport(spec, address, runtime=runtime)
 
+    if scheme == "px4+dds":
+        return Px4DdsTransport(spec, uri, runtime=runtime)
+
     cls = _HARDWARE.get(scheme)
     if cls is None:
         from ..plugins import describe_plugin_schemes
 
         raise AdapterUnavailable(
             f"Unknown transport scheme '{scheme}'. Known: sim, serial, feetech, "
-            f"dds, ros2 — or omit the transport to run in simulation. "
+            f"dds, ros2, px4+dds — or omit the transport to run in simulation. "
             f"{describe_plugin_schemes()}"
         )
     return cls(spec, address)
@@ -184,6 +198,7 @@ __all__ = [
     "DroneSimTransport",
     "FeetechTransport",
     "Ros2Transport",
+    "Px4DdsTransport",
     "AdapterUnavailable",
     "resolve_transport",
     "available_adapters",

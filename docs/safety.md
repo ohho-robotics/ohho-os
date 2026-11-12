@@ -73,10 +73,13 @@ all of:
    `I am physically present, the area is clear, the remote is in my hand`
    (case and extra spaces are ignored).
 
-"Hardware" is every link except a simulator (`protocol == "simulated"`) and a
+"Hardware" is every link except a simulator (`protocol == "simulated"`), a
 DDS link on a loopback interface with a non-zero DDS domain, e.g.
-`dds://lo?domain=1` for a local Unitree simulator. DDS domain 0 is the real
-robot's domain, so `dds://lo` (domain 0) still needs confirmation.
+`dds://lo?domain=1` for a local Unitree simulator, localhost-only ROS 2 CI,
+and a `px4-dds` transport whose `sim_target` is true (`px4+dds://127.0.0.1:8888`).
+DDS domain 0 is the real robot's domain, so `dds://lo` (domain 0) still needs
+confirmation. A non-loopback `px4+dds://` host still needs confirmation. The
+gate reads `sim_target`; it does not parse the URI.
 
 A `ros2://` link still needs confirmation unless CI sets `OHHO_CI_FAKE_ROBOT=1`
 (exactly `1`), discovery is localhost-only (`ROS_LOCALHOST_ONLY` or
